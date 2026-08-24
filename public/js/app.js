@@ -1,4 +1,5 @@
 import { session, me, bootstrap, setUnauthorizedHandler } from './api.js';
+import { initTheme, toggleTheme, resolvedTheme } from './theme.js';
 import { esc, initials } from './ui.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
@@ -33,8 +34,8 @@ function placeholderView(moduleName) {
       <div class="empty-illustration"><span>✦</span></div>
       <div class="eyebrow">Coming next</div>
       <h1>${esc(moduleName)}</h1>
-      <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next ECOD phase.</p>
-      <p class="muted small">You only have access to your own assignments. For questions, contact your ECOD administrator.</p>
+      <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next Anthroprime EOD phase.</p>
+      <p class="muted small">You only have access to your own assignments. For questions, contact your Anthroprime EOD administrator.</p>
     </div>`;
   };
   return fn;
@@ -77,14 +78,14 @@ function renderShell() {
   const navGroups = u.role === 'admin'
     ? [['Workspace', nav.slice(0, 3)], ['Configure', nav.slice(3, 6)], ['Governance', nav.slice(6)]]
     : [['Workspace', nav]];
-  const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'ECOD';
+  const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'Anthroprime EOD';
 
   document.body.classList.add('app-body');
   document.getElementById('sidebar').innerHTML = `
     <div class="brand">
-      <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="ECOD home">
-        <span class="mark">E</span>
-        <span><strong>ECOD</strong><small>Capability OS</small></span>
+      <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime EOD home">
+        <span class="mark">A</span>
+        <span><strong>Anthroprime</strong><small>EOD · Capability OS</small></span>
       </a>
       <div class="brand-status"><span></span> Talent readiness platform</div>
     </div>
@@ -115,14 +116,21 @@ function renderShell() {
   document.getElementById('topbar').innerHTML = `
     <div class="topbar-left">
       <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
-      <div class="topbar-context"><span class="eyebrow">ECOD workspace</span><strong>${esc(pageLabel)}</strong></div>
+      <div class="topbar-context"><span class="eyebrow">Anthroprime EOD</span><strong>${esc(pageLabel)}</strong></div>
     </div>
     <div class="topbar-right">
       <span class="live-status"><i></i> All systems normal</span>
       <span class="topbar-divider"></span>
+      ${themeToggleHtml()}
       <span class="topbar-role">${esc(u.role)}</span>
       <span class="topbar-avatar">${esc(initials(u.name))}</span>
     </div>`;
+  const themeBtn = document.getElementById('theme-toggle');
+  themeBtn.onclick = () => {
+    const next = toggleTheme();
+    syncThemeToggle(themeBtn, next);
+  };
+
   const toggle = document.getElementById('mobile-nav-toggle');
   toggle.onclick = () => {
     const open = document.getElementById('sidebar').classList.toggle('open');
@@ -183,5 +191,23 @@ async function boot() {
   render();
 }
 
+/* ------------------------------ theme toggle ------------------------------ */
+const THEME_ICONS = {
+  light: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.4A8.4 8.4 0 0 1 9.6 4a8.6 8.6 0 1 0 10.4 10.4z"></path></svg>',
+  dark: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"></circle><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4 17 7M7 17l-1.6 1.6"></path></svg>',
+};
+/** The icon shows the theme you will switch *to*. */
+function themeToggleHtml() {
+  const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
+  return `<button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to ${next} mode" title="Switch to ${next} mode">${THEME_ICONS[next]}</button>`;
+}
+function syncThemeToggle(btn, theme) {
+  const next = theme === 'dark' ? 'light' : 'dark';
+  btn.innerHTML = THEME_ICONS[next];
+  btn.setAttribute('aria-label', `Switch to ${next} mode`);
+  btn.title = `Switch to ${next} mode`;
+}
+
 setUnauthorizedHandler(() => { state.user = null; render(); });
+initTheme();
 boot();

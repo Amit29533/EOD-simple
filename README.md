@@ -1,4 +1,4 @@
-# ECOD — Enterprise Capability on Demand
+# Anthroprime EOD — Enterprise Capability on Demand
 
 Assess experienced technology professionals against enterprise roles, map their exact
 capability gaps, and maintain a pool of **enterprise-ready talent**.
@@ -23,7 +23,8 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 21 tests: scoring engine, API/RBAC journey, Airtable adapter contract
+npm test            # 33 tests: scoring engine, API/RBAC journey, Airtable adapter contract,
+                    #          sign-in view + theme manager (jsdom, optional dependency)
 ```
 
 Full end-to-end suites (need a running, seeded server):
@@ -63,6 +64,10 @@ python3 tests/features.py     # 141 checks: every feature — CRUD, validation, 
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
+- **Animated sign-in + light/dark theming** — glass, blur and motion on the Anthroprime EOD login; a segmented
+  *Auto / Light / Dark* switch there and a toggle in the topbar. The choice is persisted in `localStorage`
+  (`anthroprime-eod-theme`) and applied before first paint, so there is no flash. Every colour is a CSS token
+  in `:root` with a `[data-theme="dark"]` override, and all motion is disabled under `prefers-reduced-motion`.
 - **Role-based access & compartmentalization** — enforced server-side (see matrix below).
 
 Deliberately deferred to the next phases (architecture already supports them): Enrichment
