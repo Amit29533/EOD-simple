@@ -9,7 +9,11 @@ export async function createBlobsStore() {
   let blobs;
   try { blobs = await import('@netlify/blobs'); }
   catch { throw new Error('STORAGE=blobs requires the @netlify/blobs package inside the Netlify runtime.'); }
-  const store = blobs.getStore('ecod');
+  const store = blobs.getStore(
+  process.env.NETLIFY_SITE_ID && process.env.NETLIFY_AUTH_TOKEN
+    ? { name: 'ecod', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_AUTH_TOKEN }
+    : 'ecod'
+);
   const cache = new Map();
 
   const readTable = async (t) => {
