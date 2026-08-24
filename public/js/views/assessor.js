@@ -12,9 +12,13 @@ export async function workspaceView(view) {
   const d = await api('/assessor/assessments');
   const pending = d.assessments.filter((a) => a.status === 'submitted');
   view.innerHTML = `
-    <div class="demo-creds">🧭 Your assignments only. You see the candidate's professional profile and their answers — contact details, source and internal notes are intentionally hidden. Score open responses against the rubric, then finalize to generate the capability report.</div>
-    ${pending.length ? `<div class="card" style="border-left:4px solid var(--amber)"><b>${pending.length} assessment(s) awaiting your scoring.</b></div>` : ''}
-    <div class="card" style="padding:6px 14px">
+    <div class="page-heading">
+      <div><div class="eyebrow">Assessor workspace</div><h1>Your assessments<span class="heading-dot">.</span></h1><p>Review evidence, apply your judgment and help every candidate see their next best move.</p></div>
+      <div class="heading-actions"><span class="workspace-pill"><i></i> ${d.assessments.length} assigned</span></div>
+    </div>
+    <div class="demo-creds"><span class="info-strip-icon">⌁</span><span>Your assignments only. Candidate contact details, source and internal notes stay hidden. Score open responses against the rubric, then finalize to generate the capability report.</span></div>
+    ${pending.length ? `<div class="card attention-card"><span class="attention-icon">!</span><span><b>${pending.length} assessment${pending.length === 1 ? '' : 's'} awaiting your scoring.</b><small>Open a submitted assessment to complete the review.</small></span></div>` : ''}
+    <div class="card table-card">
       ${d.assessments.length ? `
       <table class="data"><thead><tr><th>Candidate</th><th>Role</th><th>Status</th><th>Submitted</th><th>Outcome</th><th></th></tr></thead><tbody>
       ${d.assessments.map((a) => `<tr>
@@ -56,15 +60,9 @@ export async function assessmentView(view, { id }) {
   let qNo = 0;
 
   view.innerHTML = `
-    <div class="card" style="padding:12px 18px;position:sticky;top:64px;z-index:4">
-      <div class="row between">
-        <a href="#/workspace" class="btn ghost sm">← Workspace</a>
-        <div><b>${esc(d.candidate?.name || '')}</b> <span class="muted small">· ${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}</span></div>
-        <div class="row">
-          <span class="badge grey" id="score-progress"></span>
-          <button class="btn" id="finalize-btn">Finalize & generate report</button>
-        </div>
-      </div>
+    <div class="score-topbar card">
+      <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">Scoring review</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}</span></div></div>
+      <div class="row score-actions"><span class="badge grey" id="score-progress"></span><button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button></div>
     </div>
     <div class="card">
       <div class="small muted">Candidate profile (shared with you for context): <b>${esc(d.candidate?.current_title || 'n/a')}</b>${d.candidate?.years_experience != null ? `, ${d.candidate.years_experience} years of experience` : ''}. Objective MCQ and scale items are scored automatically — review them; your judgment is required only for open responses, scored against the rubric.</div>
