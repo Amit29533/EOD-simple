@@ -23,7 +23,15 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 21 tests: scoring engine, API/RBAC journey, Airtable adapter
+npm test            # 21 tests: scoring engine, API/RBAC journey, Airtable adapter contract
+```
+
+Full end-to-end suites (need a running, seeded server):
+
+```bash
+python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
+python3 tests/features.py     # 141 checks: every feature — CRUD, validation, config editing,
+                              # immutability, reassignment, scoring math, audit, persistence
 ```
 
 ### Demo sign-ins (seeded)

@@ -112,7 +112,6 @@ export async function quizView(view, { id }) {
     if (q.type === 'mcq_single') {
       card.querySelectorAll('input[type=radio]').forEach((r) => (r.onchange = () => {
         answers[q.id] = r.value;
-        card.querySelectorAll('.opt').forEach((o) => o.classList.toggle('selected', o.contains(view.querySelector(`input[name="q-${q.id}"]:checked`)) && o.querySelector('input').checked));
         card.querySelectorAll('.opt').forEach((o) => o.classList.toggle('selected', o.querySelector('input').checked));
         answeredCount(); persist();
       }));
