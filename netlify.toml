@@ -11,7 +11,7 @@
   NPM_FLAGS = "--include=optional"
 
 [functions]
-  node_bundler = "nft"
+  node_bundler = "esbuild"
 
 # Keep browser-facing responses locked down without adding a CSP that would
 # prevent the zero-build SPA from using its module scripts and inline widgets.
