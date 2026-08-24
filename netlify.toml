@@ -1,0 +1,19 @@
+# ECOD platform - Netlify configuration
+# Publish the static SPA, run the API as a serverless function, SPA-fallback for routes.
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+  command = ""
+
+[functions]
+  node_bundler = "nft"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
