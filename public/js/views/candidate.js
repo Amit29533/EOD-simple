@@ -12,18 +12,16 @@ export async function portalView(view) {
   const d = await api('/candidate/assessments');
   const stages = state.meta.pipelineStages;
   view.innerHTML = `
-    <div class="card">
-      <div class="row between" style="align-items:flex-start">
-        <div>
-          <h2 style="margin:0">Welcome, ${esc(d.candidate.name.split(' ')[0])} 👋</h2>
-          <p class="muted" style="margin:4px 0 0">This is your ECOD journey towards becoming certified <b>enterprise-ready</b>.</p>
-        </div>
-      </div>
-      <hr class="hr"/>
+    <div class="page-heading candidate-heading">
+      <div><div class="eyebrow">Your capability journey</div><h1>Welcome, ${esc(d.candidate.name.split(' ')[0])}<span class="heading-dot">.</span></h1><p>A clear path from your current strengths to enterprise-ready impact.</p></div>
+      <div class="journey-status"><span class="online-dot"></span> Profile in progress</div>
+    </div>
+    <div class="card journey-card">
+      <div class="panel-head"><div><div class="section-kicker">Your roadmap</div><h2>Progress at a glance</h2></div><span class="journey-spark">✦</span></div>
       ${pipelineStepper(stages, d.candidate.stage)}
     </div>
-    <div class="card">
-      <h3>Your assessments</h3>
+    <div class="card assessment-list-card">
+      <div class="panel-head"><div><div class="section-kicker">Next steps</div><h2>Your assessments</h2><p>Complete each assessment to unlock your capability report.</p></div></div>
       ${d.assessments.length ? d.assessments.map((a) => `
         <div class="q-card row between" style="margin-bottom:12px">
           <div>
@@ -62,12 +60,9 @@ export async function quizView(view, { id }) {
   let qNo = 0;
 
   view.innerHTML = `
-    <div class="card" style="position:sticky;top:64px;z-index:4;padding:12px 18px">
-      <div class="row between">
-        <div><b>${esc(d.assessment.role?.name || 'Assessment')}</b>
-          <span class="small muted"> · <span id="answered-count">0</span>/${total} answered</span></div>
-        <div class="row"><span class="save-state" id="save-state">Autosaves as you go</span></div>
-      </div>
+    <div class="quiz-topbar card">
+      <div class="quiz-title"><span class="quiz-back"><a href="#/journey" aria-label="Back to journey">←</a></span><div><div class="section-kicker">Assessment in progress</div><h2>${esc(d.assessment.role?.name || 'Assessment')}</h2></div></div>
+      <div class="quiz-progress"><div class="quiz-progress-label"><span><b id="answered-count">0</b> of ${total} answered</span><span class="save-state" id="save-state">Autosaves as you go</span></div><div class="quiz-track"><span id="quiz-progress-fill"></span></div></div>
     </div>
     ${comps.map((c) => {
       const qs = questions.filter((x) => x.competency_id === c.id);
@@ -75,11 +70,9 @@ export async function quizView(view, { id }) {
       return `<div class="comp-header"><h3>${esc(c.name)}</h3>${c.description ? `<div class="meta">${esc(c.description)}</div>` : ''}</div>
         ${qs.map((q) => { qNo += 1; return questionCard(q, qNo, answers[q.id]); }).join('')}`;
     }).join('')}
-    <div class="card" style="padding:16px 20px">
-      <div class="row between">
-        <div class="small muted">You cannot change answers after submission. Open questions are reviewed by an independent assessor.</div>
-        <button class="btn" id="submit-btn" style="padding:10px 26px">Submit assessment</button>
-      </div>
+    <div class="card quiz-submit-card">
+      <div><div class="section-kicker">Almost there</div><h3>Ready to submit?</h3><div class="small muted">You cannot change answers after submission. Open questions are reviewed by an independent assessor.</div></div>
+      <button class="btn" id="submit-btn">Submit assessment <span aria-hidden="true">→</span></button>
     </div>`;
 
   const saveState = view.querySelector('#save-state');
@@ -89,6 +82,8 @@ export async function quizView(view, { id }) {
       return a !== undefined && a !== null && a !== '' && !(Array.isArray(a) && !a.length);
     }).length;
     view.querySelector('#answered-count').textContent = n;
+    const fill = view.querySelector('#quiz-progress-fill');
+    if (fill) fill.style.width = `${total ? Math.round((n / total) * 100) : 0}%`;
     return n;
   };
   answeredCount();
@@ -131,7 +126,7 @@ export async function quizView(view, { id }) {
       }));
     } else if (q.type === 'text') {
       const ta = card.querySelector('textarea');
-      ta.oninput = () => { answers[q.id] = ta.value; persist(); };
+      ta.oninput = () => { answers[q.id] = ta.value; answeredCount(); persist(); };
     }
   }
 

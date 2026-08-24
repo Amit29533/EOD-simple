@@ -29,14 +29,29 @@ const DEFAULT_ROUTE = { admin: '#/dashboard', assessor: '#/workspace', candidate
 
 function placeholderView(moduleName) {
   const fn = (view) => {
-    view.innerHTML = `<div class="card">${'<h2>'}${esc(moduleName)} module</h2>
+    view.innerHTML = `<div class="empty-page">
+      <div class="empty-illustration"><span>✦</span></div>
+      <div class="eyebrow">Coming next</div>
+      <h1>${esc(moduleName)}</h1>
       <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next ECOD phase.</p>
-      <p class="muted small">You only have access to your own assignments. For questions, contact your ECOD administrator.</p></div>`;
+      <p class="muted small">You only have access to your own assignments. For questions, contact your ECOD administrator.</p>
+    </div>`;
   };
   return fn;
 }
 
-const NAV_ICONS = { dashboard: '▦', candidates: '🧑‍🤝‍🧑', assessments: '📝', roles: '🎯', questions: '💬', users: '🔐', audit: '🧾', workspace: '🧭', journey: '🚀', home: '🏠' };
+const NAV_ICONS = {
+  dashboard: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.2"></rect><rect x="14" y="4" width="6" height="6" rx="1.2"></rect><rect x="4" y="14" width="6" height="6" rx="1.2"></rect><rect x="14" y="14" width="6" height="6" rx="1.2"></rect></svg>',
+  candidates: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><path d="M3.8 19c.4-3.1 2.1-4.7 5.2-4.7s4.8 1.6 5.2 4.7"></path><path d="M16 5.4a3 3 0 0 1 0 5.7M17 14.6c2.1.5 3.3 2 3.5 4.4"></path></svg>',
+  assessments: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h8l3 3V20H7z"></path><path d="M15 3.8V7h3M10 11h5M10 14.5h5M10 18h3"></path></svg>',
+  roles: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"></circle><path d="m12 7.5 1.4 3.1 3.2.4-2.4 2.2.7 3.2-2.9-1.7-2.9 1.7.7-3.2-2.4-2.2 3.2-.4z"></path></svg>',
+  questions: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v15H7.5A2.5 2.5 0 0 0 5 20.5z"></path><path d="M5 5.5v15M9 7h7M9 10.5h7"></path></svg>',
+  users: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5.5 20c.5-4 2.5-6 6.5-6s6 2 6.5 6"></path></svg>',
+  audit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"></path></svg>',
+  workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 17 5-5 3 3 7-8"></path><path d="M15 7h4v4"></path></svg>',
+  journey: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17c3-8 8-9 16-10"></path><path d="m16 5 4 2-3 3"></path><circle cx="5" cy="18" r="2"></circle></svg>',
+  home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 11 8-7 8 7v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"></path><path d="M9 20v-6h6v6"></path></svg>',
+};
 const NAV = {
   admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'],
           ['#/roles', 'Roles & Frameworks'], ['#/questions', 'Question Bank'], ['#/users', 'Users & Access'], ['#/audit', 'Audit Log']],
@@ -46,41 +61,89 @@ const NAV = {
   trainer: [['#/home', 'Home']],
 };
 
+const routeHash = () => (location.hash || '').split('?')[0];
+const navKey = (href) => href.slice(2).split('/')[0];
+
+function closeMobileNav() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('nav-scrim')?.classList.remove('visible');
+  document.getElementById('mobile-nav-toggle')?.setAttribute('aria-expanded', 'false');
+}
+
 function renderShell() {
   const u = state.user;
   const nav = NAV[u.role] || [];
-  const hash = location.hash.split('/').slice(0, 2).join('/');
+  const hash = routeHash().split('/').slice(0, 2).join('/');
+  const navGroups = u.role === 'admin'
+    ? [['Workspace', nav.slice(0, 3)], ['Configure', nav.slice(3, 6)], ['Governance', nav.slice(6)]]
+    : [['Workspace', nav]];
+  const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'ECOD';
+
+  document.body.classList.add('app-body');
   document.getElementById('sidebar').innerHTML = `
     <div class="brand">
-      <div class="logo"><span class="mark">E</span> ECOD</div>
-      <div class="tag">Enterprise Capability on Demand</div>
+      <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="ECOD home">
+        <span class="mark">E</span>
+        <span><strong>ECOD</strong><small>Capability OS</small></span>
+      </a>
+      <div class="brand-status"><span></span> Talent readiness platform</div>
     </div>
-    <nav class="nav">
-      ${nav.map(([h, label]) => `<a href="${h}" class="${hash === h ? 'active' : ''}"><span class="ico">${NAV_ICONS[h.slice(2)] || '•'}</span>${esc(label)}</a>`).join('')}
+    <nav class="nav" aria-label="Primary navigation">
+      ${navGroups.map(([label, items]) => `<div class="nav-group">
+        <div class="nav-label">${esc(label)}</div>
+        ${items.map(([h, text]) => `<a href="${h}" class="${hash === h ? 'active' : ''}">
+          <span class="ico">${NAV_ICONS[navKey(h)] || NAV_ICONS.home}</span><span>${esc(text)}</span>
+        </a>`).join('')}
+      </div>`).join('')}
     </nav>
     <div class="side-user">
-      <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span>${esc(u.name)}</span></div>
-      <div class="role">${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
-      <button class="btn secondary sm" id="logout-btn">Sign out</button>
+      <div class="side-user-card">
+        <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span class="who-copy"><b>${esc(u.name)}</b><small>${esc(u.email || `${u.role} account`)}</small></span></div>
+        <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
+      </div>
+      <button class="btn secondary sm signout" id="logout-btn"><span class="btn-icon">↗</span> Sign out</button>
     </div>`;
+
   document.getElementById('logout-btn').onclick = async () => {
     const { logout } = await import('./api.js');
     await logout();
     session.token = null;
+    closeMobileNav();
     boot();
   };
+
   document.getElementById('topbar').innerHTML = `
-    <b>${esc((nav.find(([h]) => h === hash) || [])[1] || 'ECOD')}</b>
-    <span class="muted small">·</span><span class="muted small">${esc(u.role === 'admin' ? 'Platform administration' : u.role === 'assessor' ? 'Assessor workspace' : 'Candidate portal')}</span>
-    <span style="flex:1"></span><span class="muted small">Anthroprime ECOD</span>`;
+    <div class="topbar-left">
+      <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
+      <div class="topbar-context"><span class="eyebrow">ECOD workspace</span><strong>${esc(pageLabel)}</strong></div>
+    </div>
+    <div class="topbar-right">
+      <span class="live-status"><i></i> All systems normal</span>
+      <span class="topbar-divider"></span>
+      <span class="topbar-role">${esc(u.role)}</span>
+      <span class="topbar-avatar">${esc(initials(u.name))}</span>
+    </div>`;
+  const toggle = document.getElementById('mobile-nav-toggle');
+  toggle.onclick = () => {
+    const open = document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('nav-scrim').classList.toggle('visible', open);
+    toggle.setAttribute('aria-expanded', String(open));
+  };
+  document.getElementById('nav-scrim').onclick = closeMobileNav;
 }
 
 async function render() {
   const view = document.getElementById('view');
-  if (!state.user) { loginView(view, onSignedIn); return; }
+  if (!state.user) {
+    document.body.classList.remove('app-body');
+    closeMobileNav();
+    loginView(view, onSignedIn);
+    return;
+  }
   renderShell();
-  const hash = location.hash || DEFAULT_ROUTE[state.user.role];
+  const rawHash = location.hash || DEFAULT_ROUTE[state.user.role];
   if (!location.hash) { location.hash = DEFAULT_ROUTE[state.user.role]; return; }
+  const hash = rawHash.split('?')[0];
   const routes = ROUTES[state.user.role] || [];
   for (const [pattern, fn] of routes) {
     const keys = [];
@@ -89,9 +152,9 @@ async function render() {
     if (!match) continue;
     const params = {};
     keys.forEach((k, i) => { params[k] = decodeURIComponent(match[i + 1]); });
-    view.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
+    view.innerHTML = '<div class="loading"><span class="spinner"></span><span>Loading workspace</span></div>';
     try { await fn(view, params); }
-    catch (err) { view.innerHTML = `<div class="card"><h3>Something went wrong</h3><p class="muted">${esc(err.message)}</p></div>`; }
+    catch (err) { view.innerHTML = `<div class="error-page"><div class="error-icon">!</div><h3>Something went wrong</h3><p class="muted">${esc(err.message)}</p><a class="btn secondary" href="${DEFAULT_ROUTE[state.user.role]}">Return to workspace</a></div>`; }
     return;
   }
   location.hash = DEFAULT_ROUTE[state.user.role];
@@ -108,7 +171,8 @@ function onSignedIn({ token, user, candidate: c }) {
 async function boot() {
   document.getElementById('sidebar').innerHTML = '';
   document.getElementById('topbar').innerHTML = '';
-  window.onhashchange = () => { if (state.user) render(); };
+  document.getElementById('nav-scrim')?.classList.remove('visible');
+  window.onhashchange = () => { closeMobileNav(); if (state.user) render(); };
   if (!state.meta) state.meta = await bootstrap().catch(() => null);
   if (session.token) {
     try {

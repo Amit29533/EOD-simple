@@ -1,12 +1,32 @@
 # ECOD platform - Netlify configuration
-# Publish the static SPA, run the API as a serverless function, SPA-fallback for routes.
+# Static SPA + a single serverless API function. No bundler or client build step is required.
 [build]
   publish = "public"
   functions = "netlify/functions"
-  command = ""
+  command = "echo 'ECOD: no client build required'"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Keep the optional Netlify Blobs adapter available when STORAGE=blobs is used.
+  NPM_FLAGS = "--include=optional"
 
 [functions]
   node_bundler = "nft"
+
+# Keep browser-facing responses locked down without adding a CSP that would
+# prevent the zero-build SPA from using its module scripts and inline widgets.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
 
 [[redirects]]
   from = "/api/*"

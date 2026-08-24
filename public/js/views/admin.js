@@ -15,37 +15,46 @@ export async function dashboardView(view) {
   const d = await api('/admin/dashboard');
   const stages = M().pipelineStages;
   const maxStage = Math.max(1, ...Object.values(d.by_stage));
+  const awaiting = d.by_status.submitted || 0;
   view.innerHTML = `
-    <div class="grid cols-4" style="margin-bottom:18px">
-      <div class="stat"><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
-      <div class="stat"><div class="num accent">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
-      <div class="stat"><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
-      <div class="stat"><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Avg. score (scored)</div></div>
+    <div class="page-heading">
+      <div>
+        <div class="eyebrow">Platform overview</div>
+        <h1>Capability pipeline<span class="heading-dot">.</span></h1>
+        <p>See how your talent pool is moving from first conversation to enterprise-ready.</p>
+      </div>
+      <div class="heading-actions"><a class="btn" href="#/candidates">＋ Add candidate</a></div>
     </div>
-    <div class="row" style="align-items:flex-start">
-      <div class="card" style="flex:1.3">
-        <div class="row between"><h2 style="margin:0">Pipeline</h2><a class="btn ghost sm" href="#/candidates">All candidates →</a></div>
-        <div class="stage-bars" style="margin-top:14px">
+    <div class="grid cols-4 metric-grid">
+      <div class="stat"><div class="stat-top"><span class="stat-icon">♧</span><span class="stat-trend">Live</span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
+      <div class="stat stat-gold"><div class="stat-top"><span class="stat-icon">✦</span><span class="stat-trend">Ready</span></div><div class="num">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
+      <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon">↗</span><span class="stat-trend">Active</span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
+      <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon">◌</span><span class="stat-trend">${d.counts.avg_score != null ? 'Scored' : 'Awaiting'}</span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
+    </div>
+    <div class="dashboard-grid">
+      <div class="card pipeline-panel">
+        <div class="panel-head"><div><div class="section-kicker">Talent movement</div><h2>Pipeline health</h2><p>Candidate volume by readiness stage</p></div><a class="btn ghost sm" href="#/candidates">View all <span aria-hidden="true">→</span></a></div>
+        <div class="stage-bars">
           ${stages.map((s) => `<div class="bar-row">
-            <div class="small" style="font-weight:600">${esc(s.label)}</div>
+            <div class="small" style="font-weight:700">${esc(s.label)}</div>
             <div class="track"><div class="fill" style="width:${Math.round(((d.by_stage[s.key] || 0) / maxStage) * 100)}%"></div></div>
-            <div class="small" style="text-align:right;font-weight:700">${d.by_stage[s.key] || 0}</div>
+            <div class="small" style="text-align:right;font-weight:800">${d.by_stage[s.key] || 0}</div>
           </div>`).join('')}
         </div>
       </div>
-      <div style="flex:1;display:flex;flex-direction:column;gap:18px">
-        <div class="card" style="margin:0">
-          <h2 style="margin:0 0 10px">Assessments by status</h2>
-          <div class="pill-row">
-            ${M().assessmentStatuses.map((s) => `<a href="#/assessments?status=${s.key}">${badge(`${s.label}: ${d.by_status[s.key] || 0}`, s.tone)}</a>`).join('')}
+      <div class="dashboard-side">
+        <div class="card status-panel">
+          <div class="panel-head"><div><div class="section-kicker">Workflow pulse</div><h2>Assessment status</h2></div><span class="panel-orb">↗</span></div>
+          <div class="status-list">
+            ${M().assessmentStatuses.map((s) => `<a class="status-row" href="#/assessments?status=${s.key}"><span>${badge(s.label, s.tone)}</span><strong>${d.by_status[s.key] || 0}</strong><span class="status-arrow">→</span></a>`).join('')}
           </div>
-          ${(d.by_status.submitted || 0) > 0 ? `<p class="small" style="margin:10px 0 0">${badge('Action needed', 'amber')} ${d.by_status.submitted} assessment(s) awaiting scoring.</p>` : ''}
+          ${awaiting > 0 ? `<div class="action-callout"><span>!</span><span><b>${awaiting} assessment${awaiting === 1 ? '' : 's'}</b> awaiting scoring</span><a href="#/assessments?status=submitted">Review</a></div>` : ''}
         </div>
-        <div class="card" style="margin:0">
-          <h2 style="margin:0 0 10px">Recent activity</h2>
-          ${d.recent_activity.length ? `<table class="data"><tbody>
-            ${d.recent_activity.slice(0, 9).map((e) => `<tr><td class="small">${esc(e.message || e.action)}<div class="muted" style="font-size:11px">${esc(e.actor_name)} · ${esc(fmtDateTime(e.created_at))}</div></td></tr>`).join('')}
-          </tbody></table>` : `<div class="muted small">No activity yet.</div>`}
+        <div class="card activity-panel">
+          <div class="panel-head"><div><div class="section-kicker">Latest updates</div><h2>Recent activity</h2></div><span class="panel-orb muted">•••</span></div>
+          ${d.recent_activity.length ? `<div class="activity-list">
+            ${d.recent_activity.slice(0, 6).map((e) => `<div class="activity-item"><span class="activity-dot"></span><div><div class="small activity-message">${esc(e.message || e.action)}</div><div class="muted" style="font-size:10px">${esc(e.actor_name)} · ${esc(fmtDateTime(e.created_at))}</div></div></div>`).join('')}
+          </div>` : `<div class="muted small">No activity yet.</div>`}
         </div>
       </div>
     </div>`;
@@ -69,16 +78,19 @@ export async function candidatesView(view) {
   view.innerHTML = loading();
   const [{ candidates }, { roles }] = await Promise.all([api('/admin/candidates'), api('/admin/roles')]);
   view.innerHTML = `
-    <div class="card flat" style="padding:14px 18px">
-      <div class="row between">
-        <div class="row">
-          <input type="search" id="cand-q" placeholder="Search name or email…" style="width:250px"/>
-          <select id="cand-stage"><option value="">All stages</option>${M().pipelineStages.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select>
-        </div>
-        <button class="btn" id="add-cand">＋ Add candidate</button>
-      </div>
+    <div class="page-heading">
+      <div><div class="eyebrow">Talent directory</div><h1>Candidates<span class="heading-dot">.</span></h1><p>Keep every candidate, conversation and next step in one calm view.</p></div>
+      <div class="heading-actions"><button class="btn" id="add-cand">＋ Add candidate</button></div>
     </div>
-    <div class="card" id="cand-list" style="padding:6px 14px"></div>`;
+    <div class="card flat toolbar-card">
+      <div class="toolbar-label"><span class="toolbar-icon">⌕</span><span>Filter talent</span></div>
+      <div class="row toolbar-fields">
+        <input type="search" id="cand-q" placeholder="Search name or email…" aria-label="Search candidates" />
+        <select id="cand-stage" aria-label="Filter by pipeline stage"><option value="">All stages</option>${M().pipelineStages.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select>
+      </div>
+      <span class="toolbar-hint">${candidates.length} profile${candidates.length === 1 ? '' : 's'} in your directory</span>
+    </div>
+    <div class="card table-card" id="cand-list"></div>`;
 
   const renderList = (rows) => {
     const el = view.querySelector('#cand-list');
@@ -216,15 +228,17 @@ export async function assessmentsView(view) {
   const [d, { users }] = await Promise.all([api(`/admin/assessments${urlStatus ? `?status=${urlStatus}` : ''}`), api('/admin/users')]);
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   view.innerHTML = `
-    <div class="card flat" style="padding:14px 18px">
-      <div class="row between">
-        <div class="pill-row">
-          <a href="#/assessments" class="chip" style="${!urlStatus ? 'background:var(--brand);color:#fff' : ''}">All</a>
-          ${M().assessmentStatuses.map((s) => `<a href="#/assessments?status=${s.key}" class="chip" style="${urlStatus === s.key ? 'background:var(--brand);color:#fff' : ''}">${esc(s.label)}</a>`).join('')}
-        </div>
+    <div class="page-heading">
+      <div><div class="eyebrow">Evaluation operations</div><h1>Assessments<span class="heading-dot">.</span></h1><p>Track allocations, submissions and readiness outcomes across every role.</p></div>
+    </div>
+    <div class="card flat toolbar-card">
+      <div class="toolbar-label"><span class="toolbar-icon">◷</span><span>Assessment status</span></div>
+      <div class="pill-row filter-pills">
+        <a href="#/assessments" class="chip ${!urlStatus ? 'selected' : ''}">All <b>${d.assessments.length}</b></a>
+        ${M().assessmentStatuses.map((s) => `<a href="#/assessments?status=${s.key}" class="chip ${urlStatus === s.key ? 'selected' : ''}">${esc(s.label)} <b>${d.assessments.filter((a) => a.status === s.key).length}</b></a>`).join('')}
       </div>
     </div>
-    <div class="card" style="padding:6px 14px">
+    <div class="card table-card">
       ${d.assessments.length ? dataTable([
         { label: 'Candidate', render: (a) => `<a href="#/candidates/${a.candidate_id}"><b>${esc(a.candidate_name)}</b></a>` },
         { label: 'Role', render: (a) => esc(a.role_name) },
@@ -268,13 +282,12 @@ export async function rolesView(view) {
   view.innerHTML = loading();
   const { roles } = await api('/admin/roles');
   view.innerHTML = `
-    <div class="card flat" style="padding:14px 18px">
-      <div class="row between">
-        <div class="muted small">Assessment tracks. All content is data — add roles without any development.</div>
-        <button class="btn" id="add-role">＋ New role / track</button>
-      </div>
+    <div class="page-heading">
+      <div><div class="eyebrow">Capability architecture</div><h1>Roles & frameworks<span class="heading-dot">.</span></h1><p>Shape the capabilities, benchmarks and assessment tracks your teams need.</p></div>
+      <div class="heading-actions"><button class="btn" id="add-role">＋ New role / track</button></div>
     </div>
-    <div class="card" style="padding:6px 14px">
+    <div class="card flat info-strip"><span class="info-strip-icon">✦</span><span>Assessment tracks are configuration, not code. Change the framework here and new assessments use it automatically.</span></div>
+    <div class="card table-card">
       ${roles.length ? dataTable([
         { label: 'Role', render: (r) => `<a href="#/roles/${r.id}"><b>${esc(r.name)}</b></a><div class="small muted">${esc(r.key)} · ${esc(r.technology)}</div>` },
         { label: 'Competencies', render: (r) => esc(r.competency_count) },
@@ -442,14 +455,17 @@ export async function questionsView(view) {
   ]);
   const typeLabel = Object.fromEntries(M().questionTypes.map((t) => [t.key, t.label]));
   view.innerHTML = `
-    <div class="card flat" style="padding:14px 18px">
-      <div class="row between">
-        <select id="q-role" style="width:320px"><option value="">All roles</option>
-          ${roles.map((r) => `<option value="${r.id}" ${r.id === filterRole ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
-        <button class="btn" id="add-q">＋ Add question</button>
-      </div>
+    <div class="page-heading">
+      <div><div class="eyebrow">Assessment design</div><h1>Question bank<span class="heading-dot">.</span></h1><p>Build thoughtful prompts that reveal how capability shows up in the real world.</p></div>
+      <div class="heading-actions"><button class="btn" id="add-q">＋ Add question</button></div>
     </div>
-    <div class="card" style="padding:6px 14px" id="q-list">
+    <div class="card flat toolbar-card">
+      <div class="toolbar-label"><span class="toolbar-icon">⌘</span><span>Show questions for</span></div>
+      <select id="q-role" aria-label="Filter questions by role"><option value="">All roles</option>
+        ${roles.map((r) => `<option value="${r.id}" ${r.id === filterRole ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+      <span class="toolbar-hint">${questions.length} question${questions.length === 1 ? '' : 's'} in this view</span>
+    </div>
+    <div class="card table-card" id="q-list">
       ${questions.length ? dataTable([
         { label: 'Question', render: (qq) => `<div style="max-width:520px">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name)}</div>` },
         { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>` },
@@ -583,11 +599,13 @@ export async function usersView(view) {
   const [{ users }, { candidates }] = await Promise.all([api('/admin/users'), api('/admin/candidates')]);
   const roleTone = { admin: 'red', assessor: 'blue', candidate: 'green', validator: 'amber', trainer: 'amber' };
   view.innerHTML = `
-    <div class="demo-creds no-print">🔑 Only admins can provision accounts — there is no self-registration. Assessors, validators and trainers see <b>only their own assignments</b>; candidates see only their own journey.</div>
-    <div class="card flat" style="padding:14px 18px">
-      <div class="row between"><div class="muted small">${users.length} account(s)</div><button class="btn" id="add-user">＋ Create user</button></div>
+    <div class="page-heading">
+      <div><div class="eyebrow">Workspace access</div><h1>Users & access<span class="heading-dot">.</span></h1><p>Give the right people the right view of your capability workspace.</p></div>
+      <div class="heading-actions"><button class="btn" id="add-user">＋ Create user</button></div>
     </div>
-    <div class="card" style="padding:6px 14px">
+    <div class="demo-creds no-print"><span class="info-strip-icon">⌁</span><span>Only admins can provision accounts. Permissions are role-based, and sensitive candidate details stay compartmentalized.</span></div>
+    <div class="card flat account-summary"><span class="account-summary-number">${users.length}</span><span>account${users.length === 1 ? '' : 's'} provisioned</span><span class="summary-divider"></span><span class="muted">Passwords are stored as salted hashes</span></div>
+    <div class="card table-card">
       ${dataTable([
         { label: 'User', render: (u) => `<b>${esc(u.name)}</b><div class="small muted mono">@${esc(u.username)}</div>` },
         { label: 'Role', render: (u) => badge(u.role, roleTone[u.role] || 'grey') },
@@ -643,7 +661,11 @@ export async function auditView(view) {
   view.innerHTML = loading();
   const { events } = await api('/admin/audit');
   view.innerHTML = `
-    <div class="card" style="padding:6px 14px">
+    <div class="page-heading">
+      <div><div class="eyebrow">Trust & transparency</div><h1>Audit log<span class="heading-dot">.</span></h1><p>A clear history of the changes and decisions made across your workspace.</p></div>
+    </div>
+    <div class="card flat info-strip"><span class="info-strip-icon">✓</span><span>Events are recorded automatically for account, candidate, assessment and framework activity.</span></div>
+    <div class="card table-card">
       ${events.length ? dataTable([
         { label: 'When', render: (e) => `<span class="small muted">${esc(fmtDateTime(e.created_at))}</span>` },
         { label: 'Actor', render: (e) => esc(e.actor_name) },
