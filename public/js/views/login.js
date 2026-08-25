@@ -97,7 +97,6 @@ export function loginView(view, onSuccess) {
             <ul class="story-points">
               <li><span class="pt-icon">${ICON.target}</span><span><b>Role-based frameworks</b> — weighted competencies, no code changes.</span></li>
               <li><span class="pt-icon">${ICON.bolt}</span><span><b>Auto-scored, assessor-verified</b> — objective items grade themselves.</span></li>
-              <li><span class="pt-icon">${ICON.shield}</span><span><b>Compartmentalized by design</b> — every role sees only its scope.</span></li>
             </ul>
           </div>
 
