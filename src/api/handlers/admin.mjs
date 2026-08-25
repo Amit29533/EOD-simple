@@ -1,5 +1,5 @@
-import { hashPassword } from '../../core/passwords.mjs';
-import { ok, created, bad, notFound, conflict, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
+import { hashPassword, verifyPassword } from '../../core/passwords.mjs';
+import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import { USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG, PIPELINE_STAGES } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
@@ -111,13 +111,20 @@ export function adminHandlers(route) {
     return ok(updated);
   });
 
-  route('DELETE', '/admin/candidates/:id', A, async ({ store, params, auth }) => {
+  route('DELETE', '/admin/candidates/:id', A, async ({ store, params, auth, body }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
-    const assessments = await store.list('assessments', { candidate_id: params.id });
-    if (assessments.length) return conflict('Candidate has assessments and cannot be deleted. Edit or archive instead.');
+    if (!str(body?.password)) return bad('Enter your admin password to delete this candidate.');
+    const actor = await store.get('users', auth.user.id);
+    if (!actor || !verifyPassword(body.password, actor.password_hash))
+      return forbidden('Admin password is incorrect.');
     const users = await store.list('users', { candidate_id: params.id });
     if (users.length) return conflict('A portal user is linked to this candidate. Unlink the user first.');
+    const assessments = await store.list('assessments', { candidate_id: params.id });
+    for (const a of assessments) {
+      for (const r of await store.list('responses', { assessment_id: a.id })) await store.remove('responses', r.id);
+      await store.remove('assessments', a.id);
+    }
     await store.remove('candidates', params.id);
     await audit(store, auth.user, 'candidate_deleted', 'candidates', params.id, `Candidate "${c.name}" deleted`);
     return ok({ ok: true });

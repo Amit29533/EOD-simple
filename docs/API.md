@@ -14,7 +14,7 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | Method | Path                          | Notes                                             |
 | ------ | ----------------------------- | ------------------------------------------------- |
 | GET    | /admin/dashboard              | KPIs, pipeline, statuses, activity                |
-| CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline             |
+| CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline; DELETE requires `{password}` (signed-in admin) |
 | CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate   |
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |
