@@ -83,6 +83,9 @@
   --auth-input-bg: rgba(255, 255, 255, .82);
   --auth-spotlight: rgba(21, 155, 150, .16);
   --switch-bg: rgba(19, 35, 56, .05);
+  /* brand mark — the navy the AP handshake logo is drawn on. Fixed in both
+     themes so the logo tile keeps its intended contrast. */
+  --logo-navy: #22314a;
   --radius: 16px;
   --radius-sm: 11px;
   --blur: 18px;
@@ -229,10 +232,11 @@ code { background: var(--grey-bg); padding: 2px 6px; border-radius: 6px; font-fa
 .brand .logo strong { font-family: var(--display); font-size: 18px; letter-spacing: -.01em; display: block; line-height: 1; }
 .brand .logo small { display: block; color: #8da8b7; font-size: 9px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
 .brand .logo .mark {
-  width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; flex: 0 0 auto;
-  color: #fff; font-family: var(--display); font-size: 19px; font-weight: 700;
-  background: linear-gradient(145deg, #35c7b7, #0e8587); box-shadow: 0 7px 18px rgba(18, 180, 170, .23);
+  width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; flex: 0 0 auto;
+  color: #fff; background: var(--logo-navy); box-shadow: 0 7px 18px rgba(10, 22, 40, .32);
+  --logo-cut: var(--logo-navy);   /* gaps show the tile behind the mark */
 }
+.brand .logo .mark .mark-svg { width: 27px; height: auto; display: block; }
 .brand-status { display: flex; align-items: center; gap: 7px; color: #7e9aaa; font-size: 10.5px; margin-top: 19px; letter-spacing: .015em; }
 .brand-status span, .live-status i, .online-dot { width: 7px; height: 7px; border-radius: 50%; background: #45d4ae; box-shadow: 0 0 0 4px rgba(69, 212, 174, .12); display: inline-block; }
 .nav { flex: 1; padding: 17px 13px; overflow-y: auto; position: relative; z-index: 1; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
@@ -518,9 +522,8 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 
 /* brand lockup */
 .auth-logo { display: inline-flex; align-items: center; gap: 12px; }
-.auth-mark { position: relative; width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 14px; color: #fff; background: linear-gradient(150deg, #3ad0bb, #0d7f88); box-shadow: 0 10px 24px rgba(11, 140, 138, .35), inset 0 1px rgba(255, 255, 255, .35); overflow: hidden; }
-.auth-mark svg { width: 23px; height: 23px; fill: currentColor; position: relative; z-index: 1; }
-.auth-mark .mark-cut { fill: #0a5f68; opacity: .75; }
+.auth-mark { position: relative; width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; color: #fff; background: var(--logo-navy); box-shadow: 0 10px 24px rgba(10, 22, 40, .3), inset 0 1px rgba(255, 255, 255, .16); overflow: hidden; --logo-cut: var(--logo-navy); }
+.auth-mark .mark-svg { width: 31px; height: auto; display: block; position: relative; z-index: 1; }
 .auth-mark::after { content: ""; position: absolute; inset: -40%; background: conic-gradient(from 0deg, transparent 0 55%, rgba(255, 255, 255, .55) 72%, transparent 88%); animation: markSpin 6s linear infinite; }
 .auth-wordmark { display: inline-flex; align-items: center; gap: 8px; color: var(--story-ink); }
 .auth-wordmark strong { font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }

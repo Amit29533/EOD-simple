@@ -23,9 +23,9 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 56 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 63 tests: scoring engine, question apportionment, API/RBAC journey,
                     #          Airtable adapter contract, sign-in view, app shell and the
-                    #          allocation dialog (jsdom, optional dependency)
+                    #          allocation dialog, brand mark (jsdom, optional dependency)
 ```
 
 Full end-to-end suites (need a running, seeded server):
@@ -71,6 +71,11 @@ python3 tests/features.py     # 175 checks: every feature — CRUD, validation, 
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
+- **Brand mark** — the AP monogram whose crossbar is a handshake, as a scalable SVG.
+  `public/js/logo.js` is the single source used by the sidebar and sign-in screen: it paints
+  in `currentColor` and punches its gaps with `--logo-cut`, so one mark works on any surface
+  in either theme. Static files in `public/brand/` cover the favicon (simplified so it stays
+  legible under 32px), the app/touch icon and the social preview image.
 - **Animated sign-in + light/dark theming** — glass, blur and motion on the Anthroprime ECOD login; a segmented
   *Auto / Light / Dark* switch there and a toggle in the topbar. The choice is persisted in `localStorage`
   (`anthroprime-ecod-theme`) and applied before first paint, so there is no flash. Every colour is a CSS token
@@ -198,7 +203,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 
 ```
 server.mjs · netlify.toml · package.json
-public/            SPA (index.html, styles.css, js/)
+public/            SPA (index.html, styles.css, js/, brand/ logo assets)
 src/core/          domain constants, passwords, pure scoring engine
 src/storage/       storage contract + json / airtable / netlify-blobs adapters
 src/api/           router, handlers, projections, assessment service

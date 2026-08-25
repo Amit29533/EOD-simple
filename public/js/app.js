@@ -1,6 +1,7 @@
 import { session, me, bootstrap, setUnauthorizedHandler } from './api.js';
 import { initTheme, toggleTheme, resolvedTheme } from './theme.js';
 import { esc, initials, enhanceTables } from './ui.js';
+import { logoSvg } from './logo.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -84,7 +85,7 @@ function renderShell() {
   document.getElementById('sidebar').innerHTML = `
     <div class="brand">
       <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime ECOD home">
-        <span class="mark">A</span>
+        <span class="mark">${logoSvg({ className: 'mark-svg' })}</span>
         <span><strong>Anthroprime</strong><small>ECOD · Capability OS</small></span>
       </a>
       <div class="brand-status"><span></span> Talent readiness platform</div>

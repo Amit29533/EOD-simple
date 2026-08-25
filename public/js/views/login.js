@@ -1,6 +1,7 @@
 import { login } from '../api.js';
 import { esc } from '../ui.js';
 import { themePref, setThemePref, onThemeChange } from '../theme.js';
+import { logoSvg } from '../logo.js';
 
 /* ---------------------------------------------------------------- icons */
 const ICON = {
@@ -74,7 +75,7 @@ export function loginView(view, onSuccess) {
           <header class="story-head">
             <div class="auth-logo">
               <span class="auth-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M12 3.2 4.4 20.8h3.5l1.3-3.1h5.6l1.3 3.1h3.5z"></path><path d="m10.5 14.6 1.5-3.7 1.5 3.7z" class="mark-cut"></path></svg>
+                ${logoSvg({ className: 'mark-svg' })}
               </span>
               <span class="auth-wordmark"><strong>Anthroprime</strong><em>ECOD</em></span>
             </div>
@@ -134,7 +135,7 @@ export function loginView(view, onSuccess) {
             <div class="auth-card-top">
               <div class="auth-logo auth-logo-mobile">
                 <span class="auth-mark" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M12 3.2 4.4 20.8h3.5l1.3-3.1h5.6l1.3 3.1h3.5z"></path><path d="m10.5 14.6 1.5-3.7 1.5 3.7z" class="mark-cut"></path></svg>
+                  ${logoSvg({ className: 'mark-svg' })}
                 </span>
                 <span class="auth-wordmark"><strong>Anthroprime</strong><em>ECOD</em></span>
               </div>
