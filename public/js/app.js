@@ -140,12 +140,35 @@ function renderShell() {
   document.getElementById('nav-scrim').onclick = closeMobileNav;
 }
 
+let rendering = false;
+let rerenderQueued = false;
+
 async function render() {
+  // Guard against concurrent renders (e.g. setting location.hash fires
+  // hashchange while we also call render()): only one view render runs at a
+  // time; a change while rendering queues exactly one follow-up render.
+  if (rendering) { rerenderQueued = true; return; }
+  rendering = true;
+  try { await renderOnce(); }
+  finally {
+    rendering = false;
+    if (rerenderQueued) { rerenderQueued = false; render(); }
+  }
+}
+
+async function renderOnce() {
   const view = document.getElementById('view');
   if (!state.user) {
     document.body.classList.remove('app-body');
     closeMobileNav();
     loginView(view, onSignedIn);
+    return;
+  }
+  // UI config must be present before any view renders. It is public and
+  // normally loaded at boot, but never let a missing meta crash a view.
+  if (!state.meta) state.meta = await bootstrap().catch(() => null);
+  if (!state.meta) {
+    view.innerHTML = `<div class="error-page"><div class="error-icon">!</div><h3>Could not reach the server</h3><p class="muted">Please check your connection and reload the page.</p></div>`;
     return;
   }
   renderShell();
@@ -172,8 +195,11 @@ function onSignedIn({ token, user, candidate: c }) {
   session.token = token;
   state.user = user;
   state.candidate = c;
-  location.hash = DEFAULT_ROUTE[user.role];
-  render();
+  const target = DEFAULT_ROUTE[user.role];
+  // Setting the hash fires hashchange (which renders); only call render()
+  // directly when the hash is already the target, so we never render twice.
+  if (routeHash() === target) render();
+  else location.hash = target;
 }
 
 async function boot() {

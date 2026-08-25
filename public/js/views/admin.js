@@ -135,11 +135,37 @@ async function candidateAction(act, c, roles) {
   } else if (act === 'alloc') {
     await allocateAssessorModal(c);
   } else if (act === 'del') {
-    const yes = await confirmModal('Delete candidate', `Delete "${c.name}"? Candidates with assessments cannot be deleted.`, 'Delete', true);
-    if (!yes) return;
-    const out = await attempt(() => api(`/admin/candidates/${c.id}`, { method: 'DELETE' }), { okMessage: 'Candidate deleted' });
-    if (out) refresh();
+    await deleteCandidateFlow(c);
   }
+}
+
+/**
+ * Password-gated permanent delete: confirm intent, then require the admin's
+ * password. The server cascades over the linked portal login and any open
+ * assessments; candidates with finalized reports are protected (409).
+ * `goBack` navigates to the list afterwards (used from the detail page).
+ */
+async function deleteCandidateFlow(c, { goBack = false } = {}) {
+  const yes = await confirmModal(
+    'Delete candidate',
+    `Permanently delete "${c.name}"? This also removes their portal login and any open (not yet scored) assessments. Candidates with finalized reports cannot be deleted.`,
+    'Continue', true);
+  if (!yes) return;
+  const auth = await formModal({
+    title: `Confirm deletion · ${c.name}`,
+    submitLabel: 'Delete permanently',
+    fields: [{
+      name: 'password', label: 'Admin password', type: 'password', required: true,
+      help: 'This action is permanent and requires your admin password.',
+    }],
+  });
+  if (!auth) return;
+  const out = await attempt(
+    () => api(`/admin/candidates/${c.id}`, { method: 'DELETE', body: { password: auth.password } }),
+    { okMessage: `Candidate "${c.name}" deleted` });
+  if (!out) return;
+  if (goBack) location.hash = '#/candidates';
+  else refresh();
 }
 
 export async function allocateAssessorModal(c, presetRoleId) {
@@ -179,6 +205,7 @@ export async function candidateDetailView(view, { id }) {
             <div class="row">
               <button class="btn secondary sm" id="edit">Edit</button>
               <button class="btn sm" id="alloc">Allocate assessment</button>
+              <button class="btn ghost sm" id="del" style="color:var(--red)">Delete</button>
             </div>
           </div>
           <hr class="hr"/>
@@ -219,6 +246,7 @@ export async function candidateDetailView(view, { id }) {
   const { roles } = await api('/admin/roles');
   view.querySelector('#edit').onclick = () => candidateAction('edit', c, roles);
   view.querySelector('#alloc').onclick = () => allocateAssessorModal(c, c.target_role_id);
+  view.querySelector('#del').onclick = () => deleteCandidateFlow(c, { goBack: true });
 }
 
 /* ================================ Assessments ================================ */
@@ -242,7 +270,7 @@ export async function assessmentsView(view) {
       ${d.assessments.length ? dataTable([
         { label: 'Candidate', render: (a) => `<a href="#/candidates/${a.candidate_id}"><b>${esc(a.candidate_name)}</b></a>` },
         { label: 'Role', render: (a) => esc(a.role_name) },
-        { label: 'Assessor', render: (a) => esc(a.assessor_name || '<span class="muted">unassigned</span>') },
+        { label: 'Assessor', render: (a) => a.assessor_name ? esc(a.assessor_name) : '<span class="muted">unassigned</span>' },
         { label: 'Status', render: (a) => assessmentStatusBadge(M().assessmentStatuses, a.status) },
         { label: 'Outcome', render: (a) => a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '<span class="muted">—</span>' },
         { label: 'Created', render: (a) => `<span class="small muted">${esc(fmtDate(a.created_at))}</span>` },

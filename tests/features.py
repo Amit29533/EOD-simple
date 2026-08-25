@@ -132,14 +132,28 @@ check('PATCH candidate fields', st == 200 and b['name'] == 'Feature C3 Renamed' 
 check('PATCH bogus stage -> 400', call('PATCH', f'/admin/candidates/{C3}', AT, {'stage': 'quantum'})[0] == 400)
 rohit_cid = detR['candidate']['id']
 st, b = call('DELETE', f'/admin/candidates/{rohit_cid}', AT)
-check('delete blocked: candidate has assessments -> 409', st == 409)
-st, b = call('DELETE', f'/admin/candidates/{C2}', AT)
-check('delete blocked: linked user -> 409', st == 409)
+check('delete without admin password -> 403', st == 403 and 'password' in b.get('error', '').lower())
+st, b = call('DELETE', f'/admin/candidates/{rohit_cid}', AT, {'password': 'WRONG-PASSWORD'})
+check('delete with wrong admin password -> 403', st == 403)
+check('candidate untouched after failed deletes', call('GET', f'/admin/candidates/{rohit_cid}', AT)[0] == 200)
+# password-gated cascade: probe candidate with a linked portal user + an open assessment
+st, cdel = call('POST', '/admin/candidates', AT, {'name': 'Delete Cascade Probe', 'target_role_id': RSA})
+CD = cdel['id']
+check('probe candidate created', st == 201)
+check('probe portal user created', call('POST', '/admin/users', AT, {'username': 'feat.delprobe', 'name': 'DP', 'role': 'candidate', 'password': 'del-probe-1', 'candidate_id': CD})[0] == 201)
+check('probe portal login works before delete', call('POST', '/auth/login', body={'username': 'feat.delprobe', 'password': 'del-probe-1'})[0] == 200)
+check('probe open assessment allocated', call('POST', '/admin/assessments', AT, {'candidate_id': CD, 'role_id': RSA})[0] == 201)
+st, b = call('DELETE', f'/admin/candidates/{CD}', AT, {'password': 'ECOD-admin-2026'})
+check('password-gated delete cascades user + open assessment -> 200', st == 200 and b.get('removed_users') == 1 and b.get('removed_assessments') == 1)
+check('deleted candidate gone', call('GET', f'/admin/candidates/{CD}', AT)[0] == 404)
+check('probe portal login gone after cascade delete', call('POST', '/auth/login', body={'username': 'feat.delprobe', 'password': 'del-probe-1'})[0] == 401)
 st, lst = call('GET', '/admin/candidates?stage=intake', token=AT)
 sana = next((c for c in lst['candidates'] if 'Sana' in c['name']), None)
 if sana:
     st, _ = call('DELETE', f"/admin/candidates/{sana['id']}", AT)
-    check('delete unlinked candidate w/o assessments -> 200', st == 200)
+    check('delete still requires password for unlinked candidates -> 403', st == 403)
+    st, _ = call('DELETE', f"/admin/candidates/{sana['id']}", AT, {'password': 'ECOD-admin-2026'})
+    check('delete unlinked candidate w/o assessments (password) -> 200', st == 200)
     check('deleted candidate gone', call('GET', f"/admin/candidates/{sana['id']}", AT)[0] == 404)
 else: check('sana present for deletion test', False)
 
@@ -284,6 +298,8 @@ check('finalize locked: scoring -> 409', call('PUT', f'/assessor/assessments/{AI
 check('finalize locked: reassignment -> 409', call('PATCH', f'/admin/assessments/{AID}', AT, {'assessor_id': meA['user']['id']})[0] == 409)
 check('delete scored -> 409', call('DELETE', f'/admin/assessments/{AID}', AT)[0] == 409)
 check('stage advanced to gap_mapping', call('GET', f'/admin/candidates/{C3}', AT)[1]['candidate']['stage'] == 'gap_mapping')
+check('candidate with finalized report stays protected even with admin password -> 409',
+      call('DELETE', f'/admin/candidates/{C3}', AT, {'password': 'ECOD-admin-2026'})[0] == 409)
 # reports by audience
 st, crep = call('GET', f'/candidate/reports/{AID}', T3)
 blob = json.dumps(crep)

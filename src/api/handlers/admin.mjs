@@ -1,5 +1,5 @@
-import { hashPassword } from '../../core/passwords.mjs';
-import { ok, created, bad, notFound, conflict, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
+import { hashPassword, verifyPassword } from '../../core/passwords.mjs';
+import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import { USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG, PIPELINE_STAGES } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
@@ -111,16 +111,44 @@ export function adminHandlers(route) {
     return ok(updated);
   });
 
-  route('DELETE', '/admin/candidates/:id', A, async ({ store, params, auth }) => {
+  // Password-gated destructive delete. The signed-in admin must re-enter
+  // their own password; the delete then cascades over everything that hangs
+  // off the candidate so no orphaned login or draft data is left behind:
+  //   candidate -> open (unscored) assessments + their draft responses
+  //             -> linked portal user(s) + their live sessions
+  // Candidates with FINALIZED (scored/validated) reports are protected.
+  route('DELETE', '/admin/candidates/:id', A, async ({ store, params, auth, body }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
+    if (!body?.password || typeof body.password !== 'string')
+      return forbidden('Admin password is required to delete a candidate.');
+    if (!verifyPassword(body.password, auth.user.password_hash))
+      return forbidden('Incorrect admin password — deletion cancelled.');
+
     const assessments = await store.list('assessments', { candidate_id: params.id });
-    if (assessments.length) return conflict('Candidate has assessments and cannot be deleted. Edit or archive instead.');
+    if (assessments.some((a) => ['scored', 'validated'].includes(a.status)))
+      return conflict('This candidate has finalized assessment reports and cannot be deleted.');
+
+    let removedAssessments = 0;
+    for (const a of assessments) {
+      for (const r of await store.list('responses', { assessment_id: a.id })) await store.remove('responses', r.id);
+      await store.remove('assessments', a.id);
+      removedAssessments += 1;
+    }
     const users = await store.list('users', { candidate_id: params.id });
-    if (users.length) return conflict('A portal user is linked to this candidate. Unlink the user first.');
+    for (const u of users) {
+      for (const s of await store.list('sessions', { user_id: u.id })) await store.remove('sessions', s.id);
+      await store.remove('users', u.id);
+    }
     await store.remove('candidates', params.id);
-    await audit(store, auth.user, 'candidate_deleted', 'candidates', params.id, `Candidate "${c.name}" deleted`);
-    return ok({ ok: true });
+
+    const cascade = [
+      removedAssessments ? `${removedAssessments} open assessment(s)` : '',
+      users.length ? `portal user(s) ${users.map((u) => `"${u.username}"`).join(', ')}` : '',
+    ].filter(Boolean).join(' and ');
+    await audit(store, auth.user, 'candidate_deleted', 'candidates', params.id,
+      `Candidate "${c.name}" deleted${cascade ? ` (also removed ${cascade})` : ''}`);
+    return ok({ ok: true, removed_users: users.length, removed_assessments: removedAssessments });
   });
 
   // ------------------------------------------------ users & access
