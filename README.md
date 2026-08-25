@@ -23,9 +23,10 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 66 tests: scoring engine, question apportionment, API/RBAC journey,
-                    #          Airtable adapter contract, sign-in view, app shell and the
-                    #          allocation dialog, brand mark (jsdom, optional dependency)
+npm test            # 75 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #          Airtable adapter contract, sign-in view, app shell, the
+                    #          allocation dialog and the published-catalogue sync
+                    #          (jsdom is optional; installed for the UI suites)
 ```
 
 `npm run seed` is idempotent for an existing store: it adds newly published RSA seed
@@ -36,9 +37,10 @@ Full end-to-end suites (need a running, seeded server):
 
 ```bash
 python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 175 checks: every feature — CRUD, validation, config editing,
+python3 tests/features.py     # 186 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
-                              # password-gated candidate deletion, capped question allocation
+                              # password-gated candidate deletion, capped question allocation,
+                              # published-catalogue sync (both honour BASE=http://…/api)
 ```
 
 ### Demo sign-ins (seeded)
@@ -53,8 +55,8 @@ python3 tests/features.py     # 175 checks: every feature — CRUD, validation, 
 > ⚠️ These are development credentials for the seeded demo. Rotate them before any real use.
 
 **End-to-end demo loop (2 minutes):**
-1. Sign in as **rohit.verma** → *Start assessment* → answer the 21-question RSA quiz (autosaves) → *Submit*.
-2. Sign in as **priya.nair** → *Score now* → review auto-scored MCQs, score the 7 open answers against the rubric → *Finalize & generate report*.
+1. Sign in as **rohit.verma** → *Start assessment* → answer the full-bank RSA quiz (autosaves) → *Submit*.
+2. Sign in as **priya.nair** → *Score now* → review auto-scored MCQs, score the open answers against the rubric → *Finalize & generate report*.
 3. Back as **rohit.verma** → *View report card*: overall %, readiness band, per-competency levels vs targets, **areas to improve** with recommended focus. (Print / Save PDF supported.)
 4. As **admin**: dashboard updated, audit trail captured, candidate advanced to *Gap Mapping*.
 
@@ -71,8 +73,11 @@ python3 tests/features.py     # 175 checks: every feature — CRUD, validation, 
   competency and scores on the same weighted basis as the full bank. Questions within each
   competency are sampled randomly for each capped allocation. The dialog offers presets through
   50, previews the split before you commit, and the served set is frozen into the assessment
-  snapshot. The seeded RSA track contains **105 questions (15 per competency)** so capped
-  allocations can sample a broad, weighted set.
+  snapshot. The effective ceiling is `min(50, active bank)` — when the bank is smaller than the
+  cap the dialog says so and offers a one-click **published-catalogue top-up** (the same sync
+  `npm run seed` performs, available in-app for deployments with no CLI). The seeded RSA track
+  contains **105 questions (15 per competency)** so capped allocations can sample a broad,
+  weighted set.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.

@@ -8,6 +8,8 @@ import {
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { buildSnapshot, roleBank } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
+import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
+import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
 
 const A = ['admin'];
 
@@ -454,11 +456,35 @@ export function adminHandlers(route) {
     // role has more than the product maximum, the preview never promises more
     // than the 50-question allocation cap.
     const previewLimit = limit === null ? null : Math.min(limit, MAX_ASSESSMENT_QUESTIONS);
+    // Catalogue context: when this track matches the published catalogue and
+    // the bank is smaller than the allocation cap, the UI can offer a one-click
+    // top-up instead of leaving the admin stuck below the cap.
+    const isCatalogueRole = bank.role.key === RSA_ROLE.key;
+    const catalogue = isCatalogueRole
+      ? { total: RSA_QUESTIONS.length, missing: catalogueMissing(await store.list('questions', { role_id: bank.role.id })) }
+      : null;
     return ok({
       role: { id: bank.role.id, name: bank.role.name },
       max_questions: MAX_ASSESSMENT_QUESTIONS,
+      catalogue,
       ...allocationPreview(bank.questions, bank.competencies, previewLimit),
     });
+  });
+
+  // ------------------------------------------------ published catalogue
+  // The effective allocation ceiling is min(cap, bank size). These endpoints
+  // let an admin top a small bank up to the published catalogue from inside
+  // the app — the same sync `npm run seed` performs, available to deployments
+  // (e.g. Netlify) where there is no CLI.
+  route('GET', '/admin/content/catalogue', A, async ({ store }) =>
+    ok(await catalogueStatus(store)));
+
+  route('POST', '/admin/content/sync', A, async ({ store, auth }) => {
+    const result = await syncCatalogue(store);
+    if (result.error) return bad(result.error);
+    await audit(store, auth.user, 'catalogue_synced', 'questions', result.role_id,
+      `Published catalogue synced: ${result.added} question(s) added, bank now ${result.bank_total}`);
+    return ok(result);
   });
 
   route('POST', '/admin/assessments', A, async ({ store, body, auth }) => {

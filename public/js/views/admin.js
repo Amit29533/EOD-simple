@@ -217,15 +217,16 @@ export async function allocateAssessorModal(c, presetRoleId) {
           </label>
           <label class="scope-opt" data-scope="limit">
             <input type="radio" name="al-scope" value="limit" />
-            <span class="scope-copy"><b>Limit to a set number</b><small>Choose up to ${maxQuestions} questions, balanced across competencies by weight</small></span>
+            <span class="scope-copy"><b>Limit to a set number</b><small>Choose up to ${maxQuestions} questions — or the whole bank if it is smaller — balanced across competencies by weight</small></span>
           </label>
           <div class="scope-count" id="al-count-row" hidden>
             <label class="f" style="margin:0">
-              <span class="lbl">Number of questions <span class="req">*</span></span>
+              <span class="lbl">Number of questions <span class="req">*</span> <span class="muted scope-count-max" id="al-count-max">1–${maxQuestions}</span></span>
               <input type="number" id="al-count" min="1" max="${maxQuestions}" step="1" inputmode="numeric" placeholder="e.g. 10" />
             </label>
             <div class="scope-presets" id="al-presets"></div>
           </div>
+          <div class="scope-bank-note" id="al-bank-note" hidden></div>
         </fieldset>
 
         <div class="alloc-preview" id="al-preview" aria-live="polite"></div>`,
@@ -238,7 +239,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
               const n = Number(count);
               if (!Number.isInteger(n) || n < 1) { toast('Enter a whole number of questions (1 or more).', 'error'); return; }
               if (n > maxQuestions) { toast(`You can allocate up to ${maxQuestions} questions.`, 'error'); return; }
-              if (plan && n > plan.bank_total) { toast(`This track only has ${plan.bank_total} active question(s).`, 'error'); return; }
+              if (plan && n > plan.bank_total) { toast(`This track only has ${plan.bank_total} active question(s) — grow the bank to allocate more.`, 'error'); return; }
             }
             btn.disabled = true;
             close();
@@ -254,8 +255,46 @@ export async function allocateAssessorModal(c, presetRoleId) {
         const preview = el.querySelector('#al-preview');
         const countRow = el.querySelector('#al-count-row');
         const countInput = el.querySelector('#al-count');
+        const countMax = el.querySelector('#al-count-max');
         const presets = el.querySelector('#al-presets');
         const allHint = el.querySelector('#al-all-hint');
+        const bankNote = el.querySelector('#al-bank-note');
+
+        // When the bank is smaller than the platform cap, explain WHY and offer
+        // the published-catalogue top-up inline — the cap should never feel
+        // arbitrary (or silently smaller than the configured 50).
+        const renderBankNote = () => {
+          if (!plan || !plan.bank_total || plan.bank_total >= maxQuestions) {
+            bankNote.hidden = true;
+            bankNote.innerHTML = '';
+            return;
+          }
+          const missing = Number(plan.catalogue?.missing) || 0;
+          const bank = plan.bank_total;
+          bankNote.hidden = false;
+          bankNote.innerHTML = `
+            <div class="scope-bank-note-copy">
+              <b>This track's bank has only ${bank} question${bank === 1 ? '' : 's'}</b>
+              <small>Assessments can serve up to ${maxQuestions}, but a cap can never exceed the bank.
+                ${missing
+                  ? `Top it up with the ${missing} remaining published question${missing === 1 ? '' : 's'} below, or add your own in the Question Bank.`
+                  : 'Add questions in the Question Bank to use the full cap.'}</small>
+            </div>
+            ${missing
+              ? `<button type="button" class="btn sm" id="al-sync-catalogue">＋ Add ${missing} published question${missing === 1 ? '' : 's'}</button>`
+              : ''}`;
+          const syncBtn = bankNote.querySelector('#al-sync-catalogue');
+          if (syncBtn) syncBtn.onclick = async () => {
+            syncBtn.disabled = true;
+            syncBtn.textContent = 'Adding…';
+            const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
+            if (!out) { syncBtn.disabled = false; syncBtn.textContent = `＋ Add ${missing} published question${missing === 1 ? '' : 's'}`; return; }
+            toast(out.added
+              ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
+              : 'The bank already has the full published catalogue.', 'success');
+            loadPlan();
+          };
+        };
 
         const renderPreview = () => {
           if (!plan) { preview.innerHTML = `<div class="alloc-preview-loading">${'<span class="spinner"></span>'}<span>Reading the question bank…</span></div>`; return; }
@@ -295,6 +334,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
             allHint.textContent = `All ${plan.bank_total} active question${plan.bank_total === 1 ? '' : 's'} for this track`;
             const max = Math.min(plan.bank_total, maxQuestions);
             countInput.max = String(max);
+            countMax.textContent = `1–${max}`;
             const options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
               .filter((n) => n < plan.bank_total && n <= max);
             presets.innerHTML = options.map((n) => `<button type="button" class="chip preset ${Number(count) === n ? 'selected' : ''}" data-preset="${n}">${n}</button>`).join('')
@@ -307,6 +347,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
               loadPlan();
             }));
           }
+          renderBankNote();
           renderPreview();
         };
 
@@ -624,16 +665,25 @@ function renderFramework(box, role, fw, done) {
 export async function questionsView(view) {
   view.innerHTML = loading();
   const filterRole = new URLSearchParams(location.hash.split('?')[1] || '').get('role') || '';
-  const [{ roles }, { questions }] = await Promise.all([
+  const [{ roles }, { questions }, catalogue] = await Promise.all([
     api('/admin/roles'),
     api(`/admin/questions${filterRole ? `?role_id=${filterRole}` : ''}`),
+    attempt(() => api('/admin/content/catalogue')),
   ]);
   const typeLabel = Object.fromEntries(M().questionTypes.map((t) => [t.key, t.label]));
+  const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Assessment design</div><h1>Question bank<span class="heading-dot">.</span></h1><p>Build thoughtful prompts that reveal how capability shows up in the real world.</p></div>
       <div class="heading-actions"><button class="btn" id="add-q">＋ Add question</button></div>
     </div>
+    ${missing ? `
+    <div class="card flat catalogue-strip">
+      <span class="info-strip-icon">＋</span>
+      <span class="catalogue-strip-copy"><b>${missing} published question${missing === 1 ? '' : 's'} not in this workspace yet.</b>
+        <small>The published ${esc(catalogue.role.name)} catalogue carries ${catalogue.catalogue_total} questions — this bank has ${catalogue.bank_total}, so assessments top out below the ${maxAssessmentQuestions()}-question cap.</small></span>
+      <button class="btn sm" id="sync-catalogue">Add published questions</button>
+    </div>` : ''}
     <div class="card flat toolbar-card">
       <div class="toolbar-label"><span class="toolbar-icon">⌘</span><span>Show questions for</span></div>
       <select id="q-role" aria-label="Filter questions by role"><option value="">All roles</option>
@@ -650,6 +700,17 @@ export async function questionsView(view) {
         { label: '', cls: 'actions', render: (qq) => `<button class="btn ghost sm" data-edit="${qq.id}">Edit</button><button class="btn ghost sm" style="color:var(--red)" data-del="${qq.id}">Delete</button>` },
       ], questions) : emptyState('No questions', filterRole ? 'This role has no questions yet.' : 'Choose a role and add questions.')}
     </div>`;
+  const syncBtn = view.querySelector('#sync-catalogue');
+  if (syncBtn) syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = 'Adding…';
+    const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
+    if (!out) { syncBtn.disabled = false; syncBtn.textContent = 'Add published questions'; return; }
+    toast(out.added
+      ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
+      : 'The bank already has the full published catalogue.', 'success');
+    questionsView(view);
+  };
   view.querySelector('#q-role').onchange = (e) => { location.hash = e.target.value ? `#/questions?role=${e.target.value}` : '#/questions'; };
   const editQ = async (existing) => {
     const roleId = existing?.role_id || filterRole || roles[0]?.id;

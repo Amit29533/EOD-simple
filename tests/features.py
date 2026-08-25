@@ -378,8 +378,9 @@ check('question-plan: limit keeps bank_total visible', capped['bank_total'] == B
 check('question-plan: 8 spread over competencies, none over-drawn',
       sum(r['count'] for r in capped['per_competency']) == 8
       and all(r['count'] >= 0 for r in capped['per_competency']))
-check('question-plan: limit above the bank is clamped to the bank',
-      call('GET', f'/admin/roles/{RSA}/question-plan?limit={BANK + 50}', AT)[1]['total'] == BANK)
+st, over = call('GET', f'/admin/roles/{RSA}/question-plan?limit={BANK + 50}', AT)
+check('question-plan: limit above the cap is clamped to min(cap, bank)',
+      st == 200 and over['total'] == min(BANK + 50, over['max_questions'], BANK))
 check('question-plan: limit=0 rejected', call('GET', f'/admin/roles/{RSA}/question-plan?limit=0', AT)[0] == 400)
 check('question-plan: non-numeric limit rejected', call('GET', f'/admin/roles/{RSA}/question-plan?limit=abc', AT)[0] == 400)
 check('question-plan: unknown role -> 404', call('GET', '/admin/roles/nope/question-plan', AT)[0] == 404)
@@ -437,6 +438,51 @@ st, unrel = call('GET', '/admin/assessments', AT)
 check('default allocation (no question_count) still serves the whole bank',
       any(a['question_limit'] is None and a['question_count'] == a['bank_total']
           for a in unrel['assessments'] if a['bank_total']))
+
+# ================================ S9 published catalogue sync (bank below the cap)
+section('S9 · published catalogue: status, sync, unlocking the 50-question cap')
+
+st, cat = call('GET', '/admin/content/catalogue', AT)
+check('catalogue status: available for the RSA track', st == 200 and cat['available'] is True
+      and cat['role']['key'] == 'databricks-rsa')
+CAT_TOTAL = cat['catalogue_total']
+check('catalogue status: seeded bank is complete', cat['bank_total'] == CAT_TOTAL and cat['missing'] == 0)
+check('catalogue endpoints are admin-only',
+      call('GET', '/admin/content/catalogue', PT)[0] == 403
+      and call('POST', '/admin/content/sync', PT)[0] == 403
+      and call('GET', '/admin/content/catalogue')[0] == 401)
+
+st, plan = call('GET', f'/admin/roles/{RSA}/question-plan', AT)
+check('question-plan carries catalogue context', st == 200
+      and plan['catalogue']['total'] == CAT_TOTAL and plan['catalogue']['missing'] == 0)
+st, oplan = call('GET', f'/admin/roles/{SR}/question-plan', AT)
+check('question-plan omits catalogue context for other tracks', oplan['catalogue'] is None)
+
+# reproduce the "stuck below the cap" state: trim the bank below 50 questions
+_, qs = call('GET', f'/admin/questions?role_id={RSA}', AT)
+TRIM = CAT_TOTAL - 45
+victims = [q['id'] for q in qs['questions']][:TRIM]
+for qid in victims: call('DELETE', f'/admin/questions/{qid}', AT)
+st, cat2 = call('GET', '/admin/content/catalogue', AT)
+check('catalogue status: trimmed bank reports the gap',
+      cat2['bank_total'] == CAT_TOTAL - TRIM and cat2['missing'] == TRIM)
+st, plan2 = call('GET', f'/admin/roles/{RSA}/question-plan?limit=50', AT)
+check('a bank smaller than the cap limits the plan to the bank', plan2['total'] == 45)
+
+st, sync = call('POST', '/admin/content/sync', AT)
+check('sync restores the trimmed bank', st == 200 and sync['added'] == TRIM
+      and sync['bank_total'] == CAT_TOTAL)
+check('sync is idempotent', call('POST', '/admin/content/sync', AT)[1]['added'] == 0)
+st, aud = call('GET', '/admin/audit?entity=questions', AT)
+check('catalogue sync is audited', any(e['action'] == 'catalogue_synced' for e in aud['events']))
+
+# the original complaint, end to end: a full-bank workspace allocates 50 questions
+st, ccap = call('POST', '/admin/candidates', AT, {'name': 'Full Cap After Sync'})
+st, full = call('POST', '/admin/assessments', AT, {'candidate_id': ccap['id'], 'role_id': RSA, 'question_count': 50})
+check('allocate the full 50-question cap -> 201',
+      st == 201 and len(full['snapshot_json']['questions']) == 50
+      and full['snapshot_json']['question_limit'] == 50
+      and full['snapshot_json']['bank_total'] == CAT_TOTAL)
 
 print()
 print(f'PASSED {PASSED} / {PASSED + len(FAILS)}')

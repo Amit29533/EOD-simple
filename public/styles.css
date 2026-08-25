@@ -819,7 +819,17 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .scope-copy b { font-size: 13px; color: var(--ink); }
 .scope-copy small { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; }
 .scope-count { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: end; padding: 4px 2px 2px; }
+.scope-count-max { font-weight: 600; font-size: 11px; }
 .scope-presets { display: flex; flex-wrap: wrap; gap: 7px; padding-bottom: 9px; }
+.scope-bank-note { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 11px 13px; border: 1px solid var(--amber-line); background: var(--amber-bg); border-radius: var(--radius-sm); }
+.scope-bank-note-copy { display: grid; gap: 3px; min-width: 0; }
+.scope-bank-note-copy b { font-size: 12.5px; color: var(--amber); }
+.scope-bank-note-copy small { font-size: 11.5px; color: var(--ink-2); line-height: 1.5; }
+.catalogue-strip { display: flex; align-items: center; gap: 12px; padding: 13px 16px; margin-bottom: 16px; }
+.catalogue-strip-copy { display: grid; gap: 2px; flex: 1; min-width: 0; color: var(--ink-2); font-size: 11.5px; }
+.catalogue-strip-copy b { color: var(--ink); font-size: 12.5px; }
+.catalogue-strip-copy small { color: var(--ink-3); font-size: 11px; line-height: 1.5; }
+.catalogue-strip .btn { flex: none; }
 .chip.preset { border: 1px solid var(--line-strong); background: var(--surface); cursor: pointer; font-family: inherit; transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .chip.preset:hover { border-color: var(--brand); color: var(--brand-dark); }
 .chip.preset.selected { background: var(--sel-bg); color: var(--sel-ink); border-color: var(--brand); }
