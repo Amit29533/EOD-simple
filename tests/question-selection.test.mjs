@@ -74,6 +74,14 @@ test('selection is deterministic', () => {
   assert.deepEqual(a, b);
 });
 
+test('randomized selection changes the question sample but keeps weighted quotas', () => {
+  const normal = selectQuestions(bank, comps, 10).map((q) => q.id);
+  const sampled = selectQuestions(bank, comps, 10, { randomize: true, rng: () => 0 }).map((q) => q.id);
+  assert.equal(sampled.length, 10);
+  assert.deepEqual(countBy(selectQuestions(bank, comps, 10, { randomize: true, rng: () => 0 })), { c1: 5, c2: 3, c3: 2 });
+  assert.notDeepEqual(sampled, normal, 'a capped allocation should not always use the first questions');
+});
+
 test('unweighted competencies split evenly', () => {
   const flat = comps.map((c) => ({ ...c, weight: 0 }));
   assert.deepEqual(countBy(selectQuestions(bank, flat, 9)), { c1: 3, c2: 3, c3: 3 });

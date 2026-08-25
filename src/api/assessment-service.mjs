@@ -45,7 +45,9 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
   const normalizedLimit = Number.isInteger(requested) && requested > 0
     ? Math.min(requested, MAX_ASSESSMENT_QUESTIONS)
     : null;
-  const served = selectQuestions(bank.questions, bank.competencies, normalizedLimit);
+  const served = selectQuestions(bank.questions, bank.competencies, normalizedLimit, {
+    randomize: normalizedLimit !== null && normalizedLimit < bank.questions.length,
+  });
   return JSON.parse(JSON.stringify({
     role: bank.role,
     framework: bank.framework,

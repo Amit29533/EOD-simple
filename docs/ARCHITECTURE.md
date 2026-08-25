@@ -38,10 +38,12 @@ the questions the candidate saw — no downstream code needed changing.
 Selection lives in `src/core/question-selection.mjs` (pure, unit-tested). X seats are
 apportioned across competencies **in proportion to their weight** using the
 largest-remainder method with iterative capping, which guarantees:
-exactly `min(X, bank)` questions; no competency drawn beyond its stock; every competency
-represented while X allows (so nothing silently scores 0%); and a deterministic,
-reproducible set for a given bank and X. `GET /admin/roles/:id/question-plan?limit=X`
-runs the same code so the admin UI previews precisely what allocation will produce.
+exactly `min(X, bank)` questions; no competency drawn beyond its stock; and every
+competency represented while X allows (so nothing silently scores 0%). Within each
+competency, a capped allocation samples questions randomly so repeated candidates do
+not always see the same items. The selected IDs are frozen in the immutable snapshot,
+which makes each sitting auditable. `GET /admin/roles/:id/question-plan?limit=X`
+runs the same quota code so the admin UI previews the split that allocation will use.
 
 ## 3. Everything domain-specific is data
 Roles, competencies (weights, target levels, enrichment hints), the question bank and the

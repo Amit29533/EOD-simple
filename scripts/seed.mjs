@@ -94,6 +94,11 @@ const qByComp = {};
 for (const q of snapshot.questions) (qByComp[q.competency_id] ||= []).push(q);
 const correctOrFirst = (q) => q.type === 'mcq_single' ? q.correct_option_ids[0] : q.correct_option_ids;
 const wrongSingle = (q) => q.options.find((o) => o.id !== q.correct_option_ids[0])?.id;
+const fallbackAnswer = (q) => {
+  if (q.type === 'mcq_single' || q.type === 'mcq_multi') return correctOrFirst(q);
+  if (q.type === 'scale') return 4;
+  return 'A considered answer covering the architecture, trade-offs and rollout plan.';
+};
 
 const answers = new Map();
 const scores = new Map();   // manual assessor scores per question id
@@ -128,13 +133,19 @@ for (const [compKey, compId] of Object.entries(compIds)) {
 
 for (const q of snapshot.questions) {
   const manual = q.type === 'text';
+  const answer = answers.get(q.id) ?? fallbackAnswer(q);
+  // The worked example predates the expanded bank, so give newly added manual
+  // questions a plausible passing score instead of leaving the seed unable to
+  // finalize. The deliberately weak original examples above still keep their
+  // lower scores and continue to surface useful gaps.
+  const assessorScore = manual ? (scores.get(q.id) ?? Math.max(0, Math.ceil(q.points * 0.8))) : undefined;
   await store.insert('responses', {
     assessment_id: nehaAssessment.id, question_id: q.id,
-    answer: answers.get(q.id) ?? (manual ? 'See transcript.' : null),
+    answer,
     auto_score: manual ? null : undefined,
-    assessor_score: manual ? scores.get(q.id) : undefined,
+    assessor_score: assessorScore,
     assessor_comment: manual
-      ? (scores.get(q.id) >= 4
+      ? (assessorScore >= 4
           ? 'Solid, structured answer with the expected evidence.'
           : 'Superficial - missing observability-driven diagnosis and durable controls.')
       : '',
