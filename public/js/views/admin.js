@@ -135,15 +135,9 @@ async function candidateAction(act, c, roles) {
   } else if (act === 'alloc') {
     await allocateAssessorModal(c);
   } else if (act === 'del') {
-    const vals = await formModal({
-      title: `Delete ${c.name}`,
-      submitLabel: 'Delete',
-      fields: [
-        { name: 'password', label: 'Admin password', type: 'password', required: true, help: 'Enter your admin password to confirm. Assessments and answers will be removed. Unlink any portal user first.' },
-      ],
-    });
-    if (!vals) return;
-    const out = await attempt(() => api(`/admin/candidates/${c.id}`, { method: 'DELETE', body: { password: vals.password } }), { okMessage: 'Candidate deleted' });
+    const yes = await confirmModal('Delete candidate', `Delete "${c.name}"? Candidates with assessments cannot be deleted.`, 'Delete', true);
+    if (!yes) return;
+    const out = await attempt(() => api(`/admin/candidates/${c.id}`, { method: 'DELETE' }), { okMessage: 'Candidate deleted' });
     if (out) refresh();
   }
 }

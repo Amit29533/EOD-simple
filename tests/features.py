@@ -131,25 +131,16 @@ st, b = call('PATCH', f'/admin/candidates/{C3}', AT, {'name': 'Feature C3 Rename
 check('PATCH candidate fields', st == 200 and b['name'] == 'Feature C3 Renamed' and b['years_experience'] == 7)
 check('PATCH bogus stage -> 400', call('PATCH', f'/admin/candidates/{C3}', AT, {'stage': 'quantum'})[0] == 400)
 rohit_cid = detR['candidate']['id']
-ADMIN_PW = 'ECOD-admin-2026'
-st, b = call('DELETE', f'/admin/candidates/{C3}', AT)
-check('delete without password -> 400', st == 400)
-st, b = call('DELETE', f'/admin/candidates/{C3}', AT, {'password': 'wrong-admin-pw'})
-check('delete with wrong password -> 403', st == 403)
-st, b = call('DELETE', f'/admin/candidates/{rohit_cid}', AT, {'password': ADMIN_PW})
-check('delete blocked: linked user (even with assessments) -> 409', st == 409)
-st, b = call('DELETE', f'/admin/candidates/{C2}', AT, {'password': ADMIN_PW})
+st, b = call('DELETE', f'/admin/candidates/{rohit_cid}', AT)
+check('delete blocked: candidate has assessments -> 409', st == 409)
+st, b = call('DELETE', f'/admin/candidates/{C2}', AT)
 check('delete blocked: linked user -> 409', st == 409)
 st, lst = call('GET', '/admin/candidates?stage=intake', token=AT)
 sana = next((c for c in lst['candidates'] if 'Sana' in c['name']), None)
 if sana:
-    st, asg_s = call('POST', '/admin/assessments', AT, {'candidate_id': sana['id'], 'role_id': RSA})
-    check('allocate assessment on unlinked candidate', st == 201)
-    st, _ = call('DELETE', f"/admin/candidates/{sana['id']}", AT, {'password': ADMIN_PW})
-    check('delete unlinked candidate cascades assessments -> 200', st == 200)
+    st, _ = call('DELETE', f"/admin/candidates/{sana['id']}", AT)
+    check('delete unlinked candidate w/o assessments -> 200', st == 200)
     check('deleted candidate gone', call('GET', f"/admin/candidates/{sana['id']}", AT)[0] == 404)
-    if st == 200 and asg_s.get('id'):
-        check('cascaded assessment gone', call('GET', f"/admin/assessments", AT)[1]['assessments'] and all(a['id'] != asg_s['id'] for a in call('GET', '/admin/assessments', AT)[1]['assessments']))
 else: check('sana present for deletion test', False)
 
 # ================================ S4 role/competency/question/framework configuration
