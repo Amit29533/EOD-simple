@@ -21,12 +21,16 @@ New technologies, roles, competencies, questions, weights and scoring frameworks
 Requires Node.js ≥ 20. No `npm install` needed for local development.
 
 ```bash
-npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
+npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
 npm test            # 65 tests: scoring engine, question apportionment, API/RBAC journey,
                     #          Airtable adapter contract, sign-in view, app shell and the
                     #          allocation dialog, brand mark (jsdom, optional dependency)
 ```
+
+`npm run seed` is idempotent for an existing store: it adds newly published RSA seed
+questions without recreating users or changing existing assessment snapshots. Use
+`npm run seed:fresh` only when you intentionally want to reset the local JSON store.
 
 Full end-to-end suites (need a running, seeded server):
 
