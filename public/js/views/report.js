@@ -24,7 +24,7 @@ export function renderReport(view, { candidate, report, assessor_name, audience 
     <div class="card report">
       <div class="row between" style="align-items:flex-start">
         <div>
-          <div class="small muted" style="text-transform:uppercase;letter-spacing:.08em;font-weight:700">Anthroprime EOD Capability Report</div>
+          <div class="small muted" style="text-transform:uppercase;letter-spacing:.08em;font-weight:700">Anthroprime ECOD Capability Report</div>
           <h1 style="margin:6px 0 2px">${esc(candidate?.name || 'Candidate')}</h1>
           <div class="muted">${esc(candidate?.current_title || '')}${candidate?.current_title ? ' · ' : ''}${esc(report.role?.name || '')}</div>
           <div class="small muted" style="margin-top:6px">

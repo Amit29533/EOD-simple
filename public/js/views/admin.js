@@ -168,24 +168,156 @@ async function deleteCandidateFlow(c, { goBack = false } = {}) {
   else refresh();
 }
 
+/**
+ * Allocate an assessment: pick the track, the assessor, and how many questions
+ * to serve. The question count is optional — "full bank" stays the default —
+ * and a live preview shows exactly how a cap spreads across competencies
+ * (weighted, so a shorter assessment still scores fairly).
+ */
 export async function allocateAssessorModal(c, presetRoleId) {
   const [{ roles }, { users }] = await Promise.all([api('/admin/roles'), api('/admin/users')]);
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   const activeRoles = roles.filter((r) => r.active !== false);
   if (!activeRoles.length) { toast('Create an assessment track (role) with questions first.', 'error'); return; }
   if (!assessors.length) { toast('Create an assessor user first (Users & Access).', 'error'); return; }
-  const vals = await formModal({
-    title: `Allocate assessment · ${c.name}`,
-    fields: [
-      { name: 'role_id', label: 'Role / track', type: 'select', required: true, allowEmpty: false, options: activeRoles.map((r) => ({ value: r.id, label: `${r.name} (${r.question_count} questions)` })) },
-      { name: 'assessor_id', label: 'Assessor', type: 'select', allowEmpty: false, options: assessors.map((u) => ({ value: u.id, label: u.name })) },
-    ],
-    values: { role_id: presetRoleId || c.target_role_id || activeRoles[0].id },
-    submitLabel: 'Allocate',
+
+  const initialRole = activeRoles.find((r) => r.id === (presetRoleId || c.target_role_id)) || activeRoles[0];
+  const vals = await new Promise((resolve) => {
+    let roleId = initialRole.id;
+    let assessorId = assessors[0].id;
+    let mode = 'all';              // 'all' | 'limit'
+    let count = '';
+    let plan = null;
+    let planToken = 0;
+
+    modal({
+      title: `Allocate assessment · ${c.name}`,
+      wide: true,
+      bodyHtml: `
+        <div class="f-row">
+          <label class="f"><span class="lbl">Role / track <span class="req">*</span></span>
+            <select id="al-role">${activeRoles.map((r) => `<option value="${esc(r.id)}" ${r.id === roleId ? 'selected' : ''}>${esc(r.name)} · ${esc(r.question_count)} questions</option>`).join('')}</select></label>
+          <label class="f"><span class="lbl">Assessor <span class="req">*</span></span>
+            <select id="al-assessor">${assessors.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}</select></label>
+        </div>
+
+        <fieldset class="alloc-scope">
+          <legend class="lbl">Questions to serve</legend>
+          <label class="scope-opt selected" data-scope="all">
+            <input type="radio" name="al-scope" value="all" checked />
+            <span class="scope-copy"><b>Full question bank</b><small id="al-all-hint">Every active question for this track</small></span>
+          </label>
+          <label class="scope-opt" data-scope="limit">
+            <input type="radio" name="al-scope" value="limit" />
+            <span class="scope-copy"><b>Limit to a set number</b><small>Shorter assessment, balanced across competencies by weight</small></span>
+          </label>
+          <div class="scope-count" id="al-count-row" hidden>
+            <label class="f" style="margin:0">
+              <span class="lbl">Number of questions <span class="req">*</span></span>
+              <input type="number" id="al-count" min="1" step="1" inputmode="numeric" placeholder="e.g. 10" />
+            </label>
+            <div class="scope-presets" id="al-presets"></div>
+          </div>
+        </fieldset>
+
+        <div class="alloc-preview" id="al-preview" aria-live="polite"></div>`,
+      actions: [
+        { label: 'Cancel', kind: 'secondary', onClick: (close) => { close(); resolve(null); } },
+        {
+          label: 'Allocate',
+          onClick: async (close, btn) => {
+            if (mode === 'limit') {
+              const n = Number(count);
+              if (!Number.isInteger(n) || n < 1) { toast('Enter a whole number of questions (1 or more).', 'error'); return; }
+              if (plan && n > plan.bank_total) { toast(`This track only has ${plan.bank_total} active question(s).`, 'error'); return; }
+            }
+            btn.disabled = true;
+            close();
+            resolve({
+              role_id: roleId,
+              assessor_id: assessorId,
+              question_count: mode === 'limit' ? Number(count) : null,
+            });
+          },
+        },
+      ],
+      onOpen: (el) => {
+        const preview = el.querySelector('#al-preview');
+        const countRow = el.querySelector('#al-count-row');
+        const countInput = el.querySelector('#al-count');
+        const presets = el.querySelector('#al-presets');
+        const allHint = el.querySelector('#al-all-hint');
+
+        const renderPreview = () => {
+          if (!plan) { preview.innerHTML = `<div class="alloc-preview-loading">${'<span class="spinner"></span>'}<span>Reading the question bank…</span></div>`; return; }
+          if (!plan.bank_total) {
+            preview.innerHTML = `<div class="alloc-warn"><span>!</span><span>This track has no active questions yet. Add questions before allocating.</span></div>`;
+            return;
+          }
+          const rows = plan.per_competency;
+          const shown = plan.total;
+          preview.innerHTML = `
+            <div class="alloc-preview-head">
+              <div><div class="section-kicker">Allocation preview</div>
+                <b>${shown} question${shown === 1 ? '' : 's'}</b>
+                <span class="muted">of ${plan.bank_total} in the bank · ${plan.points} points</span></div>
+              ${mode === 'limit' && shown < plan.bank_total ? '<span class="chip">Weighted subset</span>' : '<span class="chip">Full bank</span>'}
+            </div>
+            <div class="alloc-split">
+              ${rows.map((r) => `
+                <div class="alloc-split-row ${r.count ? '' : 'is-empty'}">
+                  <span class="alloc-split-name">${esc(r.name)}<small>weight ${esc(r.weight)}</small></span>
+                  <span class="alloc-split-bar"><i style="width:${shown ? Math.round((r.count / shown) * 100) : 0}%"></i></span>
+                  <span class="alloc-split-count">${r.count}</span>
+                </div>`).join('')}
+            </div>
+            ${rows.some((r) => !r.count) ? `<div class="alloc-note">Competencies showing 0 have no question served at this size — increase the count to cover every competency.</div>` : ''}`;
+        };
+
+        const loadPlan = async () => {
+          const token = ++planToken;
+          plan = null;
+          renderPreview();
+          const limit = mode === 'limit' && Number(count) >= 1 ? `?limit=${Number(count)}` : '';
+          const out = await attempt(() => api(`/admin/roles/${roleId}/question-plan${limit}`));
+          if (token !== planToken) return; // a newer request won
+          plan = out || null;
+          if (plan) {
+            allHint.textContent = `All ${plan.bank_total} active question${plan.bank_total === 1 ? '' : 's'} for this track`;
+            countInput.max = String(plan.bank_total);
+            const options = [5, 10, 15, 20, 25].filter((n) => n < plan.bank_total);
+            presets.innerHTML = options.map((n) => `<button type="button" class="chip preset ${Number(count) === n ? 'selected' : ''}" data-preset="${n}">${n}</button>`).join('')
+              + `<button type="button" class="chip preset ${Number(count) === plan.bank_total ? 'selected' : ''}" data-preset="${plan.bank_total}">All ${plan.bank_total}</button>`;
+            presets.querySelectorAll('[data-preset]').forEach((b) => (b.onclick = () => {
+              count = b.dataset.preset;
+              countInput.value = count;
+              loadPlan();
+            }));
+          }
+          renderPreview();
+        };
+
+        el.querySelector('#al-assessor').onchange = (e) => { assessorId = e.target.value; };
+        el.querySelector('#al-role').onchange = (e) => { roleId = e.target.value; count = ''; countInput.value = ''; loadPlan(); };
+        el.querySelectorAll('input[name=al-scope]').forEach((r) => (r.onchange = () => {
+          mode = r.value;
+          el.querySelectorAll('.scope-opt').forEach((o) => o.classList.toggle('selected', o.dataset.scope === mode));
+          countRow.hidden = mode !== 'limit';
+          if (mode === 'limit' && !count) { count = ''; countInput.focus(); }
+          loadPlan();
+        }));
+        countInput.oninput = debounce(() => { count = countInput.value; loadPlan(); }, 300);
+
+        loadPlan();
+      },
+    });
   });
+
   if (!vals) return;
-  await attempt(() => api('/admin/assessments', { method: 'POST', body: { candidate_id: c.id, role_id: vals.role_id, assessor_id: vals.assessor_id || null } }),
-    { okMessage: 'Assessment allocated' });
+  const body = { candidate_id: c.id, role_id: vals.role_id, assessor_id: vals.assessor_id || null };
+  if (vals.question_count) body.question_count = vals.question_count;
+  await attempt(() => api('/admin/assessments', { method: 'POST', body }),
+    { okMessage: vals.question_count ? `Assessment allocated · ${vals.question_count} questions` : 'Assessment allocated' });
   refresh();
 }
 
@@ -224,6 +356,7 @@ export async function candidateDetailView(view, { id }) {
           ${d.assessments.length ? dataTable([
             { label: 'Role', render: (a) => esc(a.role_name) },
             { label: 'Assessor', render: (a) => esc(a.assessor_name || '—') },
+            { label: 'Questions', render: (a) => questionScope(a) },
             { label: 'Status', render: (a) => assessmentStatusBadge(M().assessmentStatuses, a.status) },
             { label: 'Score', render: (a) => a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '—' },
             { label: '', cls: 'actions', render: (a) => ['scored', 'validated'].includes(a.status) ? `<a class="btn ghost sm" href="#/assessments/${a.id}/report">Report</a>` : '' },
@@ -271,6 +404,7 @@ export async function assessmentsView(view) {
         { label: 'Candidate', render: (a) => `<a href="#/candidates/${a.candidate_id}"><b>${esc(a.candidate_name)}</b></a>` },
         { label: 'Role', render: (a) => esc(a.role_name) },
         { label: 'Assessor', render: (a) => a.assessor_name ? esc(a.assessor_name) : '<span class="muted">unassigned</span>' },
+        { label: 'Questions', render: (a) => questionScope(a) },
         { label: 'Status', render: (a) => assessmentStatusBadge(M().assessmentStatuses, a.status) },
         { label: 'Outcome', render: (a) => a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '<span class="muted">—</span>' },
         { label: 'Created', render: (a) => `<span class="small muted">${esc(fmtDate(a.created_at))}</span>` },
@@ -704,6 +838,16 @@ export async function auditView(view) {
 }
 
 /* ================================ utils ================================ */
+/** "12 of 21" when the allocation was capped, plain count otherwise. */
+function questionScope(a) {
+  const n = a.question_count ?? null;
+  if (n === null) return '<span class="muted">—</span>';
+  const capped = a.question_limit != null && a.bank_total != null && a.bank_total > n;
+  return capped
+    ? `<b>${esc(n)}</b><span class="muted small"> of ${esc(a.bank_total)}</span>`
+    : `<b>${esc(n)}</b>`;
+}
+
 function refresh() {
   const evt = new HashChangeEvent('hashchange');
   window.dispatchEvent(evt);

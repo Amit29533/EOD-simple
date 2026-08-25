@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="320" height="320" role="img" aria-label="Anthroprime ECOD"><rect width="320" height="320" rx="74" fill="#22314a"/>
+   <g transform="translate(35.20 74.20) scale(0.78)">
+  <g fill="#fff"><path d="M8 196 L84 14 H112 L188 196 H150 L98 70 L46 196 Z"/><path d="M206 196 V14 H250 A47 47 0 0 1 250 108 H244 V196 Z"/></g>
+  <path d="M244 40 A21 21 0 0 1 244 82 Z" fill="#22314a"/>
+  
+  <g transform="translate(26 154) rotate(-19) scale(0.95)">
+    <g fill="none" stroke="#22314a" stroke-width="16" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M-8 1 H62"/><path d="M212 -17 H150"/>
+      <path d="M52 -4 q42 -20 86 -14"/>
+    </g>
+    <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-8 1 H60" stroke-width="30"/>
+      <path d="M212 -17 H152" stroke-width="30"/>
+      <path d="M56 -2 q44 -20 88 -14" stroke-width="34"/>
+    </g>
+    <g fill="none" stroke="#22314a" stroke-width="4" stroke-linecap="round">
+      <path d="M70 6 L104 -5"/><path d="M76 17 L108 6"/>
+    </g>
+  </g></g></svg>

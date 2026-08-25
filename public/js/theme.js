@@ -1,12 +1,12 @@
 /**
- * Colour-theme manager for the Anthroprime EOD workspace.
+ * Colour-theme manager for the Anthroprime ECOD workspace.
  *
  * Preferences: 'auto' (follow the OS), 'light', 'dark'. The preference is
  * persisted in localStorage and mirrored onto <html> as data-theme / data-theme-pref
  * so CSS can key everything off a single attribute. The same minimal logic is
  * inlined in index.html so the first paint is already correct (no flash).
  */
-const STORAGE_KEY = 'anthroprime-eod-theme';
+const STORAGE_KEY = 'anthroprime-ecod-theme';
 export const THEME_PREFS = ['auto', 'light', 'dark'];
 
 const THEME_COLORS = { light: '#eef6f7', dark: '#060f17' };

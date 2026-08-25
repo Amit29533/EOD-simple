@@ -36,9 +36,9 @@ def section(t): print(f'\n== {t} ==')
 section('S0 · infrastructure: static SPA, fallback, API 404, payload cap')
 st, html = call('GET', '/x/../..', raw=True) if False else (None, None)
 resp = urllib.request.urlopen(ROOT + '/'); html = resp.read().decode()
-check('GET / serves SPA', resp.status == 200 and 'Anthroprime EOD' in html)
+check('GET / serves SPA', resp.status == 200 and 'Anthroprime ECOD' in html)
 resp = urllib.request.urlopen(ROOT + '/candidates/abc123'); deep = resp.read().decode()
-check('SPA fallback on deep route', 'Anthroprime EOD' in deep and '<script' in deep)
+check('SPA fallback on deep route', 'Anthroprime ECOD' in deep and '<script' in deep)
 resp = urllib.request.urlopen(ROOT + '/styles.css'); check('styles.css served', resp.status == 200)
 resp = urllib.request.urlopen(ROOT + '/js/app.js'); check('app.js served', resp.status == 200)
 st, b = call('GET', '/no-such-route'); check('unknown API route -> JSON 404', st == 404 and 'error' in b)
@@ -361,6 +361,82 @@ check('C4 candidate cannot see C3 assessment', call('GET', f'/candidate/assessme
 st, wl = call('GET', '/assessor/assessments', PT)
 proj = next(a for a in wl['assessments'] if a['id'] == AID)['candidate']
 check('assessor projection exposes only professional fields', set(proj.keys()) <= {'id', 'name', 'current_title', 'years_experience', 'target_role_id'})
+
+# ================================ S8 question allocation (X questions per candidate)
+section('S8 · allocate X questions, balanced across competencies')
+
+st, plan = call('GET', f'/admin/roles/{RSA}/question-plan', AT)
+BANK = plan['bank_total']
+check('question-plan: full bank by default', st == 200 and plan['total'] == BANK and BANK > 1)
+check('question-plan: per-competency split provided', len(plan['per_competency']) > 1
+      and sum(r['count'] for r in plan['per_competency']) == plan['total'])
+check('question-plan: reports a points total', plan['points'] > 0)
+
+st, capped = call('GET', f'/admin/roles/{RSA}/question-plan?limit=8', AT)
+check('question-plan: limit=8 serves exactly 8', st == 200 and capped['total'] == 8)
+check('question-plan: limit keeps bank_total visible', capped['bank_total'] == BANK)
+check('question-plan: 8 spread over competencies, none over-drawn',
+      sum(r['count'] for r in capped['per_competency']) == 8
+      and all(r['count'] >= 0 for r in capped['per_competency']))
+check('question-plan: limit above the bank is clamped to the bank',
+      call('GET', f'/admin/roles/{RSA}/question-plan?limit={BANK + 50}', AT)[1]['total'] == BANK)
+check('question-plan: limit=0 rejected', call('GET', f'/admin/roles/{RSA}/question-plan?limit=0', AT)[0] == 400)
+check('question-plan: non-numeric limit rejected', call('GET', f'/admin/roles/{RSA}/question-plan?limit=abc', AT)[0] == 400)
+check('question-plan: unknown role -> 404', call('GET', '/admin/roles/nope/question-plan', AT)[0] == 404)
+check('question-plan is admin-only', call('GET', f'/admin/roles/{RSA}/question-plan', PT)[0] == 403
+      and call('GET', f'/admin/roles/{RSA}/question-plan', RT)[0] == 403)
+
+# allocate a capped assessment and confirm the candidate is served exactly X
+st, cx = call('POST', '/admin/candidates', AT, {'name': 'Question Cap Probe', 'target_role_id': RSA})
+CX = cx['id']
+st, ux = call('POST', '/admin/users', AT, {'username': f'cap.probe.{uuid.uuid4().hex[:6]}', 'name': 'Cap Probe',
+                                           'role': 'candidate', 'password': 'cap-pass-1', 'candidate_id': CX})
+_, capl = call('POST', '/auth/login', body={'username': ux['username'], 'password': 'cap-pass-1'})
+CXT = capl['token']
+
+check('allocate with question_count=0 -> 400',
+      call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 0})[0] == 400)
+check('allocate with fractional question_count -> 400',
+      call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 3.5})[0] == 400)
+check('allocate with question_count above the bank -> 400',
+      call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': BANK + 1})[0] == 400)
+
+st, ax = call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 6})
+AX = ax['id']
+check('allocate with question_count=6 -> 201', st == 201)
+check('snapshot stores only the 6 served questions', len(ax['snapshot_json']['questions']) == 6)
+check('snapshot records the limit and the bank size',
+      ax['snapshot_json']['question_limit'] == 6 and ax['snapshot_json']['bank_total'] == BANK)
+
+st, quiz = call('GET', f'/candidate/assessments/{AX}', CXT)
+check('candidate is served exactly 6 questions', st == 200 and len(quiz['questions']) == 6)
+check('served questions still hide correct answers/rubrics',
+      'correct_option_ids' not in json.dumps(quiz) and 'rubric' not in json.dumps(quiz))
+served_comps = {q['competency_id'] for q in quiz['questions']}
+check('6 questions cover multiple competencies', len(served_comps) > 1)
+
+st, lst = call('GET', '/candidate/assessments', CXT)
+row = next(a for a in lst['assessments'] if a['id'] == AX)
+check('candidate list reports the served question count', row['question_count'] == 6)
+
+st, adm = call('GET', '/admin/assessments', AT)
+arow = next(a for a in adm['assessments'] if a['id'] == AX)
+check('admin list exposes served vs bank counts',
+      arow['question_count'] == 6 and arow['question_limit'] == 6 and arow['bank_total'] == BANK)
+
+# a capped assessment must still submit and score end-to-end
+db_answers = {}
+for q in quiz['questions']:
+    if q['type'] == 'mcq_single': db_answers[q['id']] = q['options'][0]['id']
+    elif q['type'] == 'mcq_multi': db_answers[q['id']] = [q['options'][0]['id']]
+    elif q['type'] == 'scale': db_answers[q['id']] = 4
+    else: db_answers[q['id']] = 'A considered answer covering the architecture, trade-offs and rollout plan.'
+check('capped assessment submits', call('POST', f'/candidate/assessments/{AX}/submit', CXT, {'answers': db_answers})[0] == 200)
+
+st, unrel = call('GET', '/admin/assessments', AT)
+check('default allocation (no question_count) still serves the whole bank',
+      any(a['question_limit'] is None and a['question_count'] == a['bank_total']
+          for a in unrel['assessments'] if a['bank_total']))
 
 print()
 print(f'PASSED {PASSED} / {PASSED + len(FAILS)}')

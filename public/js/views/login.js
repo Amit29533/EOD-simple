@@ -1,6 +1,7 @@
 import { login } from '../api.js';
 import { esc } from '../ui.js';
 import { themePref, setThemePref, onThemeChange } from '../theme.js';
+import { logoSvg } from '../logo.js';
 
 /* ---------------------------------------------------------------- icons */
 const ICON = {
@@ -69,20 +70,20 @@ export function loginView(view, onSuccess) {
     </div>
 
     <div class="auth-shell">
-      <section class="auth-story" aria-label="About Anthroprime EOD">
+      <section class="auth-story" aria-label="About Anthroprime ECOD">
         <div class="story-inner">
           <header class="story-head">
             <div class="auth-logo">
               <span class="auth-mark" aria-hidden="true">
-                <svg viewBox="0 0 24 24"><path d="M12 3.2 4.4 20.8h3.5l1.3-3.1h5.6l1.3 3.1h3.5z"></path><path d="m10.5 14.6 1.5-3.7 1.5 3.7z" class="mark-cut"></path></svg>
+                ${logoSvg({ className: 'mark-svg' })}
               </span>
-              <span class="auth-wordmark"><strong>Anthroprime</strong><em>EOD</em></span>
+              <span class="auth-wordmark"><strong>Anthroprime</strong><em>ECOD</em></span>
             </div>
             <span class="story-badge"><i></i> Enterprise Capability OS</span>
           </header>
 
           <div class="story-copy">
-            <div class="eyebrow light">Anthroprime EOD</div>
+            <div class="eyebrow light">Anthroprime ECOD</div>
             <h1 class="story-title">
               Turn capability into
               <span class="rotator" aria-live="off">
@@ -96,7 +97,6 @@ export function loginView(view, onSuccess) {
             <ul class="story-points">
               <li><span class="pt-icon">${ICON.target}</span><span><b>Role-based frameworks</b> — weighted competencies, no code changes.</span></li>
               <li><span class="pt-icon">${ICON.bolt}</span><span><b>Auto-scored, assessor-verified</b> — objective items grade themselves.</span></li>
-              <li><span class="pt-icon">${ICON.shield}</span><span><b>Compartmentalized by design</b> — every role sees only its scope.</span></li>
             </ul>
           </div>
 
@@ -134,9 +134,9 @@ export function loginView(view, onSuccess) {
             <div class="auth-card-top">
               <div class="auth-logo auth-logo-mobile">
                 <span class="auth-mark" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M12 3.2 4.4 20.8h3.5l1.3-3.1h5.6l1.3 3.1h3.5z"></path><path d="m10.5 14.6 1.5-3.7 1.5 3.7z" class="mark-cut"></path></svg>
+                  ${logoSvg({ className: 'mark-svg' })}
                 </span>
-                <span class="auth-wordmark"><strong>Anthroprime</strong><em>EOD</em></span>
+                <span class="auth-wordmark"><strong>Anthroprime</strong><em>ECOD</em></span>
               </div>
               <div class="theme-switch" role="radiogroup" aria-label="Colour theme" data-active="${Math.max(0, THEME_OPTIONS.findIndex((o) => o.value === themePref()))}">
                 <span class="theme-thumb" aria-hidden="true"></span>
@@ -174,12 +174,11 @@ export function loginView(view, onSuccess) {
                     <span class="pt-icon-eye">${ICON.eye}</span><span class="pt-icon-eye-off" hidden>${ICON.eyeOff}</span>
                   </button>
                 </span>
-                <span class="caps-hint" id="caps-hint" hidden>${ICON.alert} Caps Lock is on</span>
               </label>
 
               <button class="btn block login-submit" type="submit">
                 <span class="btn-shine" aria-hidden="true"></span>
-                <span class="btn-label">Sign in to Anthroprime EOD</span>
+                <span class="btn-label">Sign in to Anthroprime ECOD</span>
                 <span class="btn-arrow" aria-hidden="true">${ICON.arrow}</span>
               </button>
             </form>
@@ -197,7 +196,7 @@ export function loginView(view, onSuccess) {
             </details>
 
             <div class="auth-security"><span class="security-icon">${ICON.shield}</span><span>Sessions are token-authenticated and every action is audit-trailed.</span></div>
-            <div class="auth-foot"><span>Need access?</span><b> Contact your Anthroprime EOD administrator.</b></div>
+            <div class="auth-foot"><span>Need access?</span><b> Contact your Anthroprime ECOD administrator.</b></div>
           </div>
         </div>
       </section>
@@ -210,7 +209,6 @@ export function loginView(view, onSuccess) {
   const passwordInput = wrap.querySelector('#password-input');
   const submitBtn = wrap.querySelector('button[type=submit]');
   const errBox = wrap.querySelector('#login-err');
-  const capsHint = wrap.querySelector('#caps-hint');
   const DEFAULT_LABEL = submitBtn.querySelector('.btn-label').textContent;
   const DEFAULT_ARROW = submitBtn.querySelector('.btn-arrow').innerHTML;
 
@@ -266,14 +264,6 @@ export function loginView(view, onSuccess) {
       if (errBox.innerHTML) showError('');
     });
   });
-  const syncCaps = (e) => {
-    const on = typeof e.getModifierState === 'function' && e.getModifierState('CapsLock');
-    capsHint.hidden = !on;
-  };
-  passwordInput.addEventListener('keyup', syncCaps);
-  passwordInput.addEventListener('keydown', syncCaps);
-  passwordInput.addEventListener('blur', () => { capsHint.hidden = true; });
-
   const togglePassword = wrap.querySelector('#toggle-password');
   togglePassword.onclick = () => {
     const visible = passwordInput.type === 'text';
