@@ -20,8 +20,10 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |
 | GET/POST/PATCH/DELETE | /admin/questions[/:id] | question bank, validated per type               |
 | GET/PUT | /admin/frameworks?role_id=   | scoring framework (validated)                     |
-| GET    | /admin/roles/:id/question-plan | preview an allocation: `?limit=X` → served total, points and per-competency split (no `limit` = full bank; capped previews are limited to 50) |
-| GET/POST | /admin/assessments          | allocation builds immutable snapshot; optional `question_count` (1–50) serves a random weighted sample of X questions, apportioned across competencies by weight |
+| GET    | /admin/roles/:id/question-plan | preview an allocation: `?limit=X` → served total, points and per-competency split (no `limit` = full bank; capped previews are limited to 50). Also returns `max_questions` and, for the published-catalogue track, `catalogue: { total, missing }` |
+| GET/POST | /admin/assessments          | allocation builds immutable snapshot; optional `question_count` (1–50, and never more than the track's active bank) serves a random weighted sample of X questions, apportioned across competencies by weight |
+| GET    | /admin/content/catalogue     | published-catalogue status: whether a track matches, its bank size vs the catalogue, and how many published questions are missing |
+| POST   | /admin/content/sync          | add the published questions the matching track is missing (idempotent; never duplicates, reactivates or edits existing records; audited as `catalogue_synced`) |
 | PATCH/DELETE | /admin/assessments/:id    | reassign assessor (unscored); delete (pre-submit) |
 | GET    | /admin/reports/:id            | full report incl. assessor + comments             |
 | GET    | /admin/audit                  | audit trail                                       |

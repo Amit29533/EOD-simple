@@ -45,11 +45,23 @@ not always see the same items. The selected IDs are frozen in the immutable snap
 which makes each sitting auditable. `GET /admin/roles/:id/question-plan?limit=X`
 runs the same quota code so the admin UI previews the split that allocation will use.
 
+The effective ceiling is always `min(cap, active bank size)`: a 21-question bank can
+never serve a 50-question assessment. Because a workspace can lag the published
+catalogue (an older seed, or a deployment with no CLI), the published bank is also
+served by the app itself: `GET /admin/content/catalogue` reports what is missing and
+`POST /admin/content/sync` tops the track up from inside the Admin UI. The allocation
+dialog surfaces the same information inline — when the bank is below the cap it
+explains why and offers the one-click top-up — so the cap is never silently smaller
+than the configured 50. Sync semantics live in `src/api/catalogue-service.mjs` and
+mirror `npm run seed`: match the track by key, insert only prompts that are absent,
+never touch existing records or snapshots.
+
 ## 3. Everything domain-specific is data
 Roles, competencies (weights, target levels, enrichment hints), the question bank and the
 scoring framework (readiness bands, level thresholds, gap severity) are stored records
 edited in the Admin UI. The code contains **no RSA-specific logic**; the Databricks RSA
-track is seed content (`scripts/seed-content.mjs`) the domain team replaces.
+track is published catalogue content (`src/content/rsa-catalogue.mjs`, re-exported for
+CLI seeding via `scripts/seed-content.mjs`) the domain team replaces.
 
 ## 4. Immutable assessment snapshots
 At allocation, the assessment stores a deep copy of role + competencies + questions +

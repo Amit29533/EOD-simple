@@ -43,14 +43,22 @@ function teardown(dom) {
 }
 
 /** Stub API: roles/users plus the question-plan endpoint the modal polls. */
-function stubFetch(posted) {
+function stubFetch(posted, { bankTotal = 21, missing = 0, syncCalls = [] } = {}) {
+  let synced = false;
   globalThis.fetch = async (url, opts = {}) => {
     const json = (body) => ({ ok: true, status: 200, json: async () => body });
+    if (url.includes('/admin/content/sync')) {
+      syncCalls.push({ path: url, body: opts.body ? JSON.parse(opts.body) : {} });
+      synced = true;
+      return json({ added: missing, competencies_added: 0, bank_total: bankTotal + missing, role_id: ROLE.id });
+    }
     if (url.includes('/admin/roles/') && url.includes('/question-plan')) {
-      const limit = Number(new URL(url, 'http://x').searchParams.get('limit')) || 21;
-      const n = Math.min(limit, 21);
+      const bank = synced ? bankTotal + missing : bankTotal;
+      const limit = Number(new URL(url, 'http://x').searchParams.get('limit')) || bank;
+      const n = Math.min(limit, bank);
       const c1 = Math.round(n * 0.6);
-      return json({ role: { id: ROLE.id, name: ROLE.name }, total: n, bank_total: 21, points: n * 4,
+      return json({ role: { id: ROLE.id, name: ROLE.name }, total: n, bank_total: bank, points: n * 4,
+        max_questions: 50, catalogue: { total: bankTotal + missing, missing: synced ? 0 : missing },
         per_competency: [{ ...COMPS[0], count: c1 }, { ...COMPS[1], count: n - c1 }] });
     }
     if (url.includes('/admin/roles')) return json({ roles: [ROLE] });
@@ -169,5 +177,59 @@ test('allocation modal: an invalid count is rejected before any request', { skip
     assert.equal(posted.length, 0, 'nothing was allocated');
     assert.ok(document.querySelector('.modal'), 'the dialog stays open so the admin can correct it');
     assert.match(document.getElementById('toast-root').textContent, /whole number/i, 'the problem is explained');
+  } finally { teardown(dom); }
+});
+
+/**
+ * A bank smaller than the 50-question cap is the moment an admin gets stuck
+ * ("why can I only allocate 21?"). The dialog must explain the limit AND offer
+ * the published-catalogue top-up inline, updating the whole flow in place.
+ */
+test('allocation modal: explains a small bank and tops it up inline', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  const posted = [];
+  const syncCalls = [];
+  try {
+    stubFetch(posted, { bankTotal: 21, missing: 84, syncCalls });
+    const { modal } = await openModal();
+
+    // The bank note explains why the ceiling is below the platform cap.
+    const note = modal.querySelector('#al-bank-note');
+    assert.equal(note.hidden, false, 'note is visible for a small bank');
+    assert.match(note.textContent, /bank has only 21 questions/i);
+    assert.match(note.textContent, /up to 50/, 'the real cap is stated');
+    const syncBtn = note.querySelector('#al-sync-catalogue');
+    assert.ok(syncBtn, 'the catalogue top-up is offered inline');
+    assert.match(syncBtn.textContent, /84 published questions/);
+    assert.equal(modal.querySelector('#al-count').max, '21', 'input clamped to the bank for now');
+
+    // Choose a limit first, then top the bank up without leaving the dialog.
+    const limitRadio = modal.querySelector('.scope-opt[data-scope="limit"] input');
+    limitRadio.checked = true;
+    limitRadio.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await flush(60);
+
+    syncBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await flush(120);
+    assert.equal(syncCalls.length, 1, 'sync requested once');
+    assert.ok(syncCalls[0].path.endsWith('/admin/content/sync'), `sync hit the right endpoint (${syncCalls[0].path})`);
+
+    // The stub now reports the full 105-question bank after syncing.
+    await flush(120);
+    const countInput = modal.querySelector('#al-count');
+    assert.equal(countInput.max, '50', 'input now honours the full cap');
+    assert.equal(modal.querySelector('#al-count-max').textContent, '1–50');
+    assert.equal(modal.querySelector('#al-bank-note').hidden, true, 'limitation note cleared');
+    const presets = [...modal.querySelectorAll('[data-preset]')].map((b) => b.dataset.preset);
+    assert.ok(presets.includes('50'), 'a 50-question preset is offered');
+    assert.ok(!presets.includes('21'), 'no misleading "All 21" preset anymore');
+    assert.match(document.getElementById('toast-root').textContent, /Added 84 published questions/i);
+
+    // And the admin can now allocate the full cap from the same dialog.
+    const fifty = modal.querySelector('[data-preset="50"]');
+    fifty.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    await flush(120);
+    assert.equal(modal.querySelector('#al-count').value, '50');
+    assert.match(modal.querySelector('#al-preview').textContent, /50 questions/);
   } finally { teardown(dom); }
 });
