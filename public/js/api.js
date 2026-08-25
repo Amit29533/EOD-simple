@@ -22,7 +22,14 @@ export async function api(path, { method = 'GET', body } = {}) {
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
-    if (res.status === 401) { session.token = null; onUnauthorized(); }
+    // Only treat this as a session drop when a session actually existed.
+    // A failed sign-in attempt also returns 401 and must NOT wipe the
+    // login form or re-render the page.
+    if (res.status === 401) {
+      const hadSession = !!session.token;
+      session.token = null;
+      if (hadSession) onUnauthorized();
+    }
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data);
   }
   return data;

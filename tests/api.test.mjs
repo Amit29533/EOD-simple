@@ -219,3 +219,59 @@ test('admin-only user provisioning; usernames are unique; candidate users requir
   assert.equal(created.status, 201);
   assert.equal(created.body.password_hash, undefined, 'never return password hashes');
 });
+
+test('meta bootstrap is public so the SPA has UI config before sign-in', async () => {
+  const res = await call('GET', '/meta/bootstrap');
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.body.pipelineStages) && res.body.pipelineStages.length);
+  assert.ok(Array.isArray(res.body.assessmentStatuses));
+});
+
+test('candidate delete is admin-password gated and cascades user + sessions + open assessments', async () => {
+  const { roleId } = globalThis.__ids;
+  // fresh candidate: linked portal user (with a live session) + an open assessment
+  const cand = await store.insert('candidates', { name: 'Delete Me', email: '', stage: 'intake', target_role_id: roleId });
+  const linked = await store.insert('users', {
+    username: 'delete.me', name: 'DM', role: 'candidate', email: '',
+    password_hash: hashPassword('dm-pass-1234'), active: true, candidate_id: cand.id,
+  });
+  await store.insert('sessions', { token: 'tok-dm-live', user_id: linked.id, expires_at: new Date(Date.now() + 3600e3).toISOString() });
+  const priya = (await store.list('users', { username: 'priya.nair' }))[0];
+  const alloc = await call('POST', '/admin/assessments', {
+    token: adminToken, body: { candidate_id: cand.id, role_id: roleId, assessor_id: priya.id },
+  });
+  assert.equal(alloc.status, 201, JSON.stringify(alloc.body));
+
+  // missing password -> 403
+  assert.equal((await call('DELETE', `/admin/candidates/${cand.id}`, { token: adminToken })).status, 403);
+  // wrong password -> 403, nothing deleted
+  assert.equal((await call('DELETE', `/admin/candidates/${cand.id}`, { token: adminToken, body: { password: 'nope' } })).status, 403);
+  assert.ok(await store.get('candidates', cand.id), 'candidate survives a failed password check');
+  assert.ok(await store.get('users', linked.id), 'linked user survives a failed password check');
+
+  // correct admin password -> full cascade
+  const del = await call('DELETE', `/admin/candidates/${cand.id}`, { token: adminToken, body: { password: 'admin-pass-123' } });
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  assert.equal(del.body.removed_users, 1);
+  assert.equal(del.body.removed_assessments, 1);
+  assert.equal(await store.get('candidates', cand.id), null);
+  assert.equal(await store.get('users', linked.id), null, 'linked portal user is deleted');
+  assert.equal((await store.list('sessions', { user_id: linked.id })).length, 0, 'linked user sessions are deleted');
+  assert.equal((await store.list('assessments', { candidate_id: cand.id })).length, 0);
+  assert.equal((await store.list('responses', { assessment_id: alloc.body.id })).length, 0);
+});
+
+test('candidate with a finalized report cannot be deleted even with the admin password', async () => {
+  const del = await call('DELETE', `/admin/candidates/${globalThis.__ids.candId}`, {
+    token: adminToken, body: { password: 'admin-pass-123' },
+  });
+  assert.equal(del.status, 409);
+  assert.ok(await store.get('candidates', globalThis.__ids.candId), 'scored candidate is protected');
+});
+
+test('non-admins cannot reach the delete-candidate route at all', async () => {
+  const res = await call('DELETE', `/admin/candidates/${globalThis.__ids.candId}`, {
+    token: priyaToken, body: { password: 'anything' },
+  });
+  assert.equal(res.status, 403, 'assessor is blocked by the role guard before the password check');
+});

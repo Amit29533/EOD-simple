@@ -8,13 +8,13 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | POST   | /auth/login           | public       | {username,password} → {token,user}; throttled |
 | POST   | /auth/logout          | any          | ends session                            |
 | GET    | /auth/me              | any          | current user + linked candidate         |
-| GET    | /meta/bootstrap       | any          | enum config for the UI                  |
+| GET    | /meta/bootstrap       | public       | enum config for the UI (static, no user data) |
 
 ## Admin
 | Method | Path                          | Notes                                             |
 | ------ | ----------------------------- | ------------------------------------------------- |
 | GET    | /admin/dashboard              | KPIs, pipeline, statuses, activity                |
-| CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline             |
+| CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline. DELETE requires `{password}` (the signed-in admin's password) and cascades the linked portal user, their sessions and open assessments; blocked (409) once a report is finalized |
 | CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate   |
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |

@@ -14,18 +14,32 @@ export async function createBlobsStore() {
     ? { name: 'ecod', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_AUTH_TOKEN }
     : 'ecod'
 );
-  const cache = new Map();
+  const cache = new Map(); // table -> { rows, at }
+  /**
+   * Sessions are NEVER served from cache: a stale in-memory copy is exactly
+   * what logs users out (401 right after login). They are always read fresh
+   * from blobs. Other tables use a short TTL so multi-instance deployments
+   * converge within a few seconds instead of serving forever-stale data.
+   */
+  const CACHE_TTL_MS = 5000;
+  const UNCACHED = new Set(['sessions']);
 
   const readTable = async (t) => {
-    if (cache.has(t)) return cache.get(t);
+    if (UNCACHED.has(t)) {
+      let rows = {};
+      try { rows = (await store.get(t, { type: 'json' })) || {}; } catch { rows = {}; }
+      return rows;
+    }
+    const hit = cache.get(t);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.rows;
     let rows = {};
     try { rows = (await store.get(t, { type: 'json' })) || {}; } catch { rows = {}; }
-    cache.set(t, rows);
+    cache.set(t, { rows, at: Date.now() });
     return rows;
   };
   const writeTable = async (t, rows) => {
     await store.setJSON(t, rows);
-    cache.set(t, rows);
+    cache.set(t, { rows, at: Date.now() });
   };
 
   return {

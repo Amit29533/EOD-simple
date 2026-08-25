@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 33 tests: scoring engine, API/RBAC journey, Airtable adapter contract,
+npm test            # 40 tests: scoring engine, API/RBAC journey, Airtable adapter contract,
                     #          sign-in view + theme manager (jsdom, optional dependency)
 ```
 
@@ -31,8 +31,9 @@ Full end-to-end suites (need a running, seeded server):
 
 ```bash
 python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 141 checks: every feature — CRUD, validation, config editing,
-                              # immutability, reassignment, scoring math, audit, persistence
+python3 tests/features.py     # 151 checks: every feature — CRUD, validation, config editing,
+                              # immutability, reassignment, scoring math, audit, persistence,
+                              # password-gated candidate deletion
 ```
 
 ### Demo sign-ins (seeded)
@@ -56,7 +57,7 @@ python3 tests/features.py     # 141 checks: every feature — CRUD, validation, 
 
 ## What's built (v1 scope)
 
-- **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline.
+- **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline. Deletion is admin-password-gated and cascades the linked portal login, its sessions and any open assessments (finalized reports protect the candidate).
 - **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
 - **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
