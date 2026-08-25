@@ -1,4 +1,4 @@
-import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS } from '../core/constants.mjs';
+import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS, MAX_ASSESSMENT_QUESTIONS } from '../core/constants.mjs';
 import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
 import { selectQuestions } from '../core/question-selection.mjs';
 
@@ -38,13 +38,20 @@ export async function roleBank(store, roleId) {
 export async function buildSnapshot(store, roleId, { questionLimit = null } = {}) {
   const bank = await roleBank(store, roleId);
   if (!bank) return null;
-  const served = selectQuestions(bank.questions, bank.competencies, questionLimit);
+  // The HTTP handler validates this input, but keep the service boundary safe
+  // for other callers too. A direct snapshot build can never freeze more than
+  // the supported capped-allocation size into an assessment.
+  const requested = Number(questionLimit);
+  const normalizedLimit = Number.isInteger(requested) && requested > 0
+    ? Math.min(requested, MAX_ASSESSMENT_QUESTIONS)
+    : null;
+  const served = selectQuestions(bank.questions, bank.competencies, normalizedLimit);
   return JSON.parse(JSON.stringify({
     role: bank.role,
     framework: bank.framework,
     competencies: bank.competencies,
     questions: served,
-    question_limit: Number.isFinite(Number(questionLimit)) && Number(questionLimit) > 0 ? Math.floor(Number(questionLimit)) : null,
+    question_limit: normalizedLimit,
     bank_total: bank.questions.length,
   }));
 }

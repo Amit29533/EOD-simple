@@ -55,5 +55,8 @@ export const DEFAULT_FRAMEWORK_CONFIG = {
   gap_severity: { moderate: 1, critical: 2 },
 };
 
+/** Maximum number of questions an allocation may cap an assessment at. */
+export const MAX_ASSESSMENT_QUESTIONS = 50;
+
 export const SESSION_TTL_HOURS = 12;
 export const DEFAULT_PORT = 3000;

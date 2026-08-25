@@ -1,7 +1,10 @@
 import { hashPassword, verifyPassword } from '../../core/passwords.mjs';
 import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
-import { USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG, PIPELINE_STAGES } from '../../core/constants.mjs';
+import {
+  USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG,
+  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS,
+} from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { buildSnapshot, roleBank } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
@@ -444,11 +447,17 @@ export function adminHandlers(route) {
     if (!bank) return notFound('Role not found or inactive.');
     const raw = query.limit;
     const limit = raw === undefined || raw === '' ? null : Number(raw);
-    if (raw !== undefined && raw !== '' && (!Number.isFinite(limit) || limit < 1))
+    if (raw !== undefined && raw !== '' && (!Number.isInteger(limit) || limit < 1))
       return bad('limit must be a whole number of 1 or more.');
+    // Preview requests are clamped rather than rejected so an old/bookmarked
+    // request above the bank size still resolves to the available bank. When a
+    // role has more than the product maximum, the preview never promises more
+    // than the 50-question allocation cap.
+    const previewLimit = limit === null ? null : Math.min(limit, MAX_ASSESSMENT_QUESTIONS);
     return ok({
       role: { id: bank.role.id, name: bank.role.name },
-      ...allocationPreview(bank.questions, bank.competencies, limit),
+      max_questions: MAX_ASSESSMENT_QUESTIONS,
+      ...allocationPreview(bank.questions, bank.competencies, previewLimit),
     });
   });
 
@@ -468,6 +477,8 @@ export function adminHandlers(route) {
       questionLimit = Number(body.question_count);
       if (!Number.isInteger(questionLimit) || questionLimit < 1)
         return bad('Number of questions must be a whole number of 1 or more.');
+      if (questionLimit > MAX_ASSESSMENT_QUESTIONS)
+        return bad(`Number of questions cannot exceed ${MAX_ASSESSMENT_QUESTIONS}.`);
     }
     const open = (await store.list('assessments', { candidate_id: candidate.id }))
       .find((a) => a.role_id === body.role_id && ['assigned', 'in_progress', 'submitted'].includes(a.status));

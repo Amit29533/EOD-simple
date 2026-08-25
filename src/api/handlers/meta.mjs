@@ -1,4 +1,7 @@
-import { PIPELINE_STAGES, ASSESSMENT_STATUSES, QUESTION_TYPES, USER_ROLES, DIFFICULTIES } from '../../core/constants.mjs';
+import {
+  PIPELINE_STAGES, ASSESSMENT_STATUSES, QUESTION_TYPES, USER_ROLES, DIFFICULTIES,
+  MAX_ASSESSMENT_QUESTIONS,
+} from '../../core/constants.mjs';
 import { ok } from '../helpers.mjs';
 
 export function metaHandlers(route) {
@@ -11,5 +14,6 @@ export function metaHandlers(route) {
     questionTypes: QUESTION_TYPES,
     userRoles: USER_ROLES,
     difficulties: DIFFICULTIES,
+    maxAssessmentQuestions: MAX_ASSESSMENT_QUESTIONS,
   }));
 }

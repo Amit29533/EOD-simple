@@ -28,11 +28,12 @@ Structured fields (question options, snapshots, reports, answers) are declared i
 long-text columns, while file/blobs adapters keep them native.
 
 ## 2b. Assessment length is an allocation-time decision
-An admin may cap an assessment at **X questions** instead of serving the whole bank.
+An admin may cap an assessment at **1–50 questions** instead of serving the whole bank.
 The cap is applied *once*, when the snapshot is built (`buildSnapshot(store, roleId,
 { questionLimit })`), so the served set is frozen into the assessment alongside the
-role, competencies and framework. Scoring, gap mapping and the report card then operate
-on exactly the questions the candidate saw — no downstream code needed changing.
+role, competencies and framework. The full-bank option remains available when an admin
+explicitly chooses it. Scoring, gap mapping and the report card then operate on exactly
+the questions the candidate saw — no downstream code needed changing.
 
 Selection lives in `src/core/question-selection.mjs` (pure, unit-tested). X seats are
 apportioned across competencies **in proportion to their weight** using the
