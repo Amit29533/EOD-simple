@@ -56,6 +56,11 @@ export function reportForCandidate(report, assessment) {
     })),
     areas_to_improve: report.areas_to_improve || [],
     strengths: report.strengths || [],
+    // Safe aggregate metrics for the candidate's printable report. The
+    // question-level answers and assessor feedback remain excluded.
+    questions_evaluated: (report.competencies || []).reduce((sum, c) => sum + (c.breakdown?.length || 0), 0),
+    points_earned: (report.competencies || []).reduce((sum, c) => sum + Number(c.earned || 0), 0),
+    points_available: (report.competencies || []).reduce((sum, c) => sum + Number(c.max || 0), 0),
     generated_at: report.generated_at,
   };
 }

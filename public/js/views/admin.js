@@ -8,6 +8,13 @@ import {
 import { renderReport } from './report.js';
 
 const M = () => state.meta;
+// Kept as a fallback for cached/static bootstrap payloads from before the
+// allocation cap was published. The API is the source of truth when available.
+const FALLBACK_MAX_ASSESSMENT_QUESTIONS = 50;
+const maxAssessmentQuestions = () => Math.max(
+  1,
+  Number(M()?.maxAssessmentQuestions) || FALLBACK_MAX_ASSESSMENT_QUESTIONS,
+);
 
 /* ================================ Dashboard ================================ */
 export async function dashboardView(view) {
@@ -182,6 +189,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
   if (!assessors.length) { toast('Create an assessor user first (Users & Access).', 'error'); return; }
 
   const initialRole = activeRoles.find((r) => r.id === (presetRoleId || c.target_role_id)) || activeRoles[0];
+  const maxQuestions = maxAssessmentQuestions();
   const vals = await new Promise((resolve) => {
     let roleId = initialRole.id;
     let assessorId = assessors[0].id;
@@ -209,12 +217,12 @@ export async function allocateAssessorModal(c, presetRoleId) {
           </label>
           <label class="scope-opt" data-scope="limit">
             <input type="radio" name="al-scope" value="limit" />
-            <span class="scope-copy"><b>Limit to a set number</b><small>Shorter assessment, balanced across competencies by weight</small></span>
+            <span class="scope-copy"><b>Limit to a set number</b><small>Choose up to ${maxQuestions} questions, balanced across competencies by weight</small></span>
           </label>
           <div class="scope-count" id="al-count-row" hidden>
             <label class="f" style="margin:0">
               <span class="lbl">Number of questions <span class="req">*</span></span>
-              <input type="number" id="al-count" min="1" step="1" inputmode="numeric" placeholder="e.g. 10" />
+              <input type="number" id="al-count" min="1" max="${maxQuestions}" step="1" inputmode="numeric" placeholder="e.g. 10" />
             </label>
             <div class="scope-presets" id="al-presets"></div>
           </div>
@@ -229,6 +237,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
             if (mode === 'limit') {
               const n = Number(count);
               if (!Number.isInteger(n) || n < 1) { toast('Enter a whole number of questions (1 or more).', 'error'); return; }
+              if (n > maxQuestions) { toast(`You can allocate up to ${maxQuestions} questions.`, 'error'); return; }
               if (plan && n > plan.bank_total) { toast(`This track only has ${plan.bank_total} active question(s).`, 'error'); return; }
             }
             btn.disabled = true;
@@ -284,10 +293,14 @@ export async function allocateAssessorModal(c, presetRoleId) {
           plan = out || null;
           if (plan) {
             allHint.textContent = `All ${plan.bank_total} active question${plan.bank_total === 1 ? '' : 's'} for this track`;
-            countInput.max = String(plan.bank_total);
-            const options = [5, 10, 15, 20, 25].filter((n) => n < plan.bank_total);
+            const max = Math.min(plan.bank_total, maxQuestions);
+            countInput.max = String(max);
+            const options = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+              .filter((n) => n < plan.bank_total && n <= max);
             presets.innerHTML = options.map((n) => `<button type="button" class="chip preset ${Number(count) === n ? 'selected' : ''}" data-preset="${n}">${n}</button>`).join('')
-              + `<button type="button" class="chip preset ${Number(count) === plan.bank_total ? 'selected' : ''}" data-preset="${plan.bank_total}">All ${plan.bank_total}</button>`;
+              + (plan.bank_total <= max
+                ? `<button type="button" class="chip preset ${Number(count) === plan.bank_total ? 'selected' : ''}" data-preset="${plan.bank_total}">All ${plan.bank_total}</button>`
+                : '');
             presets.querySelectorAll('[data-preset]').forEach((b) => (b.onclick = () => {
               count = b.dataset.preset;
               countInput.value = count;

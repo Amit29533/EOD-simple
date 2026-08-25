@@ -12,9 +12,11 @@
  *  - exactly min(X, pool.length) questions are returned;
  *  - every competency that has questions keeps at least one whenever X allows
  *    (so no competency silently scores 0%);
- *  - selection is deterministic — the same bank and X always give the same set,
- *    which keeps allocations reproducible and auditable;
- *  - questions come back in their configured display order.
+ *  - the allocator can sample a different set on each capped allocation while
+ *    keeping the weighted split stable;
+ *  - questions come back in their configured display order after sampling, so
+ *    the candidate experience remains tidy;
+ *  - once sampled, the snapshot makes the chosen set auditable and immutable.
  */
 
 /** Stable per-competency grouping, ordered by the competency configuration. */
@@ -90,11 +92,33 @@ function apportion(groups, total) {
 }
 
 /**
+ * Return a random sample of `count` items without changing the source array.
+ * A caller-supplied RNG keeps the pure selection logic straightforward to test.
+ */
+function sample(items, count, rng) {
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const raw = Number(rng());
+    const value = Number.isFinite(raw)
+      ? Math.max(0, Math.min(1 - Number.EPSILON, raw))
+      : 0;
+    const j = Math.floor(value * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, count);
+}
+
+/**
  * Pick `limit` questions from `questions`, balanced across `competencies` by weight.
  * `limit` of null/undefined/0-or-less-than-1 or >= bank size returns the whole bank.
+ *
+ * Pass `{ randomize: true }` for an allocation-time sample. The quota remains
+ * deterministic and weighted, while the questions within each competency are
+ * shuffled so repeated allocations do not always serve the same first items.
+ * `rng` is injectable for tests; production allocations use Math.random.
  * Returns a new array in the original (display) order.
  */
-export function selectQuestions(questions = [], competencies = [], limit = null) {
+export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random } = {}) {
   const pool = [...questions];
   const n = Number(limit);
   if (!Number.isFinite(n) || n <= 0 || n >= pool.length) return pool;
@@ -104,7 +128,9 @@ export function selectQuestions(questions = [], competencies = [], limit = null)
 
   const keep = new Set();
   for (const g of groups) {
-    for (const q of g.items.slice(0, quota.get(g.id) ?? 0)) keep.add(q.id);
+    const count = quota.get(g.id) ?? 0;
+    const selected = randomize ? sample(g.items, count, rng) : g.items.slice(0, count);
+    for (const q of selected) keep.add(q.id);
   }
   return pool.filter((q) => keep.has(q.id));
 }

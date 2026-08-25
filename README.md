@@ -21,12 +21,16 @@ New technologies, roles, competencies, questions, weights and scoring frameworks
 Requires Node.js ≥ 20. No `npm install` needed for local development.
 
 ```bash
-npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
+npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 63 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 66 tests: scoring engine, question apportionment, API/RBAC journey,
                     #          Airtable adapter contract, sign-in view, app shell and the
                     #          allocation dialog, brand mark (jsdom, optional dependency)
 ```
+
+`npm run seed` is idempotent for an existing store: it adds newly published RSA seed
+questions without recreating users or changing existing assessment snapshots. Use
+`npm run seed:fresh` only when you intentionally want to reset the local JSON store.
 
 Full end-to-end suites (need a running, seeded server):
 
@@ -62,10 +66,13 @@ python3 tests/features.py     # 175 checks: every feature — CRUD, validation, 
 - **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
 - **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks.
 - **Configurable assessment length** — at allocation the admin serves either the full question
-  bank or **X questions**. The X are apportioned across competencies *in proportion to their
-  weight* (largest-remainder, capped per competency), so a 10-question sitting still covers
-  every competency and scores on the same weighted basis as the full bank. The dialog previews
-  the exact split before you commit, and the served set is frozen into the assessment snapshot.
+  bank or **1–50 questions**. The X are apportioned across competencies *in proportion to their
+  weight* (largest-remainder, capped per competency), so a shorter sitting still covers every
+  competency and scores on the same weighted basis as the full bank. Questions within each
+  competency are sampled randomly for each capped allocation. The dialog offers presets through
+  50, previews the split before you commit, and the served set is frozen into the assessment
+  snapshot. The seeded RSA track contains **105 questions (15 per competency)** so capped
+  allocations can sample a broad, weighted set.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.

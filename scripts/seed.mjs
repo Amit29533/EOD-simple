@@ -5,7 +5,7 @@
  *  - three demo candidates at different pipeline stages, one with a fully scored example report
  *
  * Usage:
- *   node scripts/seed.mjs          # seed if empty
+ *   node scripts/seed.mjs          # seed if empty; sync newly published seed questions otherwise
  *   SEED_FRESH=1 node scripts/seed.mjs   # wipe JSON store and reseed
  *   STORAGE=airtable AIRTABLE_API_KEY=.. AIRTABLE_BASE_ID=.. node scripts/seed.mjs
  */
@@ -26,8 +26,36 @@ if ((env.SEED_FRESH === '1') && (env.STORAGE || 'json') === 'json') {
 const store = await createStore();
 console.log(`[seed] storage backend: ${store.kind}`);
 
-if ((await store.list('users', { username: 'admin' })).length) {
-  console.log('[seed] admin user already exists - store is already seeded. Use SEED_FRESH=1 (json) to reset.');
+const questionRecord = (q, roleId, compIds) => ({
+  role_id: roleId, competency_id: compIds[q.competency],
+  type: q.type, prompt: q.prompt, help_text: q.help_text || '',
+  options: q.options || [], correct_option_ids: q.correct_option_ids || [],
+  points: q.points, difficulty: q.difficulty, rubric: q.rubric || '', order: q.order, active: true,
+});
+
+// `seed` is also safe to run against an existing demo/MVP store. This matters
+// when new seed content is published: do not recreate users or assessments,
+// just add the new question records that are not already present.
+const existingAdmin = await store.list('users', { username: 'admin' });
+if (existingAdmin.length) {
+  const existingRole = (await store.list('roles', { key: RSA_ROLE.key }))[0];
+  if (!existingRole) {
+    console.log('[seed] admin user already exists; no RSA role found, so no seed migration was applied.');
+    process.exit(0);
+  }
+  const existingCompetencies = await store.list('competencies', { role_id: existingRole.id });
+  const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
+  const existingQuestions = await store.list('questions', { role_id: existingRole.id });
+  const prompts = new Set(existingQuestions.map((q) => q.prompt));
+  let added = 0;
+  for (const q of RSA_QUESTIONS) {
+    if (prompts.has(q.prompt) || !compIds[q.competency]) continue;
+    await store.insert('questions', questionRecord(q, existingRole.id, compIds));
+    prompts.add(q.prompt);
+    added += 1;
+  }
+  const total = (await store.list('questions', { role_id: existingRole.id })).length;
+  console.log(`[seed] existing RSA bank synchronized: added ${added} question(s), ${total} total`);
   process.exit(0);
 }
 
@@ -38,14 +66,7 @@ for (const c of RSA_COMPETENCIES) {
   const rec = await store.insert('competencies', { ...c, role_id: role.id, active: true });
   compIds[c.key] = rec.id;
 }
-for (const q of RSA_QUESTIONS) {
-  await store.insert('questions', {
-    role_id: role.id, competency_id: compIds[q.competency],
-    type: q.type, prompt: q.prompt, help_text: q.help_text || '',
-    options: q.options || [], correct_option_ids: q.correct_option_ids || [],
-    points: q.points, difficulty: q.difficulty, rubric: q.rubric || '', order: q.order, active: true,
-  });
-}
+for (const q of RSA_QUESTIONS) await store.insert('questions', questionRecord(q, role.id, compIds));
 await store.insert('frameworks', { role_id: role.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
 console.log(`[seed] role track "${role.name}": ${RSA_COMPETENCIES.length} competencies, ${RSA_QUESTIONS.length} questions`);
 
@@ -94,6 +115,11 @@ const qByComp = {};
 for (const q of snapshot.questions) (qByComp[q.competency_id] ||= []).push(q);
 const correctOrFirst = (q) => q.type === 'mcq_single' ? q.correct_option_ids[0] : q.correct_option_ids;
 const wrongSingle = (q) => q.options.find((o) => o.id !== q.correct_option_ids[0])?.id;
+const fallbackAnswer = (q) => {
+  if (q.type === 'mcq_single' || q.type === 'mcq_multi') return correctOrFirst(q);
+  if (q.type === 'scale') return 4;
+  return 'A considered answer covering the architecture, trade-offs and rollout plan.';
+};
 
 const answers = new Map();
 const scores = new Map();   // manual assessor scores per question id
@@ -128,13 +154,19 @@ for (const [compKey, compId] of Object.entries(compIds)) {
 
 for (const q of snapshot.questions) {
   const manual = q.type === 'text';
+  const answer = answers.get(q.id) ?? fallbackAnswer(q);
+  // The worked example predates the expanded bank, so give newly added manual
+  // questions a plausible passing score instead of leaving the seed unable to
+  // finalize. The deliberately weak original examples above still keep their
+  // lower scores and continue to surface useful gaps.
+  const assessorScore = manual ? (scores.get(q.id) ?? Math.max(0, Math.ceil(q.points * 0.8))) : undefined;
   await store.insert('responses', {
     assessment_id: nehaAssessment.id, question_id: q.id,
-    answer: answers.get(q.id) ?? (manual ? 'See transcript.' : null),
+    answer,
     auto_score: manual ? null : undefined,
-    assessor_score: manual ? scores.get(q.id) : undefined,
+    assessor_score: assessorScore,
     assessor_comment: manual
-      ? (scores.get(q.id) >= 4
+      ? (assessorScore >= 4
           ? 'Solid, structured answer with the expected evidence.'
           : 'Superficial - missing observability-driven diagnosis and durable controls.')
       : '',
