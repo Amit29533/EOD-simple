@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#eef6f7" />
   <meta name="color-scheme" content="light dark" />
-  <title>Anthroprime EOD · Enterprise Capability on Demand</title>
-  <meta name="description" content="Anthroprime EOD — assess, enrich and certify enterprise-ready technology talent." />
+  <title>Anthroprime ECOD · Enterprise Capability on Demand</title>
+  <meta name="description" content="Anthroprime ECOD — assess, enrich and certify enterprise-ready technology talent." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -16,7 +16,7 @@
     /* Set the colour theme before first paint so there is no flash. Mirrors js/theme.js. */
     (function () {
       try {
-        var pref = localStorage.getItem('anthroprime-eod-theme');
+        var pref = localStorage.getItem('anthroprime-ecod-theme');
         if (['auto', 'light', 'dark'].indexOf(pref) === -1) pref = 'auto';
         var dark = pref === 'dark' || (pref === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
         var root = document.documentElement;
@@ -37,7 +37,7 @@
   </div>
   <div id="modal-root"></div>
   <div id="toast-root" class="no-print" aria-live="polite"></div>
-  <noscript>Anthroprime EOD requires JavaScript.</noscript>
+  <noscript>Anthroprime ECOD requires JavaScript.</noscript>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>

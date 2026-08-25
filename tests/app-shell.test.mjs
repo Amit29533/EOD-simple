@@ -1,6 +1,6 @@
 /**
  * App shell test: runs the real public/js/app.js in jsdom to prove the signed-in
- * chrome carries the Anthroprime EOD brand and a working light/dark toggle.
+ * chrome carries the Anthroprime ECOD brand and a working light/dark toggle.
  * The API is stubbed: bootstrap succeeds, every other call fails with 500 so the
  * route view lands in its own error state while the shell stays mounted.
  */
@@ -13,7 +13,7 @@ const SKIP = JSDOM ? false : 'jsdom not installed (npm install, or npm i --no-sa
 
 const flush = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 
-test('signed-in shell: Anthroprime EOD brand + theme toggle that persists', { skip: SKIP }, async () => {
+test('signed-in shell: Anthroprime ECOD brand + theme toggle that persists', { skip: SKIP }, async () => {
   const dom = new JSDOM(
     `<!doctype html><html><head><meta name="theme-color" content="#eef6f7"></head><body>
        <div id="sidebar"></div><div id="nav-scrim"></div>
@@ -49,11 +49,11 @@ test('signed-in shell: Anthroprime EOD brand + theme toggle that persists', { sk
 
     const sidebar = document.getElementById('sidebar');
     assert.match(sidebar.innerHTML, /<strong>Anthroprime<\/strong>/, 'sidebar wordmark');
-    assert.match(sidebar.innerHTML, /EOD · Capability OS/, 'sidebar tagline');
-    assert.match(sidebar.querySelector('.logo').getAttribute('aria-label'), /Anthroprime EOD home/);
+    assert.match(sidebar.innerHTML, /ECOD · Capability OS/, 'sidebar tagline');
+    assert.match(sidebar.querySelector('.logo').getAttribute('aria-label'), /Anthroprime ECOD home/);
 
     const topbar = document.getElementById('topbar');
-    assert.match(topbar.innerHTML, /Anthroprime EOD/, 'topbar eyebrow');
+    assert.match(topbar.innerHTML, /Anthroprime ECOD/, 'topbar eyebrow');
 
     const btn = topbar.querySelector('#theme-toggle');
     assert.ok(btn, 'theme toggle rendered in the topbar');
@@ -63,7 +63,7 @@ test('signed-in shell: Anthroprime EOD brand + theme toggle that persists', { sk
 
     btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
     assert.equal(document.documentElement.dataset.theme, expected, 'theme flipped');
-    assert.equal(localStorage.getItem('anthroprime-eod-theme'), expected, 'choice persisted for the next visit');
+    assert.equal(localStorage.getItem('anthroprime-ecod-theme'), expected, 'choice persisted for the next visit');
     assert.match(btn.getAttribute('aria-label'), new RegExp(`Switch to ${before} mode`), 'label follows the new state');
   } finally {
     dom.window.close();

@@ -1,4 +1,7 @@
 node_modules/
+# Dependencies are optional (jsdom for UI tests, @netlify/blobs for that backend);
+# the app and `npm test` both run with none installed, so no lockfile is tracked.
+package-lock.json
 data/
 .netlify/
 .env

@@ -1,4 +1,4 @@
-# Anthroprime EOD — Enterprise Capability on Demand
+# Anthroprime ECOD — Enterprise Capability on Demand
 
 Assess experienced technology professionals against enterprise roles, map their exact
 capability gaps, and maintain a pool of **enterprise-ready talent**.
@@ -23,17 +23,18 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 40 tests: scoring engine, API/RBAC journey, Airtable adapter contract,
-                    #          sign-in view + theme manager (jsdom, optional dependency)
+npm test            # 56 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #          Airtable adapter contract, sign-in view, app shell and the
+                    #          allocation dialog (jsdom, optional dependency)
 ```
 
 Full end-to-end suites (need a running, seeded server):
 
 ```bash
 python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 151 checks: every feature — CRUD, validation, config editing,
+python3 tests/features.py     # 175 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
-                              # password-gated candidate deletion
+                              # password-gated candidate deletion, capped question allocation
 ```
 
 ### Demo sign-ins (seeded)
@@ -60,14 +61,19 @@ python3 tests/features.py     # 151 checks: every feature — CRUD, validation, 
 - **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline. Deletion is admin-password-gated and cascades the linked portal login, its sessions and any open assessments (finalized reports protect the candidate).
 - **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
 - **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks.
+- **Configurable assessment length** — at allocation the admin serves either the full question
+  bank or **X questions**. The X are apportioned across competencies *in proportion to their
+  weight* (largest-remainder, capped per competency), so a 10-question sitting still covers
+  every competency and scores on the same weighted basis as the full bank. The dialog previews
+  the exact split before you commit, and the served set is frozen into the assessment snapshot.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
-- **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation.
+- **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
-- **Animated sign-in + light/dark theming** — glass, blur and motion on the Anthroprime EOD login; a segmented
+- **Animated sign-in + light/dark theming** — glass, blur and motion on the Anthroprime ECOD login; a segmented
   *Auto / Light / Dark* switch there and a toggle in the topbar. The choice is persisted in `localStorage`
-  (`anthroprime-eod-theme`) and applied before first paint, so there is no flash. Every colour is a CSS token
+  (`anthroprime-ecod-theme`) and applied before first paint, so there is no flash. Every colour is a CSS token
   in `:root` with a `[data-theme="dark"]` override, and all motion is disabled under `prefers-reduced-motion`.
 - **Role-based access & compartmentalization** — enforced server-side (see matrix below).
 

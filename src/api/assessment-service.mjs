@@ -1,12 +1,13 @@
 import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS } from '../core/constants.mjs';
 import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
+import { selectQuestions } from '../core/question-selection.mjs';
 
 /**
- * Immutable snapshot of role + competencies + questions + framework taken at
- * allocation time. In-flight assessments are therefore never affected by
- * later configuration edits.
+ * The active question bank for a role, in display order, with its competencies.
+ * Shared by the snapshot builder and the allocation preview endpoint so the
+ * admin UI always previews exactly what allocation will produce.
  */
-export async function buildSnapshot(store, roleId) {
+export async function roleBank(store, roleId) {
   const role = await store.get('roles', roleId);
   if (!role || role.active === false) return null;
   const [competencies, questions, frameworks] = await Promise.all([
@@ -16,11 +17,35 @@ export async function buildSnapshot(store, roleId) {
   ]);
   const framework = frameworks.find((f) => f.active !== false)
     || { name: 'ECOD Readiness Framework (default)', config: DEFAULT_FRAMEWORK_CONFIG, role_id: roleId };
-  return JSON.parse(JSON.stringify({
+  return {
     role,
     framework,
     competencies: competencies.filter((c) => c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     questions: questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+  };
+}
+
+/**
+ * Immutable snapshot of role + competencies + questions + framework taken at
+ * allocation time. In-flight assessments are therefore never affected by
+ * later configuration edits.
+ *
+ * `questionLimit` (optional) caps the assessment at X questions, spread across
+ * competencies in proportion to their weight (see core/question-selection.mjs).
+ * The snapshot only ever contains the questions actually served, so scoring,
+ * gap mapping and the report card all operate on the served set.
+ */
+export async function buildSnapshot(store, roleId, { questionLimit = null } = {}) {
+  const bank = await roleBank(store, roleId);
+  if (!bank) return null;
+  const served = selectQuestions(bank.questions, bank.competencies, questionLimit);
+  return JSON.parse(JSON.stringify({
+    role: bank.role,
+    framework: bank.framework,
+    competencies: bank.competencies,
+    questions: served,
+    question_limit: Number.isFinite(Number(questionLimit)) && Number(questionLimit) > 0 ? Math.floor(Number(questionLimit)) : null,
+    bank_total: bank.questions.length,
   }));
 }
 

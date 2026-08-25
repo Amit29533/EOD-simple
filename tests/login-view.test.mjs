@@ -68,7 +68,7 @@ test('theme.js applies, persists and resolves the colour theme', { skip: SKIP },
 
     theme.setThemePref('light');
     assert.equal(document.documentElement.dataset.theme, 'light');
-    assert.equal(localStorage.getItem('anthroprime-eod-theme'), 'light', 'preference persisted');
+    assert.equal(localStorage.getItem('anthroprime-ecod-theme'), 'light', 'preference persisted');
     assert.equal(document.querySelector('meta[name="theme-color"]').getAttribute('content'), '#eef6f7');
 
     theme.applyTheme('auto');
@@ -78,14 +78,14 @@ test('theme.js applies, persists and resolves the colour theme', { skip: SKIP },
   } finally { teardownDom(dom); }
 });
 
-test('login view renders the Anthroprime EOD brand and sign-in form', { skip: SKIP }, async () => {
+test('login view renders the Anthroprime ECOD brand and sign-in form', { skip: SKIP }, async () => {
   const dom = setupDom();
   try {
     const { wrap } = await mount();
     assert.ok(wrap, 'auth stage mounted');
     assert.ok(wrap.classList.contains('is-ready'), 'entrance state applied');
     assert.equal(wrap.querySelector('.auth-wordmark strong').textContent, 'Anthroprime');
-    assert.equal(wrap.querySelector('.auth-wordmark em').textContent, 'EOD');
+    assert.equal(wrap.querySelector('.auth-wordmark em').textContent, 'ECOD');
     assert.match(wrap.querySelector('.story-title').textContent, /Turn capability into/);
     assert.ok(wrap.querySelector('.rotator').querySelectorAll('.rot-word').length === 3, 'rotating headline words');
     assert.ok(wrap.querySelector('#login-form'), 'form present');
@@ -110,7 +110,7 @@ test('theme switch flips the document theme and its own state', { skip: SKIP }, 
     assert.equal(dark.getAttribute('aria-checked'), 'true');
     assert.equal(light.getAttribute('aria-checked'), 'false');
     assert.equal(sw.dataset.active, '2', 'thumb moved to the dark slot');
-    assert.equal(localStorage.getItem('anthroprime-eod-theme'), 'dark');
+    assert.equal(localStorage.getItem('anthroprime-ecod-theme'), 'dark');
 
     light.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
     assert.equal(document.documentElement.dataset.theme, 'light');
@@ -122,7 +122,7 @@ test('theme switch flips the document theme and its own state', { skip: SKIP }, 
   } finally { teardownDom(dom); }
 });
 
-test('password field: reveal toggle and Caps Lock hint', { skip: SKIP }, async () => {
+test('password field: reveal toggle (no Caps Lock hint)', { skip: SKIP }, async () => {
   const dom = setupDom();
   try {
     const { wrap } = await mount();
@@ -144,17 +144,9 @@ test('password field: reveal toggle and Caps Lock hint', { skip: SKIP }, async (
     assert.equal(toggle.querySelector('.pt-icon-eye').hidden, false);
     assert.equal(toggle.querySelector('.pt-icon-eye-off').hidden, true);
 
-    const caps = wrap.querySelector('#caps-hint');
-    assert.equal(caps.hidden, true, 'hint hidden by default');
-    const keyEvent = (key, capsOn) => {
-      const ev = new dom.window.KeyboardEvent('keyup', { key, bubbles: true });
-      Object.defineProperty(ev, 'getModifierState', { value: (m) => m === 'CapsLock' && capsOn });
-      return ev;
-    };
-    pw.dispatchEvent(keyEvent('A', true));
-    assert.equal(caps.hidden, false, 'hint shown while Caps Lock is on');
-    pw.dispatchEvent(keyEvent('a', false));
-    assert.equal(caps.hidden, true, 'hint hidden once Caps Lock is off');
+    // The Caps Lock indicator was removed from the sign-in screen.
+    assert.equal(wrap.querySelector('#caps-hint'), null, 'no Caps Lock hint element');
+    assert.ok(!/caps lock/i.test(wrap.textContent), 'no Caps Lock copy anywhere on the screen');
   } finally { teardownDom(dom); }
 });
 
@@ -224,7 +216,7 @@ test('failed sign-in shows the API error and re-arms the button', { skip: SKIP }
     assert.match(wrap.querySelector('#login-err').textContent, /Invalid username or password/);
     const btn = wrap.querySelector('button[type=submit]');
     assert.equal(btn.disabled, false, 'button re-enabled');
-    assert.match(btn.querySelector('.btn-label').textContent, /Sign in to Anthroprime EOD/);
+    assert.match(btn.querySelector('.btn-label').textContent, /Sign in to Anthroprime ECOD/);
     assert.equal(wrap.isConnected, true, 'still on the login page');
   } finally { teardownDom(dom); }
 });

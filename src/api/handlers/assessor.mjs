@@ -22,6 +22,7 @@ export function assessorHandlers(route) {
         id: a.id, status: a.status, created_at: a.created_at, submitted_at: a.submitted_at,
         scored_at: a.scored_at, overall_pct: a.overall_pct, readiness_label: a.readiness_label,
         role_name: a.snapshot_json?.role?.name || 'Assessment',
+        question_count: (a.snapshot_json?.questions || []).length,
         candidate: candidateForAssessor(cmap[a.candidate_id]),
       })),
     });

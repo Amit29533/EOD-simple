@@ -3,7 +3,8 @@ import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, 
 import { publicUser } from '../projections.mjs';
 import { USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG, PIPELINE_STAGES } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
-import { buildSnapshot } from '../assessment-service.mjs';
+import { buildSnapshot, roleBank } from '../assessment-service.mjs';
+import { allocationPreview } from '../../core/question-selection.mjs';
 
 const A = ['admin'];
 
@@ -91,6 +92,9 @@ export function adminHandlers(route) {
         scored_at: a.scored_at, overall_pct: a.overall_pct, readiness_label: a.readiness_label,
         role_name: roleName[a.role_id] || 'Assessment',
         assessor_name: assessorName[a.assessor_id] || null,
+        question_count: (a.snapshot_json?.questions || []).length,
+        question_limit: a.snapshot_json?.question_limit ?? null,
+        bank_total: a.snapshot_json?.bank_total ?? null,
       })),
       linked_user: users.find((u) => u.candidate_id === c.id) ? publicUser(users.find((u) => u.candidate_id === c.id)) : null,
       timeline: events,
@@ -425,7 +429,26 @@ export function adminHandlers(route) {
         candidate_id: a.candidate_id, candidate_name: cmap[a.candidate_id]?.name || '(deleted)',
         role_id: a.role_id, role_name: rname[a.role_id] || '(deleted)',
         assessor_id: a.assessor_id, assessor_name: uname[a.assessor_id] || null,
+        question_count: (a.snapshot_json?.questions || []).length,
+        question_limit: a.snapshot_json?.question_limit ?? null,
+        bank_total: a.snapshot_json?.bank_total ?? null,
       })),
+    });
+  });
+
+  // How many questions a given role would serve for a chosen cap, and how they
+  // spread across competencies. Lets the admin UI preview an allocation before
+  // committing to it — same code path the snapshot builder uses.
+  route('GET', '/admin/roles/:id/question-plan', A, async ({ store, params, query }) => {
+    const bank = await roleBank(store, params.id);
+    if (!bank) return notFound('Role not found or inactive.');
+    const raw = query.limit;
+    const limit = raw === undefined || raw === '' ? null : Number(raw);
+    if (raw !== undefined && raw !== '' && (!Number.isFinite(limit) || limit < 1))
+      return bad('limit must be a whole number of 1 or more.');
+    return ok({
+      role: { id: bank.role.id, name: bank.role.name },
+      ...allocationPreview(bank.questions, bank.competencies, limit),
     });
   });
 
@@ -439,21 +462,35 @@ export function adminHandlers(route) {
       const assessor = await store.get('users', assessor_id);
       if (!assessor || assessor.role !== 'assessor' || assessor.active === false) return bad('Assessor must be an active assessor user.');
     }
+    // Optional cap: serve only X questions, balanced across competencies by weight.
+    let questionLimit = null;
+    if (body.question_count !== undefined && body.question_count !== null && body.question_count !== '') {
+      questionLimit = Number(body.question_count);
+      if (!Number.isInteger(questionLimit) || questionLimit < 1)
+        return bad('Number of questions must be a whole number of 1 or more.');
+    }
     const open = (await store.list('assessments', { candidate_id: candidate.id }))
       .find((a) => a.role_id === body.role_id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
     if (open) return conflict('This candidate already has an open assessment for that role.');
-    const snapshot = await buildSnapshot(store, body.role_id);
+    const snapshot = await buildSnapshot(store, body.role_id, { questionLimit });
     if (!snapshot) return bad('Role not found or inactive.');
+    if (!snapshot.bank_total) return bad('That role has no active questions yet. Add questions first.');
+    if (questionLimit !== null && questionLimit > snapshot.bank_total)
+      return bad(`That role only has ${snapshot.bank_total} active question(s). Choose ${snapshot.bank_total} or fewer.`);
     if (!snapshot.questions.length) return bad('That role has no active questions yet. Add questions first.');
     const rec = await store.insert('assessments', {
       candidate_id: candidate.id, role_id: body.role_id, assessor_id,
       status: 'assigned', snapshot_json: snapshot, report_json: null,
+      question_count: snapshot.questions.length,
       overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
     });
     await store.update('candidates', candidate.id, { target_role_id: candidate.target_role_id || body.role_id });
     await advanceCandidate(store, candidate.id, 'assessment');
+    const scope = snapshot.question_limit
+      ? `${snapshot.questions.length} of ${snapshot.bank_total} questions`
+      : `all ${snapshot.questions.length} questions`;
     await audit(store, auth.user, 'assessment_allocated', 'assessments', rec.id,
-      `Assessment allocated to "${candidate.name}"${assessor_id ? '' : ' (assessor to be assigned)'}`);
+      `Assessment allocated to "${candidate.name}" (${scope})${assessor_id ? '' : ' — assessor to be assigned'}`);
     return created(rec);
   });
 

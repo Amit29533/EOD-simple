@@ -1,6 +1,6 @@
 import { session, me, bootstrap, setUnauthorizedHandler } from './api.js';
 import { initTheme, toggleTheme, resolvedTheme } from './theme.js';
-import { esc, initials } from './ui.js';
+import { esc, initials, enhanceTables } from './ui.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -34,8 +34,8 @@ function placeholderView(moduleName) {
       <div class="empty-illustration"><span>✦</span></div>
       <div class="eyebrow">Coming next</div>
       <h1>${esc(moduleName)}</h1>
-      <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next Anthroprime EOD phase.</p>
-      <p class="muted small">You only have access to your own assignments. For questions, contact your Anthroprime EOD administrator.</p>
+      <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next Anthroprime ECOD phase.</p>
+      <p class="muted small">You only have access to your own assignments. For questions, contact your Anthroprime ECOD administrator.</p>
     </div>`;
   };
   return fn;
@@ -78,14 +78,14 @@ function renderShell() {
   const navGroups = u.role === 'admin'
     ? [['Workspace', nav.slice(0, 3)], ['Configure', nav.slice(3, 6)], ['Governance', nav.slice(6)]]
     : [['Workspace', nav]];
-  const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'Anthroprime EOD';
+  const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'Anthroprime ECOD';
 
   document.body.classList.add('app-body');
   document.getElementById('sidebar').innerHTML = `
     <div class="brand">
-      <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime EOD home">
+      <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime ECOD home">
         <span class="mark">A</span>
-        <span><strong>Anthroprime</strong><small>EOD · Capability OS</small></span>
+        <span><strong>Anthroprime</strong><small>ECOD · Capability OS</small></span>
       </a>
       <div class="brand-status"><span></span> Talent readiness platform</div>
     </div>
@@ -116,7 +116,7 @@ function renderShell() {
   document.getElementById('topbar').innerHTML = `
     <div class="topbar-left">
       <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
-      <div class="topbar-context"><span class="eyebrow">Anthroprime EOD</span><strong>${esc(pageLabel)}</strong></div>
+      <div class="topbar-context"><span class="eyebrow">Anthroprime ECOD</span><strong>${esc(pageLabel)}</strong></div>
     </div>
     <div class="topbar-right">
       <span class="live-status"><i></i> All systems normal</span>
@@ -184,11 +184,45 @@ async function renderOnce() {
     const params = {};
     keys.forEach((k, i) => { params[k] = decodeURIComponent(match[i + 1]); });
     view.innerHTML = '<div class="loading"><span class="spinner"></span><span>Loading workspace</span></div>';
-    try { await fn(view, params); }
-    catch (err) { view.innerHTML = `<div class="error-page"><div class="error-icon">!</div><h3>Something went wrong</h3><p class="muted">${esc(err.message)}</p><a class="btn secondary" href="${DEFAULT_ROUTE[state.user.role]}">Return to workspace</a></div>`; }
+    try {
+      await fn(view, params);
+      enhanceTables(view);
+      view.scrollIntoView?.({ block: 'start' });
+    } catch (err) {
+      renderRouteError(view, err);
+    }
     return;
   }
   location.hash = DEFAULT_ROUTE[state.user.role];
+}
+
+/**
+ * View-level failure. Network/offline problems get a retry affordance rather
+ * than a dead end, and 404s are named for what they are so the user is not
+ * left guessing whether the record exists.
+ */
+function renderRouteError(view, err) {
+  const status = err?.status;
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const title = offline ? 'You appear to be offline'
+    : status === 404 ? 'Not found'
+    : status === 403 ? 'You do not have access to this'
+    : status === 409 ? 'Not available yet'
+    : 'Something went wrong';
+  const detail = offline
+    ? 'Check your connection — your work is saved and the page will load once you are back online.'
+    : (err?.message || 'An unexpected error occurred.');
+  view.innerHTML = `<div class="error-page">
+    <div class="error-icon">!</div>
+    <h3>${esc(title)}</h3>
+    <p class="muted">${esc(detail)}</p>
+    <div class="row" style="justify-content:center;gap:10px;margin-top:6px">
+      <button class="btn" id="err-retry" type="button">Try again</button>
+      <a class="btn secondary" href="${DEFAULT_ROUTE[state.user.role]}">Return to workspace</a>
+    </div>
+  </div>`;
+  const retry = view.querySelector('#err-retry');
+  if (retry) retry.onclick = () => render();
 }
 
 function onSignedIn({ token, user, candidate: c }) {
@@ -233,6 +267,13 @@ function syncThemeToggle(btn, theme) {
   btn.setAttribute('aria-label', `Switch to ${next} mode`);
   btn.title = `Switch to ${next} mode`;
 }
+
+// Table overflow depends on viewport width — re-evaluate when it changes.
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => enhanceTables(document.getElementById('view')), 180);
+});
 
 setUnauthorizedHandler(() => { state.user = null; render(); });
 initTheme();

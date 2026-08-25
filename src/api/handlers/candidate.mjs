@@ -50,6 +50,7 @@ export function candidateHandlers(route) {
         readiness_key: ['scored', 'validated'].includes(a.status) ? a.readiness_key : null,
         role_name: a.snapshot_json?.role?.name || 'Assessment',
         question_count: (a.snapshot_json?.questions || []).length,
+        total_points: (a.snapshot_json?.questions || []).reduce((s2, q) => s2 + Number(q.points ?? 1), 0),
       })),
     });
   });
