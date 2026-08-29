@@ -16,6 +16,13 @@ const maxAssessmentQuestions = () => Math.max(
   Number(M()?.maxAssessmentQuestions) || FALLBACK_MAX_ASSESSMENT_QUESTIONS,
 );
 
+const DASHBOARD_ICONS = {
+  candidates: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><path d="M3.8 19c.4-3.1 2.1-4.7 5.2-4.7s4.8 1.6 5.2 4.7"></path><path d="M16 5.4a3 3 0 0 1 0 5.7M17 14.6c2.1.5 3.3 2 3.5 4.4"></path></svg>',
+  ready: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"></path><circle cx="12" cy="12" r="8"></circle></svg>',
+  active: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h8l3 3V20H7z"></path><path d="M15 3.8V7h3M10 11h5M10 14.5h5M10 18h3"></path></svg>',
+  score: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="m7 15 3-3 3 2 5-7"></path><path d="M16 7h2v2"></path></svg>',
+};
+
 /* ================================ Dashboard ================================ */
 export async function dashboardView(view) {
   view.innerHTML = loading();
@@ -33,10 +40,10 @@ export async function dashboardView(view) {
       <div class="heading-actions"><a class="btn" href="#/candidates">＋ Add candidate</a></div>
     </div>
     <div class="grid cols-4 metric-grid">
-      <div class="stat"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
-      <div class="stat stat-gold"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
-      <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
-      <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
+      <div class="stat"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.candidates}</span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
+      <div class="stat stat-gold"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.ready}</span></div><div class="num">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
+      <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.active}</span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
+      <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.score}</span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
     </div>
     <div class="dashboard-grid">
       <div class="card pipeline-panel">
@@ -782,20 +789,40 @@ function questionEditorModal(existing, competencies) {
         {
           label: 'Save question',
           onClick: async (close, btn) => {
-            btn.disabled = true;
             const root = m.el;
             const type = v.type;
+            const isChoice = ['mcq_single', 'mcq_multi'].includes(type);
             const opts = options.map((o, i) => ({ id: o.id, label: root.querySelector(`[data-opt-label="${i}"]`)?.value.trim() || '' })).filter((o) => o.label);
             const correct = [...root.querySelectorAll('input[name=qe-correct]:checked')].map((x) => x.value);
+            const prompt = root.querySelector('#qe-prompt').value.trim();
+            const rubric = root.querySelector('#qe-rubric').value.trim();
+            const points = Number(root.querySelector('#qe-points').value || 4);
+            const fail = (message, selector) => {
+              toast(message, 'error');
+              const field = root.querySelector(selector);
+              field?.focus();
+              field?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            };
+            if (!prompt) { fail('Question prompt is required.', '#qe-prompt'); return; }
+            if (!Number.isFinite(points) || points < 1 || points > 20) { fail('Points must be between 1 and 20.', '#qe-points'); return; }
+            if (isChoice) {
+              if (opts.length < 2) { fail('At least two answer options are required.', '[data-opt-label="0"]'); return; }
+              const optionIds = new Set(opts.map((o) => o.id));
+              const validCorrect = correct.filter((id) => optionIds.has(id));
+              if (type === 'mcq_single' && validCorrect.length !== 1) { fail('Select exactly one correct option.', 'input[name=qe-correct]'); return; }
+              if (type === 'mcq_multi' && (validCorrect.length < 1 || validCorrect.length >= opts.length)) { fail('Select at least one correct option, but not all options.', 'input[name=qe-correct]'); return; }
+            }
+            if (type === 'text' && !rubric) { fail('Add the assessor rubric for this open question.', '#qe-rubric'); return; }
+            btn.disabled = true;
             const out = {
               competency_id: root.querySelector('#qe-comp').value,
               type,
-              prompt: root.querySelector('#qe-prompt').value.trim(),
+              prompt,
               help_text: root.querySelector('#qe-help').value.trim(),
-              options: ['mcq_single', 'mcq_multi'].includes(type) ? opts : [],
-              correct_option_ids: ['mcq_single', 'mcq_multi'].includes(type) ? correct : [],
-              rubric: root.querySelector('#qe-rubric').value.trim(),
-              points: Number(root.querySelector('#qe-points').value || 4),
+              options: isChoice ? opts : [],
+              correct_option_ids: isChoice ? correct.filter((id) => opts.some((o) => o.id === id)) : [],
+              rubric,
+              points,
               difficulty: root.querySelector('#qe-diff').value,
               order: Number(root.querySelector('#qe-order').value || 0),
               active: root.querySelector('#qe-active').checked,
@@ -860,23 +887,41 @@ export async function usersView(view) {
     { name: 'email', label: 'Email', type: 'email' },
     { name: 'role', label: 'Role', type: 'select', required: true, allowEmpty: false, options: state.meta.userRoles.map((r) => ({ value: r, label: r })) },
     { name: 'password', label: values ? 'New password (leave blank to keep current)' : 'Password', type: 'password', required: !values, help: 'Minimum 8 characters. Share securely with the user.' },
-    { name: 'candidate_id', label: 'Linked candidate (for role = candidate)', type: 'select', options: candidates.map((c) => ({ value: c.id, label: c.name })) },
+    ...(values && values.role !== 'candidate' ? [] : [{
+      name: 'candidate_id', label: 'Linked candidate (required for candidate role)', type: 'select',
+      options: candidates.map((c) => ({ value: c.id, label: c.name })),
+      required: values?.role === 'candidate',
+      help: values ? 'Candidate portal users must stay linked to exactly one candidate record.' : 'Required only when Role is candidate; ignored for other roles.',
+    }]),
   ];
 
   view.querySelector('#add-user').onclick = async () => {
-    const vals = await formModal({ title: 'Create user', fields: userFields(null), values: { role: 'assessor' } });
-    if (!vals) return;
-    await attempt(() => api('/admin/users', { method: 'POST', body: vals }), { okMessage: `User "${vals.username}" created` });
-    usersView(view);
+    let values = { role: 'assessor' };
+    while (true) {
+      const vals = await formModal({ title: 'Create user', fields: userFields(null), values });
+      if (!vals) return;
+      values = vals;
+      if (vals.role === 'candidate' && !vals.candidate_id) {
+        toast('Choose the linked candidate before creating a candidate portal user.', 'error');
+        continue;
+      }
+      const body = { ...vals };
+      if (body.role !== 'candidate') delete body.candidate_id;
+      const out = await attempt(() => api('/admin/users', { method: 'POST', body }), { okMessage: `User "${vals.username}" created` });
+      if (out) usersView(view);
+      return;
+    }
   };
   view.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = async () => {
     const u = users.find((x) => x.id === b.dataset.edit);
-    const vals = await formModal({ title: `Edit @${u.username}`, values: u, fields: userFields(u).filter((f) => ['name', 'email', 'candidate_id', 'password'].includes(f.name)) });
+    const editable = ['name', 'email', 'password', ...(u.role === 'candidate' ? ['candidate_id'] : [])];
+    const vals = await formModal({ title: `Edit @${u.username}`, values: u, fields: userFields(u).filter((f) => editable.includes(f.name)) });
     if (!vals) return;
-    const body = { name: vals.name, email: vals.email, candidate_id: vals.candidate_id || null };
+    const body = { name: vals.name, email: vals.email };
+    if (u.role === 'candidate') body.candidate_id = vals.candidate_id;
     if (vals.password) body.password = vals.password;
-    await attempt(() => api(`/admin/users/${u.id}`, { method: 'PATCH', body }), { okMessage: 'User updated' });
-    usersView(view);
+    const out = await attempt(() => api(`/admin/users/${u.id}`, { method: 'PATCH', body }), { okMessage: 'User updated' });
+    if (out) usersView(view);
   }));
   view.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = async () => {
     const u = users.find((x) => x.id === b.dataset.pw);
