@@ -14,6 +14,7 @@ import { createStore } from '../src/storage/index.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
 import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
+import { synchronizeBank } from '../src/api/catalogue-service.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
 
 const env = process.env;
@@ -38,7 +39,9 @@ const questionRecord = (q, roleId, compIds) => ({
 
 // `seed` is also safe to run against an existing demo/MVP store. This matters
 // when new seed content is published: do not recreate users or assessments,
-// just add the new question records that are not already present.
+// just add the new question records that are not already present and repair
+// the spoken-question contract flags on existing copies (see
+// synchronizeBank — shared with the in-app published-catalogue sync).
 const existingAdmin = await store.list('users', { username: 'admin' });
 if (existingAdmin.length) {
   const existingRole = (await store.list('roles', { key: RSA_ROLE.key }))[0];
@@ -46,19 +49,8 @@ if (existingAdmin.length) {
     console.log('[seed] admin user already exists; no RSA role found, so no seed migration was applied.');
     process.exit(0);
   }
-  const existingCompetencies = await store.list('competencies', { role_id: existingRole.id });
-  const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
-  const existingQuestions = await store.list('questions', { role_id: existingRole.id });
-  const prompts = new Set(existingQuestions.map((q) => q.prompt));
-  let added = 0;
-  for (const q of RSA_QUESTIONS) {
-    if (prompts.has(q.prompt) || !compIds[q.competency]) continue;
-    await store.insert('questions', questionRecord(q, existingRole.id, compIds));
-    prompts.add(q.prompt);
-    added += 1;
-  }
-  const total = (await store.list('questions', { role_id: existingRole.id })).length;
-  console.log(`[seed] existing RSA bank synchronized: added ${added} question(s), ${total} total`);
+  const result = await synchronizeBank(store, existingRole);
+  console.log(`[seed] existing RSA bank synchronized: added ${result.added} question(s), repaired ${result.repaired} question flag(s), ${result.bank_total} total`);
   process.exit(0);
 }
 

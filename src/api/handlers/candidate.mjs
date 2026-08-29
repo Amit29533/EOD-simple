@@ -223,6 +223,11 @@ export function candidateHandlers(route) {
     const q = questions[quiz.index];
     if (!q || !isOpenQuestion(q)) return unprocessable('This question has no review phase.');
     if (body?.phase !== 'answer') return bad('phase must be "answer".');
+    // The review -> answer transition is one-way: re-calling it must not
+    // restart the answer countdown (an exam integrity requirement — the
+    // two-minute answer window cannot be extended by repeating the call).
+    if ((quiz.phase || 'answer') !== 'review')
+      return conflict('The answer phase for this question has already started; its timer cannot be reset.');
     const next = { ...quiz, phase: 'answer', question_started_at: new Date().toISOString() };
     await store.update('assessments', a.id, { quiz_state: next });
     return ok({ phase: 'answer', remaining_ms: budgetsFor(q).answer_ms });

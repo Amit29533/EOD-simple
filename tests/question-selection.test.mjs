@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectQuestions, allocationPreview } from '../src/core/question-selection.mjs';
+import { selectQuestions, allocationPreview, promptKey } from '../src/core/question-selection.mjs';
 
 const comps = [
   { id: 'c1', name: 'Architecture', weight: 50 },
@@ -148,4 +148,57 @@ test('allocationPreview reports the served split and its points total', () => {
   assert.equal(preview.spoken_served, 0);
   assert.equal(preview.points, 40);
   assert.deepEqual(preview.per_competency.map((r) => r.count), [5, 3, 2]);
+});
+
+test('promptKey sees through typography, case and leading labels', () => {
+  const base = 'COMMON QUESTION — In simple terms, what problem does Databricks solve?';
+  const variants = [
+    base,
+    'COMMON QUESTION - In simple terms, what problem does Databricks solve?',
+    'In simple terms, what problem does Databricks solve?',           // label dropped by an admin
+    '  COMMON  QUESTION —  In simple terms, what  problem does Databricks solve? ',
+  ];
+  for (const v of variants) assert.equal(promptKey(v), promptKey(base), JSON.stringify(v));
+  // Curly vs straight quotes inside the sentence.
+  assert.equal(promptKey('The client said “no”.'), promptKey('The client said "no".'));
+  // A mixed-case sentence lead-in is not a label and must be preserved
+  // (a real catalogue prompt starts exactly this way).
+  assert.notEqual(
+    promptKey('A client gives you a vague requirement: “We want to modernize our data platform.”'),
+    promptKey('“We want to modernize our data platform.”'),
+  );
+  // Genuinely different prompts must never collide.
+  assert.notEqual(promptKey('Oral 1'), promptKey('Oral 2'));
+  assert.notEqual(
+    promptKey('How would you explain a Databricks architecture to a CIO?'),
+    promptKey('How would you explain a Databricks architecture to a data engineer?'),
+  );
+});
+
+test('a legacy flag-less twin merges into its published copy instead of being served twice', () => {
+  const withPrompts = bank.map((q, i) => ({ ...q, prompt: `Prompt ${i}` }));
+  // Same question as withPrompts[0], older wording (no label, straight
+  // punctuation) and no oral metadata — the exact shape of legacy rows that
+  // made the exam repeat the common question without a microphone.
+  const legacyTwin = {
+    ...withPrompts[0],
+    id: 'legacy-twin',
+    prompt: 'prompt 0',
+    question_set: 'rsa-oral',
+    pin_first: true,
+    audio_required: true,
+    help_text: 'Record a spoken answer (required).',
+    rubric: 'Expected evidence: trusted-advisor framing.',
+  };
+  const picked = selectQuestions([...withPrompts, legacyTwin], comps, null);
+  assert.equal(picked.length, withPrompts.length, 'the twin is served only once');
+  const merged = picked[0];
+  assert.equal(merged.id, withPrompts[0].id, 'the first occurrence keeps the row identity responses are keyed by');
+  assert.equal(merged.pin_first, true, 'pin survives the merge');
+  assert.equal(merged.audio_required, true, 'the microphone requirement survives the merge');
+  assert.equal(merged.question_set, 'rsa-oral', 'spoken-set membership survives the merge');
+  assert.equal(merged.rubric, 'Expected evidence: trusted-advisor framing.', 'a missing rubric is inherited');
+  // The merge must never mutate the caller's question objects.
+  assert.equal(withPrompts[0].audio_required, undefined);
+  assert.equal(withPrompts[0].question_set, undefined);
 });

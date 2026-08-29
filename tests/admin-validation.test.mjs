@@ -101,3 +101,62 @@ test('candidate user relinking remains one-to-one and cannot be cleared', async 
   const saved = await store.get('users', userB.body.id);
   assert.equal(saved.candidate_id, candB.id, 'failed relink leaves candidate user attached to original candidate');
 });
+
+test('editing a spoken question preserves its oral metadata (mic requirement, pin, set)', async () => {
+  // Regression: normalizeQuestion dropped question_set / pin_first /
+  // audio_required, so one admin edit (e.g. fixing a typo or toggling active)
+  // silently removed the microphone control from a spoken question — and the
+  // next catalogue sync re-inserted the published copy next to the edited
+  // row, making the exam repeat the question.
+  const created = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      type: 'text',
+      prompt: 'Explain the RSA role to a client executive.',
+      options: [],
+      correct_option_ids: [],
+      question_set: 'rsa-oral',
+      pin_first: true,
+      audio_required: true,
+      rubric: 'Expected evidence: plain-language framing; a recommendation with rationale.',
+    }),
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.question_set, 'rsa-oral', 'create keeps the spoken set');
+  assert.equal(created.body.pin_first, true, 'create keeps the pin');
+  assert.equal(created.body.audio_required, true, 'create keeps the mic requirement');
+
+  const patched = await call('PATCH', `/admin/questions/${created.body.id}`, {
+    token: adminToken,
+    body: { points: 8, rubric: 'Expected evidence: trusted-advisor framing.' },
+  });
+  assert.equal(patched.status, 200, JSON.stringify(patched.body));
+  assert.equal(patched.body.points, 8);
+  assert.equal(patched.body.question_set, 'rsa-oral', 'edit keeps the spoken set');
+  assert.equal(patched.body.pin_first, true, 'edit keeps the pin');
+  assert.equal(patched.body.audio_required, true, 'edit keeps the mic requirement');
+
+  // Deactivating also survives, and an explicit body value still wins.
+  const deactivated = await call('PATCH', `/admin/questions/${created.body.id}`, {
+    token: adminToken,
+    body: { active: false },
+  });
+  assert.equal(deactivated.status, 200);
+  assert.equal(deactivated.body.active, false);
+  assert.equal(deactivated.body.audio_required, true, 'deactivation does not strip the mic flag');
+
+  const unpinned = await call('PATCH', `/admin/questions/${created.body.id}`, {
+    token: adminToken,
+    body: { pin_first: false },
+  });
+  assert.equal(unpinned.status, 200);
+  assert.equal(unpinned.body.pin_first, false, 'an explicit pin change is honoured');
+  assert.equal(unpinned.body.audio_required, true, 'unpinning leaves the mic requirement intact');
+
+  // Standard questions stay standard: nothing flags itself by default.
+  const plain = await call('POST', '/admin/questions', { token: adminToken, body: validQuestion() });
+  assert.equal(plain.status, 201);
+  assert.equal(plain.body.audio_required, false);
+  assert.equal(plain.body.pin_first, false);
+  assert.equal(plain.body.question_set, '');
+});

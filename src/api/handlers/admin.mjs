@@ -641,5 +641,12 @@ function normalizeQuestion(body, existing = {}) {
     points: num(body.points, 4), difficulty: body.difficulty || 'intermediate',
     rubric: str(body.rubric, 3000), order: num(body.order, existing.order ?? 0),
     active: body.active !== undefined ? bool(body.active) : true,
+    // Oral/spoken-question metadata must survive an edit: an admin fixing a
+    // typo (or toggling a field) on a spoken question must not strip the
+    // microphone requirement, the pinned-first rule or set membership — the
+    // form does not send these, so they persist from the existing record.
+    question_set: str(body.question_set ?? existing.question_set ?? '', 80),
+    pin_first: body.pin_first !== undefined ? bool(body.pin_first) : existing.pin_first === true,
+    audio_required: body.audio_required !== undefined ? bool(body.audio_required) : existing.audio_required === true,
   };
 }

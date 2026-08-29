@@ -1,9 +1,39 @@
 # Bug Fixes & UI Improvements Report
 
 ## Summary
-The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins.
+The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole.
 
-Current verification: **99/99 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+Current verification: **120/120 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+
+---
+
+## ⏱️ Exam lifecycle test pass (latest)
+
+A new end-to-end suite (`tests/exam-full-journey.test.mjs`, 12 tests) drives the whole exam over the real HTTP surface: the state machine (review/answer phases, countdown, resume, cursor integrity), spoken/audio answer handling, autosave drafting + locking, the integrity trail, submission validation, assessor scoring → finalize, exact weighted-report math (competency percentages, levels, gaps, bands), damaged-snapshot healing and compartmentalization.
+
+**Bug found and fixed — the answer-phase timer could be reset indefinitely.** `POST /candidate/assessments/:id/phase` accepted the review → answer transition regardless of the current phase, so repeating the call restarted `question_started_at` and a candidate could extend the two-minute answer window indefinitely (and re-arm it after every tab switch). The transition is now one-way: a second call returns **409** and the countdown continues from its original start. The client already treats a failed phase POST as benign (it re-fetches and repaints), so no UI change was needed.
+
+Also locked down by the suite (verified, no change needed): malformed answers never advance the cursor; oversized/non-base64 audio is rejected or dropped; locked answers ignore later autosaves; submit is closed after submission (as are `next`, autosave and integrity posts); early submission lists the unanswered questions while a completed exam may submit blanks (marked `timed_out`); assessor score entry validates the 0–points range and ignores auto-scored questions; the candidate report carries no rubrics, correct answers, assessor comments or per-question breakdown; a fully blank run scores 0 and maps every gap worst-first.
+
+---
+
+## 🎙️ Spoken-question repeat & missing microphone (latest)
+
+**Issue (user-visible)**: a spoken question was asked **twice** in one exam, and the repeated instance showed **no microphone** — just a typed-answer box.
+
+**Root causes** (three layers let the same defect through):
+1. *Admin edits stripped the oral metadata.* `normalizeQuestion()` in `src/api/handlers/admin.mjs` rebuilt the question record without `question_set` / `pin_first` / `audio_required`, so any admin edit of a spoken question silently removed its microphone requirement. If the prompt was also reworded (typo fix, straight quotes, dropped `COMMON QUESTION —` label), the next catalogue sync no longer recognized the row as the published question and inserted a **second copy** — the exam then served the same question twice, once without the mic.
+2. *Dedupe was typography-exact.* Both `uniqueBy()` (bank/snapshot selection) and `sortedQuestions()` (frozen snapshots) matched prompts byte-for-byte, so a copy differing only in quotes/dashes/spacing/case or a leading label slipped through.
+3. *The sync only ever inserted.* `scripts/seed.mjs` and the in-app published-catalogue sync added missing prompts but never repaired the spoken flags on rows that were already present — a bank seeded before the flags existed stayed silent forever.
+
+**Fix** (each layer now enforces the contract independently):
+- **The retired `COMMON QUESTION —` label is gone** — the pinned spoken prompt is published as plain wording; the sync strips the label from legacy bank rows (durable cleanup) and the serve path de-labels even already-frozen papers, so candidates simply see the question text.
+- **Admin write path preserves oral metadata** — `normalizeQuestion()` carries `question_set`, `pin_first` and `audio_required` from the existing record (an explicit body value still wins; a standard question stays standard).
+- **Typography-insensitive dedupe with metadata merge** — `promptKey()` (NFKC, quote/dash/ellipsis unification, whitespace collapse, leading-label strip, casefold) is the single comparison key; `uniqueBy()` and `sortedQuestions()` collapse near-identical copies and the surviving row inherits the twin's pin, mic flag, set membership and any missing rubric/help text (copy-on-write; caller rows are never mutated). Verified collision-free across the published catalogue.
+- **The published catalogue is the serve-time authority** — `applyOralContract()` restores `question_set`/`pin_first`/`audio_required` on any served question whose prompt is a published oral prompt, healing even fully-stripped frozen snapshots and damaged banks before pin/order partitioning; `questionForCandidate` additionally treats oral-set membership as audio-required, so the mic can never disappear client-side.
+- **Sync repairs instead of duplicating** — `synchronizeBank()` (shared by `npm run seed` and the in-app top-up) matches published prompts typography-insensitively, repairs the spoken flags on the existing row in place (admin wording, points, order and deactivation are never touched) and reports `added` / `repaired`. `catalogueMissing()` counts restyled copies as present. Idempotent: a second run reports `added 0, repaired 0`.
+
+**Verified end-to-end**: a frozen paper holding 111 questions (a flag-less duplicate of the pinned common question plus every spoken row stripped of its flags) serves as **110 unique questions** — the common question pinned first **with the microphone**, all spoken questions showing the record control, zero duplicate prompts.
 
 ---
 
