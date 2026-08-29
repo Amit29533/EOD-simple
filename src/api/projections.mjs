@@ -22,23 +22,25 @@ export const candidateForAssessor = (c) => c && ({
 /** Full candidate (admin only). */
 export const candidateForAdmin = (c) => c && ({ ...c });
 
-import { RSA_ORAL_SET } from '../core/constants.mjs';
+import { requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 
 /**
  * Question as seen by a CANDIDATE: prompt + options only.
  * correct_option_ids and the assessor rubric are never sent.
  *
- * `audio_required` falls back to oral-set membership: spoken-set questions are
- * recorded-answer exercises by contract, so a row whose flag was stripped by
- * an older admin edit (or frozen into a snapshot before the flag existed)
- * still gets the microphone control.
+ * `audio_required` is projected from the open-question contract
+ * (core/spoken-answer.mjs) rather than from the stored flag alone: every open /
+ * scenario question is answered through the microphone with an optional text
+ * box, and a row whose flag was stripped by an older admin edit, frozen into a
+ * snapshot before the flag existed, or simply never flagged (standard open
+ * prompts were typed-only questions until now) still gets the record control.
  */
 export const questionForCandidate = (q) => ({
   id: q.id, competency_id: q.competency_id, type: q.type, prompt: q.prompt,
   help_text: q.help_text || '',
   options: (q.options || []).map((o) => ({ id: o.id, label: o.label })),
   points: q.points ?? 1, difficulty: q.difficulty || 'intermediate', order: q.order ?? 0,
-  audio_required: q.audio_required === true || q.question_set === RSA_ORAL_SET,
+  audio_required: requiresSpokenAnswer(q),
   pin_first: q.pin_first === true,
 });
 

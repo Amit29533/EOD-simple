@@ -2,7 +2,7 @@ import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS, MAX_ASSESSMENT_QUESTIONS } from '
 import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
 import { selectQuestions, dedupeQuestions } from '../core/question-selection.mjs';
 import { sortedQuestions } from './quiz-session.mjs';
-import { applyOralContract } from './catalogue-service.mjs';
+import { applySpokenContract } from './catalogue-service.mjs';
 
 /**
  * The active question bank for a role, in display order, with its competencies.
@@ -23,7 +23,7 @@ export async function roleBank(store, roleId) {
     role,
     framework,
     competencies: competencies.filter((c) => c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-    questions: applyOralContract(dedupeQuestions(questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))),
+    questions: applySpokenContract(dedupeQuestions(questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))),
   };
 }
 

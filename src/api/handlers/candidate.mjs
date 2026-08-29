@@ -5,6 +5,9 @@ import { MAX_AUDIO_B64 } from '../../core/constants.mjs';
 import {
   sortedQuestions, isOpenQuestion, budgetsFor, ensureQuizState, remainingMs, integrityPatch,
 } from '../quiz-session.mjs';
+import {
+  requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent,
+} from '../../core/spoken-answer.mjs';
 
 const R = ['candidate'];
 
@@ -26,7 +29,10 @@ function textValue(value) {
 function isBlank(q, value) {
   if (value === undefined || value === null || value === '') return true;
   if (Array.isArray(value) && !value.length) return true;
-  if (q.type === 'text') return !textValue(value).trim();
+  // An open answer counts when it carries typed notes, a transcript *or* a
+  // recording: a candidate who answered out loud without typing must not have
+  // that answer treated as blank and dropped.
+  if (q.type === 'text') return !openAnswerHasContent(value);
   return false;
 }
 
@@ -42,6 +48,13 @@ function persistableAnswer(q, value) {
       out.audio_b64 = b64;
       out.audio_mime = String(value.audio_mime || 'audio/webm').slice(0, 80);
     }
+    // Contract bookkeeping: an open answer is supposed to be spoken. The exam UI
+    // refuses to advance without a recording, but a submission that still
+    // arrives with typed notes only (mic denied, no MediaRecorder, a clip too
+    // large to store) is kept rather than discarded — silently throwing away a
+    // candidate's work inside a timed exam is worse than the gap — and flagged
+    // so the assessor and the integrity trail can see it.
+    if (requiresSpokenAnswer(q) && !hasSpokenEvidence(out)) out.audio_missing = true;
     return out;
   }
   return value;
@@ -167,7 +180,7 @@ export function candidateHandlers(route) {
         continue;
       }
       if (!validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
-      if (q.type === 'text' && !textValue(value).trim()) {
+      if (q.type === 'text' && !openAnswerHasContent(value)) {
         const r = byQid.get(qid);
         if (r) await store.remove('responses', r.id);
         continue;
@@ -243,6 +256,7 @@ export function candidateHandlers(route) {
     const q = questions[quiz.index];
     if (!q) return ok({ complete: true, index: quiz.index, total: questions.length });
 
+    let base = quiz;
     if (body?.answer !== undefined && body.answer !== null && !isBlank(q, body.answer)) {
       if (!validateAnswerShape(q, body.answer)) return unprocessable('Invalid answer for the current question.');
       const existing = await store.list('responses', { assessment_id: a.id });
@@ -250,12 +264,26 @@ export function candidateHandlers(route) {
       const stored = persistableAnswer(q, body.answer);
       if (r) await store.update('responses', r.id, { answer: stored, locked: true });
       else await store.insert('responses', { assessment_id: a.id, question_id: q.id, answer: stored, locked: true });
+      if (stored.audio_missing) {
+        // Locking a mic-required answer with no recording is a proctoring
+        // event: it lands in the exam's integrity trail and the audit log so
+        // the gap is reviewed instead of silently scored.
+        base = integrityPatch(base, 'spoken_answer_missing',
+          `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt });
+        const candidate = await myCandidate(store, auth.user);
+        await audit(
+          store, auth.user, 'exam_spoken_answer_missing', 'assessments', a.id,
+          `"${candidate?.name || 'Candidate'}" locked Q${quiz.index + 1} without a recording — "${String(q.prompt).slice(0, 80)}"`,
+          { question_index: quiz.index, question_id: q.id },
+        );
+      }
     }
 
     const nextIndex = quiz.index + 1;
     const nextQ = questions[nextIndex];
     const nextState = {
-      ...quiz,
+      ...base,
       index: nextIndex,
       question_started_at: new Date().toISOString(),
       phase: nextQ && isOpenQuestion(nextQ) ? 'review' : 'answer',

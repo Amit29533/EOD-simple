@@ -601,6 +601,34 @@ body.exam-lock .view { max-width: 860px; padding-top: 28px; }
   white-space: pre-wrap;
 }
 
+/* --- Mandatory microphone on open questions ---------------------------------
+   Every open answer is recorded, so the control needs a live elapsed readout and
+   a state line that can turn green (captured) or red (blocked/lost). */
+.chip-mic { color: var(--brand-dark); background: var(--brand-soft); }
+.rec-state.ok { color: var(--green); font-weight: 700; }
+.rec-state.warn { color: var(--red); font-weight: 700; }
+.rec-timer {
+  display: block;
+  text-align: center;
+  font-weight: 800;
+  color: var(--red);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .05em;
+}
+.mic-check-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.mic-check-row .small { flex: 1 1 230px; min-width: 0; line-height: 1.45; }
+.mic-check-row .small.ok { color: var(--green); font-weight: 700; }
+.mic-check-row .small.warn { color: var(--red); font-weight: 700; }
+.exam-mic-note {
+  grid-column: 1 / -1;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--amber-line);
+  background: var(--amber-bg);
+  color: var(--amber);
+  line-height: 1.45;
+}
+
 .exam-audio-playback { display: block; width: 100%; max-width: 420px; margin-top: 10px; }
 .exam-actions { margin: 8px 0 40px; }
 @media (max-width: 650px) {

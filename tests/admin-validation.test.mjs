@@ -160,3 +160,35 @@ test('editing a spoken question preserves its oral metadata (mic requirement, pi
   assert.equal(plain.body.pin_first, false);
   assert.equal(plain.body.question_set, '');
 });
+
+test('an open question cannot be stored or edited into a typed-only question', async () => {
+  // The microphone requirement is a property of the open-question type, so the
+  // admin write path applies it whether or not the form sent anything, and
+  // refuses to let an edit (or an explicit false) switch the recorder off.
+  const created = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      type: 'text',
+      prompt: 'Design the incremental migration for a 40 TB legacy EDW.',
+      options: [], correct_option_ids: [], rubric: 'Expected evidence: phasing, dual-run, reconciliation.',
+    }),
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.audio_required, true, 'a standard open question requires the microphone');
+
+  const off = await call('PATCH', `/admin/questions/${created.body.id}`, {
+    token: adminToken, body: { audio_required: false },
+  });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.audio_required, true, 'an explicit opt-out cannot silence an open question');
+
+  // Non-open questions keep the old per-question behaviour in both directions.
+  const optedIn = await call('POST', '/admin/questions', {
+    token: adminToken, body: validQuestion({ audio_required: true }),
+  });
+  assert.equal(optedIn.body.audio_required, true, 'a choice question may opt in');
+  const optedOut = await call('PATCH', `/admin/questions/${optedIn.body.id}`, {
+    token: adminToken, body: { audio_required: false },
+  });
+  assert.equal(optedOut.body.audio_required, false, 'and opt out again');
+});

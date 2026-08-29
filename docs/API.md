@@ -42,5 +42,18 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | GET    | /candidate/assessments          | own list without assessor identity        |
 | GET    | /candidate/assessments/:id      | quiz payload — sanitized (no keys/rubrics), first open starts the clock |
 | PUT    | /candidate/assessments/:id/answers | autosave drafts                        |
+| POST   | /candidate/assessments/:id/phase | one-way review → answer transition for open questions (a repeat call is 409, so the timer cannot be reset) |
+| POST   | /candidate/assessments/:id/next  | lock the current answer and advance the cursor         |
+| POST   | /candidate/assessments/:id/integrity | proctoring event (tab switch, copy attempt, …)    |
 | POST   | /candidate/assessments/:id/submit | requires all answers; auto-scores MCQ/scale; 409 on resubmit |
 | GET    | /candidate/reports/:id          | report card after finalization, internal comments withheld |
+
+> **Open-question answer contract** (`src/core/spoken-answer.mjs`): `GET /candidate/assessments/:id`
+> projects `audio_required: true` for *every* `type: "text"` question — it is a rule of the question
+> type, so a legacy bank row or an already-frozen snapshot cannot lose the microphone. An open answer
+> is `{ text, transcript, audio_b64, audio_mime, source }` and counts as answered when it carries
+> typed notes, a transcript **or** a recording (an audio-only answer is never treated as blank).
+> The exam UI hard-gates "Lock & continue" on spoken evidence; the API never throws a candidate's work
+> away, so a typed-only lock is stored, marked `audio_missing: true`, counted as a
+> `spoken_answer_missing` integrity event and audited as `exam_spoken_answer_missing` for the assessor
+> and the proctoring view.
