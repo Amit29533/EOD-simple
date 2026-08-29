@@ -124,11 +124,33 @@ function sample(items, count, rng) {
 function isPinFirst(q) { return q?.pin_first === true; }
 function isOralSet(q) { return q?.question_set === RSA_ORAL_SET; }
 
+/**
+ * A question must only ever be served once. If storage ever contains the same
+ * id/prompt twice (e.g. an older sync before prompt-based dedupe was added),
+ * the snapshot serves the first occurrence and drops the duplicates.
+ */
+function uniqueBy(questions) {
+  const ids = new Set();
+  const prompts = new Set();
+  const out = [];
+  for (const q of questions) {
+    if (!q) continue;
+    const idKey = q.id ? `id:${q.id}` : '';
+    const promptKey = q.prompt ? `prompt:${q.prompt}` : '';
+    if ((idKey && ids.has(idKey)) || (promptKey && prompts.has(promptKey))) continue;
+    if (idKey) ids.add(idKey);
+    if (promptKey) prompts.add(promptKey);
+    out.push(q);
+  }
+  return out;
+}
+
 function arrange(selected) {
-  const pins = selected.filter(isPinFirst);
-  const oral = selected.filter((q) => isOralSet(q) && !isPinFirst(q))
+  const uniq = uniqueBy(selected);
+  const pins = uniq.filter(isPinFirst);
+  const oral = uniq.filter((q) => isOralSet(q) && !isPinFirst(q))
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const rest = selected.filter((q) => !isOralSet(q) && !isPinFirst(q))
+  const rest = uniq.filter((q) => !isOralSet(q) && !isPinFirst(q))
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   return [...pins, ...oral, ...rest];
 }
@@ -147,10 +169,15 @@ function pickWeighted(pool, competencies, count, randomize, rng) {
   return pool.filter((q) => keep.has(q.id));
 }
 
+export function dedupeQuestions(questions = []) {
+  return uniqueBy(questions);
+}
+
 export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random } = {}) {
-  const pool = [...questions];
-  const n = Number(limit);
-  if (!Number.isFinite(n) || n <= 0 || n >= pool.length) return arrange(pool);
+  const pool = uniqueBy(questions);
+  const requested = Number(limit);
+  const fullBank = !Number.isFinite(requested) || requested <= 0 || requested >= pool.length;
+  const n = fullBank ? pool.length : Math.floor(requested);
 
   const reserved = [];
   const reservedIds = new Set();
@@ -160,11 +187,15 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
     reservedIds.add(q.id);
   };
 
+  // The spoken customer-advisory set is always capped at RSA_ORAL_IN_CAP. This
+  // applies to *every* paper, including the "full bank" case, so a candidate
+  // is never asked more than five of the ten spoken prompts. The pinned common
+  // opening question is always included and served first.
   for (const q of pool.filter(isPinFirst)) take(q);
   const oralBank = pool.filter(isOralSet);
-  const oralNeed = Math.min(RSA_ORAL_IN_CAP, n, oralBank.length);
+  const maxOral = Math.min(RSA_ORAL_IN_CAP, n, oralBank.length);
   const oralRest = oralBank.filter((q) => !reservedIds.has(q.id));
-  const extra = Math.max(0, oralNeed - reserved.length);
+  const extra = Math.max(0, maxOral - reserved.filter(isOralSet).length);
   const extraOral = randomize ? sample(oralRest, extra, rng) : oralRest.slice(0, extra);
   for (const q of extraOral) take(q);
   while (reserved.length > n) {
@@ -174,13 +205,13 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
     reserved.splice(idx, 1);
   }
 
-  const rest = pickWeighted(
-    pool.filter((q) => !reservedIds.has(q.id) && !isOralSet(q)),
-    competencies,
-    n - reserved.length,
-    randomize,
-    rng,
-  );
+  // When the bank is bigger a full "bank-wide" paper still serves the remaining
+  // non-oral questions; only in a capped-sampling paper do we weight-split the
+  // remaining seats across competencies.
+  const restSource = pool.filter((q) => !reservedIds.has(q.id) && !isOralSet(q));
+  const rest = fullBank
+    ? restSource
+    : pickWeighted(restSource, competencies, n - reserved.length, randomize, rng);
   return arrange([...reserved, ...rest]);
 }
 
@@ -189,13 +220,19 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
  * UI so the choice is transparent before the assessment is created.
  */
 export function allocationPreview(questions = [], competencies = [], limit = null) {
-  const selected = selectQuestions(questions, competencies, limit);
+  const safe = uniqueBy(questions);
+  const selected = selectQuestions(safe, competencies, limit);
   const byComp = new Map();
   for (const q of selected) byComp.set(q.competency_id, (byComp.get(q.competency_id) || 0) + 1);
   const points = selected.reduce((s, q) => s + Number(q.points ?? 1), 0);
+  const spokenTotal = safe.filter((q) => q.question_set === RSA_ORAL_SET).length;
+  const spokenServed = selected.filter((q) => q.question_set === RSA_ORAL_SET).length;
   return {
     total: selected.length,
-    bank_total: questions.length,
+    bank_total: safe.length,
+    standard_total: safe.length - spokenTotal,
+    spoken_total: spokenTotal,
+    spoken_served: spokenServed,
     points,
     per_competency: competencies
       .map((c) => ({ competency_id: c.id, name: c.name, weight: Number(c.weight ?? 0), count: byComp.get(c.id) || 0 }))

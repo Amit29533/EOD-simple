@@ -100,6 +100,10 @@ export function adminHandlers(route) {
         question_count: (a.snapshot_json?.questions || []).length,
         question_limit: a.snapshot_json?.question_limit ?? null,
         bank_total: a.snapshot_json?.bank_total ?? null,
+        integrity_count: Object.values(a.quiz_state?.integrity || {}).reduce((s, v) => s + Number(v || 0), 0),
+        last_integrity_event: a.quiz_state?.events?.length
+          ? a.quiz_state.events[a.quiz_state.events.length - 1].event
+          : null,
       })),
       linked_user: users.find((u) => u.candidate_id === c.id) ? publicUser(users.find((u) => u.candidate_id === c.id)) : null,
       timeline: events,
@@ -448,6 +452,10 @@ export function adminHandlers(route) {
         question_count: (a.snapshot_json?.questions || []).length,
         question_limit: a.snapshot_json?.question_limit ?? null,
         bank_total: a.snapshot_json?.bank_total ?? null,
+        integrity_count: Object.values(a.quiz_state?.integrity || {}).reduce((s, v) => s + Number(v || 0), 0),
+        last_integrity_event: a.quiz_state?.events?.length
+          ? a.quiz_state.events[a.quiz_state.events.length - 1].event
+          : null,
       })),
     });
   });
@@ -567,6 +575,22 @@ export function adminHandlers(route) {
     await store.remove('assessments', params.id);
     await audit(store, auth.user, 'assessment_deleted', 'assessments', params.id, 'Assessment deleted before submission');
     return ok({ ok: true });
+  });
+
+  // ------------------------------------------------ integrity / anti-cheat trail
+  route('GET', '/admin/assessments/:id/integrity', A, async ({ store, params }) => {
+    const a = await store.get('assessments', params.id);
+    if (!a) return notFound('Assessment not found.');
+    const candidate = await store.get('candidates', a.candidate_id);
+    const quiz = a.quiz_state || {};
+    const events = Array.isArray(quiz.events) ? quiz.events : [];
+    return ok({
+      assessment: { id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at },
+      candidate: { id: candidate?.id, name: candidate?.name, current_title: candidate?.current_title || '' },
+      integrity: quiz.integrity || {},
+      events_count: events.length,
+      events,
+    });
   });
 
   // ------------------------------------------------ reports (full detail, admin view)

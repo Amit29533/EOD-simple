@@ -76,8 +76,10 @@ python3 tests/features.py     # 186 checks: every feature — CRUD, validation, 
   snapshot. The effective ceiling is `min(50, active bank)` — when the bank is smaller than the
   cap the dialog says so and offers a one-click **published-catalogue top-up** (the same sync
   `npm run seed` performs, available in-app for deployments with no CLI). The seeded RSA track
-  contains **105 questions (15 per competency)** so capped allocations can sample a broad,
-  weighted set.
+  contains **115 published questions (105 standard across 7 competencies + 10 spoken
+  customer-advisory items)**. Every paper includes the pinned common spoken question
+  first and **at most 5 spoken questions**, so a capped allocation can sample a broad,
+  weighted set without over-representing the oral set.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.

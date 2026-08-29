@@ -92,6 +92,37 @@ test('orphan questions (competency removed) stay eligible', () => {
   assert.equal(selectQuestions(withOrphan, comps, 31).length, 31);
 });
 
+test('duplicate questions in the bank are served only once', () => {
+  const withPrompts = bank.map((q, i) => ({ ...q, prompt: `Prompt ${i}` }));
+  const dup = [
+    ...withPrompts,
+    { ...withPrompts[0] },
+    { ...withPrompts[5], id: 'same-prompt-as-first', prompt: 'Prompt 0' },
+  ];
+  const picked = selectQuestions(dup, comps, null);
+  assert.equal(picked.length, withPrompts.length, 'duplicate ids/prompts are dropped from the full bank');
+  assert.equal(new Set(picked.map((q) => q.id)).size, picked.length);
+  const capped = selectQuestions(dup, comps, 10, { randomize: true, rng: () => 0.3 });
+  assert.equal(new Set(capped.map((q) => q.id)).size, 10, 'capped allocation has no duplicate questions');
+});
+
+test('full-bank papers also include exactly five oral prompts with the common one first', () => {
+  const oral = Array.from({ length: 10 }, (_, i) => ({
+    id: `oral-${i}`, competency_id: 'c3', points: 6, order: i,
+    question_set: 'rsa-oral', pin_first: i === 0, prompt: `Oral ${i}`,
+  }));
+  const extra = Array.from({ length: 105 }, (_, i) => ({
+    id: `x${i}`, competency_id: comps[i % 3].id, points: 4, order: 100 + i,
+  }));
+  const mixed = [...oral, ...extra];
+  const picked = selectQuestions(mixed, comps, null);
+  assert.equal(picked.length, 110, 'full bank serves all standard questions + five spoken items');
+  assert.equal(picked[0].id, 'oral-0', 'COMMON oral question is always first');
+  const spoken = picked.filter((q) => q.question_set === 'rsa-oral');
+  assert.equal(spoken.length, 5, 'never more than five spoken questions in one paper');
+  assert.ok(picked.slice(0, 5).every((q) => q.question_set === 'rsa-oral'));
+});
+
 test('capped papers pin the common oral question first and include five from the oral set', () => {
   const oral = Array.from({ length: 10 }, (_, i) => ({
     id: `oral-${i}`, competency_id: 'c3', points: 6, order: i,
@@ -112,6 +143,9 @@ test('allocationPreview reports the served split and its points total', () => {
   const preview = allocationPreview(bank, comps, 10);
   assert.equal(preview.total, 10);
   assert.equal(preview.bank_total, 30);
+  assert.equal(preview.standard_total, 30);
+  assert.equal(preview.spoken_total, 0);
+  assert.equal(preview.spoken_served, 0);
   assert.equal(preview.points, 40);
   assert.deepEqual(preview.per_competency.map((r) => r.count), [5, 3, 2]);
 });

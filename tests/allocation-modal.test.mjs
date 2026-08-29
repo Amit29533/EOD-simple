@@ -190,7 +190,7 @@ test('allocation modal: explains a small bank and tops it up inline', { skip: SK
   const posted = [];
   const syncCalls = [];
   try {
-    stubFetch(posted, { bankTotal: 21, missing: 84, syncCalls });
+    stubFetch(posted, { bankTotal: 21, missing: 94, syncCalls });
     const { modal } = await openModal();
 
     // The bank note explains why the ceiling is below the platform cap.
@@ -200,7 +200,7 @@ test('allocation modal: explains a small bank and tops it up inline', { skip: SK
     assert.match(note.textContent, /up to 50/, 'the real cap is stated');
     const syncBtn = note.querySelector('#al-sync-catalogue');
     assert.ok(syncBtn, 'the catalogue top-up is offered inline');
-    assert.match(syncBtn.textContent, /84 published questions/);
+    assert.match(syncBtn.textContent, /94 published questions/);
     assert.equal(modal.querySelector('#al-count').max, '21', 'input clamped to the bank for now');
 
     // Choose a limit first, then top the bank up without leaving the dialog.
@@ -214,7 +214,7 @@ test('allocation modal: explains a small bank and tops it up inline', { skip: SK
     assert.equal(syncCalls.length, 1, 'sync requested once');
     assert.ok(syncCalls[0].path.endsWith('/admin/content/sync'), `sync hit the right endpoint (${syncCalls[0].path})`);
 
-    // The stub now reports the full 105-question bank after syncing.
+    // The stub now reports the full 115-question bank after syncing.
     await flush(120);
     const countInput = modal.querySelector('#al-count');
     assert.equal(countInput.max, '50', 'input now honours the full cap');
@@ -223,7 +223,7 @@ test('allocation modal: explains a small bank and tops it up inline', { skip: SK
     const presets = [...modal.querySelectorAll('[data-preset]')].map((b) => b.dataset.preset);
     assert.ok(presets.includes('50'), 'a 50-question preset is offered');
     assert.ok(!presets.includes('21'), 'no misleading "All 21" preset anymore');
-    assert.match(document.getElementById('toast-root').textContent, /Added 84 published questions/i);
+    assert.match(document.getElementById('toast-root').textContent, /Added 94 published questions/i);
 
     // And the admin can now allocate the full cap from the same dialog.
     const fifty = modal.querySelector('[data-preset="50"]');
