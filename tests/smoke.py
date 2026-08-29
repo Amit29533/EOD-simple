@@ -50,14 +50,15 @@ check('NO correct answers in quiz payload', 'correct_option_ids' not in blob)
 check('NO rubric in quiz payload', 'rubric' not in blob)
 check('NO assessor identity in quiz payload', 'riya' not in blob)
 
-qs = quiz['questions']
-db = json.load(open('data/ecod.json'))
+check('exam issues one live question', len(quiz.get('questions') or []) == 1 and quiz.get('current_question'))
+check('exam.total is the full snapshot', quiz['exam']['total'] >= 1)
+db = json.load(open(os.environ.get('DATA_FILE', 'data/ecod.json')))
 qbank = {q['id']: q for q in db['tables']['questions'].values()}
-# the seed allocates the demo assessment from the full active bank, so every
-# expectation below is derived from the store instead of hardcoded counts.
-quiz_role = qbank[qs[0]['id']]['role_id'] if qs else None
+asmt = db['tables']['assessments'][aid]
+qs = asmt['snapshot_json']['questions']
+quiz_role = asmt.get('role_id') or (qbank[qs[0]['id']]['role_id'] if qs else None)
 bank_total = len([q for q in qbank.values() if q.get('active', True) and q['role_id'] == quiz_role])
-check('quiz serves the whole seeded bank', len(qs) == bank_total)
+check('exam.total matches the seeded snapshot', quiz['exam']['total'] == len(qs))
 answers = {}
 for q in qs:
     src = qbank[q['id']]

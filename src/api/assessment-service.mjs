@@ -94,9 +94,9 @@ export async function finalizeScoring(store, assessment) {
   for (const q of assessment.snapshot_json.questions) {
     const r = byQid.get(q.id);
     if (isAutoQuestion(q)) {
-      const score = r?.auto_score ?? autoScore(q, r?.answer) ?? 0;
-      finalByQid[q.id] = { ...(r || { question_id: q.id, answer: null }), final_score: score };
-      if (r) await store.update('responses', r.id, { final_score: score });
+      const score = autoScore(q, r?.answer) ?? 0;
+      finalByQid[q.id] = { ...(r || { question_id: q.id, answer: null }), auto_score: score, final_score: score };
+      if (r) await store.update('responses', r.id, { auto_score: score, final_score: score });
     } else {
       const score = r?.assessor_score;
       if (score === undefined || score === null || Number.isNaN(Number(score))) {

@@ -6,6 +6,12 @@ import {
 } from '../ui.js';
 import { renderReport } from './report.js';
 
+const fmtPts = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return '0';
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+};
+
 /* ================================ Workspace ================================ */
 export async function workspaceView(view) {
   view.innerHTML = loading();
@@ -13,10 +19,9 @@ export async function workspaceView(view) {
   const pending = d.assessments.filter((a) => a.status === 'submitted');
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Assessor workspace</div><h1>Your assessments<span class="heading-dot">.</span></h1><p>Review evidence, apply your judgment and help every candidate see their next best move.</p></div>
-      <div class="heading-actions"><span class="workspace-pill"><i></i> ${d.assessments.length} assigned</span></div>
+      <div><h1>Assessments</h1><p class="muted">Score submitted work. Candidate contact details are not shown.</p></div>
+      <div class="heading-actions"><span class="workspace-pill">${d.assessments.length} assigned</span></div>
     </div>
-    <div class="demo-creds"><span class="info-strip-icon">⌁</span><span>Your assignments only. Candidate contact details, source and internal notes stay hidden. Score open responses against the rubric, then finalize to generate the capability report.</span></div>
     ${pending.length ? `<div class="card attention-card"><span class="attention-icon">!</span><span><b>${pending.length} assessment${pending.length === 1 ? '' : 's'} awaiting your scoring.</b><small>Open a submitted assessment to complete the review.</small></span></div>` : ''}
     <div class="card table-card">
       ${d.assessments.length ? `
@@ -130,21 +135,37 @@ function scoreCard(q, n, r) {
 
   let answerBlock = '';
   if (q.type === 'mcq_single' || q.type === 'mcq_multi') {
-    const picked = q.type === 'mcq_multi' ? (Array.isArray(answer) ? answer : []) : [answer];
-    const correct = q.correct_option_ids || [];
+    const picked = q.type === 'mcq_multi'
+      ? (Array.isArray(answer) ? answer.map(String) : (answer ? [String(answer)] : []))
+      : [answer].filter((v) => v !== undefined && v !== null && v !== '');
+    const correct = (q.correct_option_ids || []).map(String);
+    const hits = picked.filter((id) => correct.includes(id)).length;
     answerBlock = (q.options || []).map((o) => {
-      const isPicked = picked.includes(o.id);
-      const isCorrect = correct.includes(o.id);
+      const isPicked = picked.includes(String(o.id));
+      const isCorrect = correct.includes(String(o.id));
       const cls = isPicked && isCorrect ? 'opt correct' : isPicked ? 'opt wrong' : 'opt';
       const mark = isPicked && isCorrect ? '✓ candidate · correct' : isPicked ? '✗ candidate · incorrect' : isCorrect ? '<span class="small muted">(correct option)</span>' : '';
       return `<div class="${cls}" style="cursor:default"><span style="flex:1">${esc(o.label)}</span><span class="small" style="font-weight:700">${mark}</span></div>`;
     }).join('');
-    answerBlock += `<div class="row" style="margin-top:8px">${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, (r?.auto_score ?? 0) > 0 ? 'green' : 'red')}</div>`;
+    const auto = Number(r?.auto_score ?? 0);
+    const tone = auto >= Number(q.points) ? 'green' : auto > 0 ? 'amber' : 'red';
+    const partial = q.type === 'mcq_multi' && correct.length
+      ? ` · ${hits}/${correct.length} correct options`
+      : '';
+    answerBlock += `<div class="row" style="margin-top:8px">${badge(`Auto score: ${fmtPts(auto)}/${q.points}${partial}`, tone)}</div>`;
   } else if (q.type === 'scale') {
     answerBlock = `<div class="row"><b style="font-size:22px">${answer ?? '—'}</b><span class="muted">/5 self-rated</span>${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, 'blue')}</div>`;
   } else {
+    const textAns = answer && typeof answer === 'object'
+      ? [answer.text, answer.transcript && answer.transcript !== answer.text ? `\n\n[Transcript]\n${answer.transcript}` : ''].filter(Boolean).join('')
+      : answer;
+    const audioPlayer = answer && typeof answer === 'object' && answer.audio_b64
+      ? `<audio class="exam-audio-playback" controls src="data:${esc(answer.audio_mime || 'audio/webm')};base64,${esc(answer.audio_b64)}"></audio>`
+      : '';
     answerBlock = `
-      <blockquote class="answer">${esc(answer || '— no answer —')}</blockquote>
+      <blockquote class="answer">${esc(textAns || '— no answer —')}</blockquote>
+      ${audioPlayer}
+      ${answer && typeof answer === 'object' && answer.source === 'audio' ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
       <details class="fold" style="margin-top:10px"><summary>📋 Scoring rubric (expected evidence)</summary>
         <div class="rubric" style="margin-top:8px">${esc(q.rubric || 'No rubric configured.')}</div></details>
       <div class="row" style="margin-top:12px;align-items:flex-end">

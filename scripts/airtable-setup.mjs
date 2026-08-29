@@ -35,7 +35,7 @@ const SCHEMA = {
   frameworks:   ['role_id', 'name', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'config', ...long }, { name: 'active', ...chk }]),
   assessments:  ['candidate_id', 'role_id', 'assessor_id', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label'].map((f) => ({ name: f, ...txt }))
-                .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'overall_pct', ...num }]),
+                .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'quiz_state', ...long }, { name: 'overall_pct', ...num }]),
   responses:    ['assessment_id', 'question_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'answer', ...long }, { name: 'assessor_comment', ...long },
                          { name: 'auto_score', ...num }, { name: 'assessor_score', ...num }, { name: 'final_score', ...num }]),

@@ -1,6 +1,6 @@
 import { ok, bad, notFound, conflict, unprocessable, audit, num, str } from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
-import { isManualQuestion } from '../../core/scoring.mjs';
+import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring } from '../assessment-service.mjs';
 
 const R = ['assessor'];
@@ -46,10 +46,14 @@ export function assessorHandlers(route) {
       candidate: candidateForAssessor(candidate),
       competencies: a.snapshot_json.competencies,
       questions: a.snapshot_json.questions, // full: includes rubric + correct answers (assessor-only)
-      responses: responses.map((r) => ({
-        question_id: r.question_id, answer: r.answer,
-        auto_score: r.auto_score, assessor_score: r.assessor_score, assessor_comment: r.assessor_comment || '',
-      })),
+      responses: responses.map((r) => {
+        const q = a.snapshot_json.questions.find((x) => x.id === r.question_id);
+        const live = q && isAutoQuestion(q) ? (autoScore(q, r.answer) ?? 0) : r.auto_score;
+        return {
+          question_id: r.question_id, answer: r.answer,
+          auto_score: live, assessor_score: r.assessor_score, assessor_comment: r.assessor_comment || '',
+        };
+      }),
       scoring_progress: { manual_total: manualTotal, manual_scored: manualScored },
       // after finalization, the assessor may review the report they produced
       report: ['scored', 'validated'].includes(a.status) ? a.report_json : null,

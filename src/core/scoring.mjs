@@ -7,26 +7,44 @@
 export const isManualQuestion = (q) => q.type === 'text';
 export const isAutoQuestion = (q) => !isManualQuestion(q);
 
+/** Coerce stored answers (string, array, or {ids}) into option-id strings. */
+export function optionIds(answer) {
+  if (Array.isArray(answer)) return answer.map(String).filter(Boolean);
+  if (typeof answer === 'string' && answer.trim()) return [answer.trim()];
+  if (answer && typeof answer === 'object' && Array.isArray(answer.ids)) {
+    return answer.ids.map(String).filter(Boolean);
+  }
+  return [];
+}
+
 /**
  * Auto-score an answer for an auto-scorable question.
  * Returns null for manually scored (open text) questions.
  *  - mcq_single: full points iff the selected option is the correct one.
- *  - mcq_multi : full points iff the selected set exactly matches the correct set
- *                (strict, explainable scoring; no partial credit).
+ *  - mcq_multi : proportional credit. Each correct pick earns points/|correct|;
+ *                each incorrect pick subtracts the same unit (floor 0).
  *  - scale     : (value / 5) * points, self-reported proficiency.
  */
 export function autoScore(question, answer) {
   const points = Number(question.points ?? 1);
   switch (question.type) {
     case 'mcq_single': {
-      const correct = (question.correct_option_ids || [])[0];
-      return answer != null && answer === correct ? points : 0;
+      const correct = String((question.correct_option_ids || [])[0] ?? '');
+      const picked = optionIds(answer)[0];
+      return picked && correct && picked === correct ? points : 0;
     }
     case 'mcq_multi': {
-      const a = Array.isArray(answer) ? [...answer].sort() : [];
-      const c = [...(question.correct_option_ids || [])].sort();
-      const exact = a.length === c.length && a.every((v, i) => v === c[i]);
-      return exact ? points : 0;
+      const correct = new Set((question.correct_option_ids || []).map(String));
+      if (!correct.size) return 0;
+      const selected = optionIds(answer);
+      let hits = 0;
+      let wrong = 0;
+      for (const id of new Set(selected)) {
+        if (correct.has(id)) hits += 1;
+        else wrong += 1;
+      }
+      const ratio = Math.max(0, (hits - wrong) / correct.size);
+      return Math.round(points * ratio * 100) / 100;
     }
     case 'scale': {
       const v = Number(answer);

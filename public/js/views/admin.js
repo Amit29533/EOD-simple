@@ -27,20 +27,20 @@ export async function dashboardView(view) {
     <div class="page-heading">
       <div>
         <div class="eyebrow">Platform overview</div>
-        <h1>Capability pipeline<span class="heading-dot">.</span></h1>
-        <p>See how your talent pool is moving from first conversation to enterprise-ready.</p>
+        <h1>Capability pipeline</h1>
+        <p>Candidates, assessments and average scored results.</p>
       </div>
       <div class="heading-actions"><a class="btn" href="#/candidates">＋ Add candidate</a></div>
     </div>
     <div class="grid cols-4 metric-grid">
-      <div class="stat"><div class="stat-top"><span class="stat-icon">♧</span><span class="stat-trend">Live</span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
-      <div class="stat stat-gold"><div class="stat-top"><span class="stat-icon">✦</span><span class="stat-trend">Ready</span></div><div class="num">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
-      <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon">↗</span><span class="stat-trend">Active</span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
-      <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon">◌</span><span class="stat-trend">${d.counts.avg_score != null ? 'Scored' : 'Awaiting'}</span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
+      <div class="stat"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
+      <div class="stat stat-gold"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.enterprise_ready}</div><div class="lbl">Enterprise-ready</div></div>
+      <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
+      <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon"></span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
     </div>
     <div class="dashboard-grid">
       <div class="card pipeline-panel">
-        <div class="panel-head"><div><div class="section-kicker">Talent movement</div><h2>Pipeline health</h2><p>Candidate volume by readiness stage</p></div><a class="btn ghost sm" href="#/candidates">View all <span aria-hidden="true">→</span></a></div>
+        <div class="panel-head"><div><h2>Pipeline health</h2><p>Candidate volume by readiness stage</p></div><a class="btn ghost sm" href="#/candidates">View all <span aria-hidden="true">→</span></a></div>
         <div class="stage-bars">
           ${stages.map((s) => `<div class="bar-row">
             <div class="small" style="font-weight:700">${esc(s.label)}</div>
@@ -51,14 +51,14 @@ export async function dashboardView(view) {
       </div>
       <div class="dashboard-side">
         <div class="card status-panel">
-          <div class="panel-head"><div><div class="section-kicker">Workflow pulse</div><h2>Assessment status</h2></div><span class="panel-orb">↗</span></div>
+          <div class="panel-head"><div><h2>Assessment status</h2></div></div>
           <div class="status-list">
             ${M().assessmentStatuses.map((s) => `<a class="status-row" href="#/assessments?status=${s.key}"><span>${badge(s.label, s.tone)}</span><strong>${d.by_status[s.key] || 0}</strong><span class="status-arrow">→</span></a>`).join('')}
           </div>
           ${awaiting > 0 ? `<div class="action-callout"><span>!</span><span><b>${awaiting} assessment${awaiting === 1 ? '' : 's'}</b> awaiting scoring</span><a href="#/assessments?status=submitted">Review</a></div>` : ''}
         </div>
         <div class="card activity-panel">
-          <div class="panel-head"><div><div class="section-kicker">Latest updates</div><h2>Recent activity</h2></div><span class="panel-orb muted">•••</span></div>
+          <div class="panel-head"><div><h2>Recent activity</h2></div></div>
           ${d.recent_activity.length ? `<div class="activity-list">
             ${d.recent_activity.slice(0, 6).map((e) => `<div class="activity-item"><span class="activity-dot"></span><div><div class="small activity-message">${esc(e.message || e.action)}</div><div class="muted" style="font-size:10px">${esc(e.actor_name)} · ${esc(fmtDateTime(e.created_at))}</div></div></div>`).join('')}
           </div>` : `<div class="muted small">No activity yet.</div>`}
@@ -86,7 +86,7 @@ export async function candidatesView(view) {
   const [{ candidates }, { roles }] = await Promise.all([api('/admin/candidates'), api('/admin/roles')]);
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Talent directory</div><h1>Candidates<span class="heading-dot">.</span></h1><p>Keep every candidate, conversation and next step in one calm view.</p></div>
+      <div><div class="eyebrow">Talent directory</div><h1>Candidates</h1><p>Search, filter and open a candidate record.</p></div>
       <div class="heading-actions"><button class="btn" id="add-cand">＋ Add candidate</button></div>
     </div>
     <div class="card flat toolbar-card">
@@ -444,7 +444,7 @@ export async function assessmentsView(view) {
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Evaluation operations</div><h1>Assessments<span class="heading-dot">.</span></h1><p>Track allocations, submissions and readiness outcomes across every role.</p></div>
+      <div><div class="eyebrow">Evaluation operations</div><h1>Assessments</h1><p>Allocations, submissions and outcomes.</p></div>
     </div>
     <div class="card flat toolbar-card">
       <div class="toolbar-label"><span class="toolbar-icon">◷</span><span>Assessment status</span></div>
@@ -499,7 +499,7 @@ export async function rolesView(view) {
   const { roles } = await api('/admin/roles');
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Capability architecture</div><h1>Roles & frameworks<span class="heading-dot">.</span></h1><p>Shape the capabilities, benchmarks and assessment tracks your teams need.</p></div>
+      <div><div class="eyebrow">Capability architecture</div><h1>Roles & frameworks</h1><p>Competencies, scoring bands and tracks.</p></div>
       <div class="heading-actions"><button class="btn" id="add-role">＋ New role / track</button></div>
     </div>
     <div class="card flat info-strip"><span class="info-strip-icon">✦</span><span>Assessment tracks are configuration, not code. Change the framework here and new assessments use it automatically.</span></div>
@@ -674,7 +674,7 @@ export async function questionsView(view) {
   const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Assessment design</div><h1>Question bank<span class="heading-dot">.</span></h1><p>Build thoughtful prompts that reveal how capability shows up in the real world.</p></div>
+      <div><div class="eyebrow">Assessment design</div><h1>Question bank</h1><p>Prompts, options, rubrics and points.</p></div>
       <div class="heading-actions"><button class="btn" id="add-q">＋ Add question</button></div>
     </div>
     ${missing ? `
@@ -836,7 +836,7 @@ export async function usersView(view) {
   const roleTone = { admin: 'red', assessor: 'blue', candidate: 'green', validator: 'amber', trainer: 'amber' };
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Workspace access</div><h1>Users & access<span class="heading-dot">.</span></h1><p>Give the right people the right view of your capability workspace.</p></div>
+      <div><div class="eyebrow">Workspace access</div><h1>Users & access</h1><p>Provision accounts and assign roles.</p></div>
       <div class="heading-actions"><button class="btn" id="add-user">＋ Create user</button></div>
     </div>
     <div class="demo-creds no-print"><span class="info-strip-icon">⌁</span><span>Only admins can provision accounts. Permissions are role-based, and sensitive candidate details stay compartmentalized.</span></div>
@@ -898,7 +898,7 @@ export async function auditView(view) {
   const { events } = await api('/admin/audit');
   view.innerHTML = `
     <div class="page-heading">
-      <div><div class="eyebrow">Trust & transparency</div><h1>Audit log<span class="heading-dot">.</span></h1><p>A clear history of the changes and decisions made across your workspace.</p></div>
+      <div><div class="eyebrow">Trust & transparency</div><h1>Audit log</h1><p>Account, candidate, assessment and framework events.</p></div>
     </div>
     <div class="card flat info-strip"><span class="info-strip-icon">✓</span><span>Events are recorded automatically for account, candidate, assessment and framework activity.</span></div>
     <div class="card table-card">

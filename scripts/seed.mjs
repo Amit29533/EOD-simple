@@ -31,6 +31,9 @@ const questionRecord = (q, roleId, compIds) => ({
   type: q.type, prompt: q.prompt, help_text: q.help_text || '',
   options: q.options || [], correct_option_ids: q.correct_option_ids || [],
   points: q.points, difficulty: q.difficulty, rubric: q.rubric || '', order: q.order, active: true,
+  question_set: q.question_set || '',
+  pin_first: q.pin_first === true,
+  audio_required: q.audio_required === true,
 });
 
 // `seed` is also safe to run against an existing demo/MVP store. This matters

@@ -31,6 +31,8 @@ export const questionForCandidate = (q) => ({
   help_text: q.help_text || '',
   options: (q.options || []).map((o) => ({ id: o.id, label: o.label })),
   points: q.points ?? 1, difficulty: q.difficulty || 'intermediate', order: q.order ?? 0,
+  audio_required: q.audio_required === true,
+  pin_first: q.pin_first === true,
 });
 
 export const competencyForCandidate = (c) => ({
