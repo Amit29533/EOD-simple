@@ -1,4 +1,5 @@
-import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../content/rsa-catalogue.mjs';
+import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
+import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 
 /**
  * Published-catalogue service.
@@ -13,11 +14,19 @@ import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../content/rsa-catalo
  * many published questions a matching track is missing and add exactly those,
  * mirroring the sync semantics of scripts/seed.mjs:
  *  - the track is matched by its stable `key` (never by name);
- *  - only questions whose prompt is not already in the bank are added —
- *    including inactive ones, so an admin who deactivated a published question
- *    is never overridden;
+ *  - only questions the bank does not already hold are added — matched by
+ *    prompt, typography-insensitively, so a restyled copy of a published
+ *    question is recognized instead of duplicated next to it;
+ *  - an existing row that *is* the published question (same prompt modulo
+ *    typography) is repaired in place: the spoken-question contract flags
+ *    (`question_set`, `pin_first`, `audio_required`) are restored and an empty
+ *    `help_text`/`rubric` is filled from the catalogue. This heals banks whose
+ *    rows predate the flags or lost them to an older admin edit — the cause of
+ *    spoken questions appearing without the microphone control;
+ *  - deactivated rows stay deactivated (an admin who unpublished a question is
+ *    never overridden) and no other admin customization is touched;
  *  - competencies the published questions rely on are created if missing;
- *  - existing records, users and assessment snapshots are never touched.
+ *  - users and assessment snapshots are never touched.
  */
 
 const questionRecord = (q, roleId, compIds) => ({
@@ -40,11 +49,56 @@ async function catalogueRole(store) {
 /**
  * How many published questions the matching track is missing.
  * `bank` is the role's question list (all questions, active or not) — the
- * caller usually has it already, e.g. from roleBank.
+ * caller usually has it already, e.g. from roleBank. Prompts are compared
+ * typography-insensitively: a bank row that only differs by quote style,
+ * dashes or spacing is the same published question, not a missing one.
  */
 export function catalogueMissing(bankQuestions = []) {
-  const prompts = new Set(bankQuestions.map((q) => q.prompt));
-  return RSA_QUESTIONS.filter((q) => !prompts.has(q.prompt)).length;
+  const prompts = new Set(bankQuestions.map((q) => promptKey(q.prompt)));
+  return RSA_QUESTIONS.filter((q) => !prompts.has(promptKey(q.prompt))).length;
+}
+
+/** Published spoken-question contract keyed by normalized prompt. */
+const ORAL_CONTRACT = new Map(RSA_ORAL_QUESTIONS.map((q) => [promptKey(q.prompt), q]));
+
+/**
+ * Serve-time guarantee for the spoken-question contract: any question whose
+ * prompt is one of the published oral prompts demands a recorded audio
+ * answer, is pinned when the catalogue pins it, belongs to the oral set, and
+ * is shown in the published wording (a retired leading label such as
+ * "COMMON QUESTION —" is dropped) — even when the stored/frozen row lost those
+ * flags or still carries the old label (a legacy store seeded before the
+ * flags existed, an older admin edit, or an assessment snapshot frozen while
+ * the bank was in that state).
+ *
+ * Copy-on-write: input rows are never mutated; only additive — flags are
+ * only ever restored, never removed, and the prompt is only rewritten when it
+ * is exactly the published prompt plus a leading label (an unpublished/
+ * admin-authored question, or an admin-reworded variant, is left as typed).
+ */
+export function applyOralContract(questions = []) {
+  return questions.map((q) => {
+    if (!q) return q;
+    const published = ORAL_CONTRACT.get(promptKey(q.prompt));
+    if (!published) return q;
+    const publishedPrompt = String(published.prompt || '').trim();
+    const healPrompt = Boolean(publishedPrompt)
+      && q.prompt !== publishedPrompt
+      && stripPromptLabel(q.prompt) === publishedPrompt;
+    const needs = (q.question_set !== RSA_ORAL_SET)
+      || q.pin_first !== (published.pin_first === true)
+      || q.audio_required !== true
+      || healPrompt;
+    if (!needs) return q;
+    const out = {
+      ...q,
+      question_set: RSA_ORAL_SET,
+      pin_first: published.pin_first === true || q.pin_first === true,
+      audio_required: true,
+    };
+    if (healPrompt) out.prompt = publishedPrompt;
+    return out;
+  });
 }
 
 /** Status payload for the admin UI: what a sync would (and would not) do. */
@@ -62,14 +116,39 @@ export async function catalogueStatus(store) {
 }
 
 /**
- * Add the published questions the matching track is missing (plus any
- * competencies they need). Returns { added, competencies_added, bank_total }.
- * No-op when the workspace already has the full catalogue.
+ * Restore the published spoken-question contract on a bank row that *is* this
+ * published question (matched by normalized prompt). Only the behavioral flags
+ * are set, `help_text`/`rubric` are only filled when empty, and a prompt whose
+ * only difference from the published wording is a leading label (e.g. the
+ * retired "COMMON QUESTION —" tag) is de-labeled — an admin's own rewording,
+ * points, order and (in)activity are never overridden. Returns the patch to
+ * apply, or null when the row already matches the contract.
  */
-export async function syncCatalogue(store) {
-  const role = await catalogueRole(store);
-  if (!role) return { error: `No active track matches the published catalogue (${RSA_ROLE.name}).` };
+function repairPatch(row, published) {
+  const patch = {};
+  const wantSet = published.question_set || '';
+  const wantPin = published.pin_first === true;
+  const wantAudio = published.audio_required === true;
+  if (row.question_set !== wantSet) patch.question_set = wantSet;
+  if (row.pin_first !== wantPin) patch.pin_first = wantPin;
+  if (row.audio_required !== wantAudio) patch.audio_required = wantAudio;
+  if (published.help_text && !row.help_text) patch.help_text = published.help_text;
+  if (published.rubric && !row.rubric) patch.rubric = published.rubric;
+  const publishedPrompt = String(published.prompt || '').trim();
+  if (publishedPrompt && row.prompt !== publishedPrompt && stripPromptLabel(row.prompt) === publishedPrompt) {
+    patch.prompt = publishedPrompt;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
 
+/**
+ * Synchronize a track's bank with the published catalogue: create missing
+ * competencies, add genuinely missing questions and repair the oral/spoken
+ * contract flags on existing copies. Shared by the in-app admin action and
+ * `scripts/seed.mjs` so both paths heal legacy banks identically.
+ * Returns { added, repaired, competencies_added, bank_total, role_id }.
+ */
+export async function synchronizeBank(store, role) {
   const existingCompetencies = await store.list('competencies', { role_id: role.id });
   const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
 
@@ -83,16 +162,46 @@ export async function syncCatalogue(store) {
   }
 
   const existingQuestions = await store.list('questions', { role_id: role.id });
-  const prompts = new Set(existingQuestions.map((q) => q.prompt));
+  const byPrompt = new Map();
+  for (const q of existingQuestions) {
+    const key = promptKey(q.prompt);
+    if (key && !byPrompt.has(key)) byPrompt.set(key, q);
+  }
   let added = 0;
+  let repaired = 0;
   for (const q of RSA_QUESTIONS) {
-    if (prompts.has(q.prompt) || !compIds[q.competency]) continue;
+    const twin = byPrompt.get(promptKey(q.prompt));
+    if (twin) {
+      // Same published question is already in the bank: repair its spoken-
+      // question metadata instead of inserting a second copy (which would
+      // leave the exam serving the same prompt twice, once without its
+      // microphone control).
+      const patch = repairPatch(twin, q);
+      if (patch) {
+        await store.update('questions', twin.id, patch);
+        repaired += 1;
+      }
+      continue;
+    }
+    if (!compIds[q.competency]) continue;
     await store.insert('questions', questionRecord(q, role.id, compIds));
-    prompts.add(q.prompt);
+    byPrompt.set(promptKey(q.prompt), q);
     added += 1;
   }
 
   const bankTotal = (await store.list('questions', { role_id: role.id }))
     .filter((q) => q.active !== false).length;
-  return { added, competencies_added: competenciesAdded, bank_total: bankTotal, role_id: role.id };
+  return { added, repaired, competencies_added: competenciesAdded, bank_total: bankTotal, role_id: role.id };
+}
+
+/**
+ * Add the published questions the matching track is missing (plus any
+ * competencies they need, repairing existing copies' spoken-question flags).
+ * Returns { added, repaired, competencies_added, bank_total }.
+ * No-op when the workspace already has the full catalogue.
+ */
+export async function syncCatalogue(store) {
+  const role = await catalogueRole(store);
+  if (!role) return { error: `No active track matches the published catalogue (${RSA_ROLE.name}).` };
+  return synchronizeBank(store, role);
 }

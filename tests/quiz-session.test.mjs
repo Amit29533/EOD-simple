@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   sortedQuestions, budgetsFor, remainingMs, ensureQuizState, integrityPatch, isOpenQuestion,
 } from '../src/api/quiz-session.mjs';
+import { questionForCandidate } from '../src/api/projections.mjs';
 import { EXAM_MCQ_SECONDS, EXAM_OPEN_REVIEW_SECONDS, EXAM_OPEN_ANSWER_SECONDS } from '../src/core/constants.mjs';
 
 test('MCQ budget is 30s; open questions get 60s review + 2 minutes answer', () => {
@@ -54,4 +55,94 @@ test('sortedQuestions never serves a question twice', () => {
   const qs = sortedQuestions({ questions });
   assert.deepEqual(qs.map((q) => q.id), ['a', 'b'], 'duplicate ids/prompts are dropped');
   assert.deepEqual(qs.map((q) => q.prompt), ['A?', 'B?']);
+});
+
+test('sortedQuestions collapses typography/label variants of one prompt and keeps the microphone requirement', () => {
+  // Frozen pre-fix snapshot: the flagged published copy of the common spoken
+  // question plus a legacy copy that differs only by the leading label and
+  // punctuation — the shape that made the exam ask the same question twice,
+  // the second time with no microphone.
+  const questions = [
+    { id: 'pin', order: 0, type: 'text', question_set: 'rsa-oral', pin_first: true, audio_required: true,
+      prompt: 'COMMON QUESTION — In simple terms, what problem does Databricks solve?' },
+    { id: 'legacy', order: 5, type: 'text',
+      prompt: 'In simple terms, what problem does Databricks solve?' },
+    { id: 'other', order: 2, type: 'text', prompt: 'A different question entirely?' },
+  ];
+  const qs = sortedQuestions({ questions });
+  assert.deepEqual(qs.map((q) => q.id), ['pin', 'other'], 'the label-less twin is recognized as the same question');
+  assert.equal(qs[0].pin_first, true, 'still pinned first');
+  assert.equal(qs[0].audio_required, true, 'still requires an audio answer');
+  assert.equal(qs[0].question_set, 'rsa-oral', 'still a spoken-set question');
+  // The source snapshot rows are never mutated by the merge.
+  assert.equal(questions[0].order, 0);
+  assert.equal(questions[2].prompt, 'A different question entirely?');
+});
+
+test('sortedQuestions merges a flagged twin onto an unflagged survivor (frozen legacy snapshot)', () => {
+  // Here the flag-less legacy copy comes FIRST in the frozen array (same
+  // prompt, straight quotes); the survivor must still inherit the spoken
+  // contract from its curly-quoted published twin.
+  const questions = [
+    { id: 'legacy', order: 0, type: 'text',
+      prompt: 'A client says, "We already have a data warehouse and Spark environment. Why do we need Databricks?"' },
+    { id: 'flagged', order: 1, type: 'text', question_set: 'rsa-oral', audio_required: true,
+      prompt: 'A client says, “We already have a data warehouse and Spark environment. Why do we need Databricks?”' },
+    { id: 'plain', order: 2, type: 'text', prompt: 'Unrelated open question.' },
+  ];
+  const qs = sortedQuestions({ questions });
+  const merged = qs.find((q) => q.id === 'legacy');
+  assert.ok(merged, 'the survivor keeps its row identity');
+  assert.equal(merged.question_set, 'rsa-oral', 'set membership is inherited from the twin');
+  assert.equal(merged.audio_required, true, 'the microphone requirement is inherited from the twin');
+  assert.equal(qs.filter((q) => String(q.prompt).includes('Why do we need')).length, 1, 'served once');
+});
+
+test('candidate projection never hides the microphone on spoken-set questions', () => {
+  // A frozen or legacy row can lose its audio_required flag; membership in the
+  // spoken set is the contract, so the projection enforces it.
+  assert.equal(
+    questionForCandidate({ id: 'a', type: 'text', prompt: 'p', question_set: 'rsa-oral', audio_required: false }).audio_required,
+    true,
+  );
+  assert.equal(
+    questionForCandidate({ id: 'b', type: 'text', prompt: 'p', question_set: 'rsa-oral' }).audio_required,
+    true,
+  );
+  assert.equal(
+    questionForCandidate({ id: 'c', type: 'text', prompt: 'p', audio_required: true }).audio_required,
+    true,
+  );
+  // Standard open questions stay typed-answer questions.
+  assert.equal(
+    questionForCandidate({ id: 'd', type: 'text', prompt: 'p' }).audio_required,
+    false,
+  );
+});
+
+test('a frozen paper whose oral rows lost every flag still pins first and demands audio', () => {
+  // Worst-case legacy snapshot: every spoken row was edited through the
+  // pre-fix admin UI, which stripped question_set/pin_first/audio_required —
+  // and the paper even holds a label-less duplicate of the common question.
+  // The published catalogue is the contract, so serving restores it.
+  const pinPrompt = 'COMMON QUESTION — In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?';
+  const questions = [
+    { id: 'pin', order: 0, type: 'text', prompt: pinPrompt },
+    { id: 'twin', order: 0, type: 'text', prompt: pinPrompt.replace(/^COMMON QUESTION —\s*/, '') },
+    { id: 'oral-2', order: 1, type: 'text', prompt: 'A client says, “We already have a data warehouse and Spark environment. Why do we need Databricks?” How would you answer?' },
+    { id: 'std', order: 2, type: 'text', prompt: 'Unrelated standard open question.' },
+  ];
+  const qs = sortedQuestions({ questions });
+  assert.equal(qs.length, 3, 'the duplicate twin collapses');
+  assert.equal(qs[0].id, 'pin', 'the common question is pinned first again');
+  assert.equal(qs[0].pin_first, true);
+  assert.equal(qs[0].question_set, 'rsa-oral');
+  assert.equal(qs[0].audio_required, true, 'the microphone requirement is restored');
+  assert.equal(qs[0].prompt, pinPrompt.replace(/^COMMON QUESTION —\s*/, ''), 'the retired label is dropped from the served wording');
+  const second = qs.find((q) => q.id === 'oral-2');
+  assert.equal(second.question_set, 'rsa-oral');
+  assert.equal(second.audio_required, true, 'every spoken prompt gets the mic back');
+  const std = qs.find((q) => q.id === 'std');
+  assert.equal(std.question_set, undefined, 'a standard question is left untouched');
+  assert.equal(std.audio_required, undefined);
 });

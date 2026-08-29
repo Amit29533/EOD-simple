@@ -125,21 +125,83 @@ function isPinFirst(q) { return q?.pin_first === true; }
 function isOralSet(q) { return q?.question_set === RSA_ORAL_SET; }
 
 /**
+ * Strip a leading enumerator/label ("COMMON QUESTION —", "Q3:") from a prompt.
+ * Labels are ALL-CAPS (or numeric) tags; the mixed-case lead-in of an ordinary
+ * sentence ("A client gives you a vague requirement: …") is not a label, so it
+ * is preserved. The body after the label is left exactly as typed, so healers
+ * can compare it for equality against the published prompt. Shared by the
+ * comparison key and the healers that de-label legacy rows copied before the
+ * label was dropped from the published catalogue.
+ */
+export function stripPromptLabel(prompt) {
+  return String(prompt ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/^[A-Z0-9][A-Z0-9 '/]{1,40}\s*[-\u2013\u2014\u2015\u2212:]\s+/, '')
+    .trim();
+}
+
+/**
+ * Normalized comparison key for a question prompt.
+ *
+ * Legacy stores can hold two copies of the *same* published question whose
+ * prompts differ only by typography — curly vs straight quotes, en/em dashes,
+ * spacing, letter case, or a leading label that a later catalogue revision
+ * added (or an admin retyped without it). Exact-match dedupe lets both
+ * through, so the candidate was served the same question twice — once with
+ * the microphone control, once without (the older copy predated
+ * `audio_required`). Comparing normalized keys closes that gap; verified
+ * collision-free across the published catalogue.
+ */
+export function promptKey(prompt) {
+  return stripPromptLabel(String(prompt ?? ''))
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')
+    .replace(/[\u2013\u2014\u2015\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+/**
+ * When two stored rows turn out to be the same question, the surviving row
+ * keeps its own id (responses and scores are keyed by it) but must not lose
+ * the metadata its duplicate carried: a legacy flag-less copy merged with the
+ * current published copy must still demand audio, stay pinned and belong to
+ * the oral set. Only additive merges — never blank out a non-empty field.
+ */
+export function mergeDuplicateMetadata(kept, twin) {
+  if (!twin) return kept;
+  const merged = { ...kept };
+  merged.pin_first = merged.pin_first === true || twin.pin_first === true;
+  merged.audio_required = merged.audio_required === true || twin.audio_required === true;
+  if (!merged.question_set && twin.question_set) merged.question_set = twin.question_set;
+  if (!merged.help_text && twin.help_text) merged.help_text = twin.help_text;
+  if (!merged.rubric && twin.rubric) merged.rubric = twin.rubric;
+  return merged;
+}
+
+/**
  * A question must only ever be served once. If storage ever contains the same
- * id/prompt twice (e.g. an older sync before prompt-based dedupe was added),
- * the snapshot serves the first occurrence and drops the duplicates.
+ * id twice, or two prompts that are the same question modulo typography, the
+ * first occurrence is served and the duplicates' oral metadata is merged into
+ * it (see mergeDuplicateMetadata).
  */
 function uniqueBy(questions) {
-  const ids = new Set();
-  const prompts = new Set();
+  const ids = new Map();
+  const prompts = new Map();
   const out = [];
   for (const q of questions) {
     if (!q) continue;
     const idKey = q.id ? `id:${q.id}` : '';
-    const promptKey = q.prompt ? `prompt:${q.prompt}` : '';
-    if ((idKey && ids.has(idKey)) || (promptKey && prompts.has(promptKey))) continue;
-    if (idKey) ids.add(idKey);
-    if (promptKey) prompts.add(promptKey);
+    const promptId = q.prompt ? promptKey(q.prompt) : '';
+    const keptAt = (idKey && ids.get(idKey)) ?? (promptId && prompts.get(promptId));
+    if (Number.isInteger(keptAt)) {
+      out[keptAt] = mergeDuplicateMetadata(out[keptAt], q);
+      continue;
+    }
+    if (idKey) ids.set(idKey, out.length);
+    if (promptId) prompts.set(promptId, out.length);
     out.push(q);
   }
   return out;

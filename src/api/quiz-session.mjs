@@ -3,26 +3,40 @@ import {
   EXAM_OPEN_REVIEW_SECONDS,
   EXAM_OPEN_ANSWER_SECONDS,
 } from '../core/constants.mjs';
+import { promptKey, mergeDuplicateMetadata } from '../core/question-selection.mjs';
+import { applyOralContract } from './catalogue-service.mjs';
 
 export function sortedQuestions(snap) {
   // Never serve the same question twice. Existing snapshots may have been
-  // built before duplicate protection existed, so de-duplicate by id (with a
-  // prompt fallback for records created before stable ids were guaranteed).
-  const ids = new Set();
-  const prompts = new Set();
-  const rows = [...(snap?.questions || [])].filter((q) => {
-    if (!q) return false;
+  // built before duplicate protection existed, so de-duplicate by id and by
+  // *normalized* prompt (typography-insensitive — curly quotes, dashes,
+  // spacing and case differences between two stored copies of the same
+  // question must not let it be asked twice). The surviving row inherits the
+  // oral metadata of the dropped twin so the microphone requirement, pin and
+  // question-set membership survive the merge.
+  const ids = new Map();
+  const prompts = new Map();
+  const rows = [];
+  for (const q of (snap?.questions || [])) {
+    if (!q) continue;
     const idKey = q.id ? `id:${q.id}` : '';
-    const promptKey = q.prompt ? `prompt:${q.prompt}` : '';
-    if ((idKey && ids.has(idKey)) || (promptKey && prompts.has(promptKey))) return false;
-    if (idKey) ids.add(idKey);
-    if (promptKey) prompts.add(promptKey);
-    return true;
-  });
-  const pin = rows.filter((q) => q.pin_first);
-  const oral = rows.filter((q) => q.question_set && !q.pin_first)
+    const promptId = q.prompt ? promptKey(q.prompt) : '';
+    const keptAt = (idKey && ids.get(idKey)) ?? (promptId && prompts.get(promptId));
+    if (Number.isInteger(keptAt)) {
+      rows[keptAt] = mergeDuplicateMetadata(rows[keptAt], q);
+      continue;
+    }
+    if (idKey) ids.set(idKey, rows.length);
+    if (promptId) prompts.set(promptId, rows.length);
+    rows.push(q);
+  }
+  // Restore the published spoken-question contract before partitioning, so a
+  // frozen row that lost its flags still pins first and demands audio.
+  const healed = applyOralContract(rows);
+  const pin = healed.filter((q) => q.pin_first);
+  const oral = healed.filter((q) => q.question_set && !q.pin_first)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const rest = rows.filter((q) => !q.question_set && !q.pin_first)
+  const rest = healed.filter((q) => !q.question_set && !q.pin_first)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   return [...pin, ...oral, ...rest];
 }

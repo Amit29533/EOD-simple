@@ -23,14 +23,17 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 75 tests: scoring engine, question apportionment, API/RBAC journey,
-                    #          Airtable adapter contract, sign-in view, app shell, the
-                    #          allocation dialog and the published-catalogue sync
-                    #          (jsdom is optional; installed for the UI suites)
+npm test            # 108 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #           exam session & spoken-question contract, admin validation,
+                    #           Airtable adapter contract, sign-in view, app shell, the
+                    #           allocation dialog and the published-catalogue sync
+                    #           (jsdom is optional; installed for the UI suites)
 ```
 
 `npm run seed` is idempotent for an existing store: it adds newly published RSA seed
-questions without recreating users or changing existing assessment snapshots. Use
+questions and repairs the spoken-question contract flags (`question_set`, `pin_first`,
+`audio_required`) on existing copies — without recreating users, overwriting admin
+customizations or changing existing assessment snapshots. Use
 `npm run seed:fresh` only when you intentionally want to reset the local JSON store.
 
 Full end-to-end suites (need a running, seeded server):
@@ -69,7 +72,14 @@ python3 tests/features.py     # 196 checks: every feature — CRUD, validation, 
   contains **115 published questions (105 standard across 7 competencies + 10 spoken
   customer-advisory items)**. Every paper includes the pinned common spoken question
   first and **at most 5 spoken questions**, so a capped allocation can sample a broad,
-  weighted set without over-representing the oral set.
+  weighted set without over-representing the oral set. The spoken-question contract is
+  enforced at every layer: a question is recognized as the same published prompt even when
+  its wording differs only by typography or a leading label (so it is never served twice),
+  admin edits preserve the microphone requirement, the serve path restores the contract
+  from the published catalogue even for already-frozen papers, and both sync paths repair
+  legacy rows instead of duplicating them. The pinned common question carries no label —
+  the retired "COMMON QUESTION —" prefix is dropped from the catalogue and removed from
+  legacy rows by the sync, while already-frozen papers are de-labeled at serve time.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.

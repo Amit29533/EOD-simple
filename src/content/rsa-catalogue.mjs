@@ -339,7 +339,7 @@ const oralQ = (order, prompt, pinFirst = false) => ({
 });
 
 export const RSA_ORAL_QUESTIONS = [
-  oralQ(0, 'COMMON QUESTION — In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?', true),
+  oralQ(0, 'In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?', true),
   oralQ(1, 'A client says, “We already have a data warehouse and Spark environment. Why do we need Databricks?” How would you answer?'),
   oralQ(2, 'A client gives you a vague requirement: “We want to modernize our data platform.” What would you ask before proposing an architecture?'),
   oralQ(3, 'A client wants the technically most advanced Databricks architecture, but their team has limited skills to operate it. What would you recommend and why?'),
