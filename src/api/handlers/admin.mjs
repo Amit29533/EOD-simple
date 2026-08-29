@@ -205,8 +205,13 @@ export function adminHandlers(route) {
       patch.password_hash = hashPassword(body.password);
     }
     if (body.candidate_id !== undefined && u.role === 'candidate') {
-      if (body.candidate_id && !(await store.get('candidates', body.candidate_id))) return bad('Linked candidate not found.');
-      patch.candidate_id = body.candidate_id || null;
+      if (!body.candidate_id) return bad('Candidate users must be linked to a candidate record.');
+      const linkedCandidate = await store.get('candidates', body.candidate_id);
+      if (!linkedCandidate) return bad('Linked candidate not found.');
+      const alreadyLinked = (await store.list('users', { candidate_id: body.candidate_id }))
+        .find((row) => row.id !== u.id);
+      if (alreadyLinked) return conflict('That candidate already has a portal user.');
+      patch.candidate_id = body.candidate_id;
     }
     if (u.username === 'admin' && patch.active === false) return bad('The primary admin account cannot be deactivated.');
     const updated = await store.update('users', params.id, patch);
@@ -366,7 +371,9 @@ export function adminHandlers(route) {
 
   route('POST', '/admin/questions', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
-    if (!body.competency_id || !(await store.get('competencies', body.competency_id))) return bad('A valid competency is required.');
+    const comp = body.competency_id ? await store.get('competencies', body.competency_id) : null;
+    if (!comp) return bad('A valid competency is required.');
+    if (comp.role_id !== body.role_id) return bad('Competency must belong to the selected role.');
     const problem = validateQuestion(body);
     if (problem) return bad(problem);
     const rec = await store.insert('questions', normalizeQuestion(body));
@@ -378,6 +385,10 @@ export function adminHandlers(route) {
     const q = await store.get('questions', params.id);
     if (!q) return notFound('Question not found.');
     const merged = { ...q, ...body, type: body.type || q.type };
+    if (!merged.role_id || !(await store.get('roles', merged.role_id))) return bad('A valid role is required.');
+    const comp = merged.competency_id ? await store.get('competencies', merged.competency_id) : null;
+    if (!comp) return bad('A valid competency is required.');
+    if (comp.role_id !== merged.role_id) return bad('Competency must belong to the selected role.');
     const problem = validateQuestion(merged);
     if (problem) return bad(problem);
     const rec = await store.update('questions', params.id, normalizeQuestion(merged, q));
