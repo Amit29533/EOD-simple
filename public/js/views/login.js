@@ -60,14 +60,7 @@ export function loginView(view, onSuccess) {
   const wrap = document.createElement('div');
   wrap.className = 'auth-stage';
   wrap.innerHTML = `
-    <div class="auth-bg" aria-hidden="true">
-      <span class="auth-orb orb-one"></span>
-      <span class="auth-orb orb-two"></span>
-      <span class="auth-orb orb-three"></span>
-      <span class="auth-mesh"></span>
-      <span class="auth-beam"></span>
-      <span class="auth-grain"></span>
-    </div>
+    <div class="auth-bg" aria-hidden="true"></div>
 
     <div class="auth-shell">
       <section class="auth-story" aria-label="About Anthroprime ECOD">
@@ -79,7 +72,7 @@ export function loginView(view, onSuccess) {
               </span>
               <span class="auth-wordmark"><strong>Anthroprime</strong><em>ECOD</em></span>
             </div>
-            <span class="story-badge"><i></i> Enterprise Capability OS</span>
+            <span class="story-badge">Enterprise assessment</span>
           </header>
 
           <div class="story-copy">
@@ -92,37 +85,30 @@ export function loginView(view, onSuccess) {
                 <span class="rot-word">readiness.</span>
               </span>
             </h1>
-            <p class="story-lede">One connected workspace to assess, enrich and certify experienced
-              technology talent against the roles your enterprise actually needs.</p>
+            <p class="story-lede">Assess experienced talent against the roles you hire for. Objective items are auto-scored; open answers are reviewed by an assessor.</p>
             <ul class="story-points">
-              <li><span class="pt-icon">${ICON.target}</span><span><b>Role-based frameworks</b> — weighted competencies, no code changes.</span></li>
-              <li><span class="pt-icon">${ICON.bolt}</span><span><b>Auto-scored, assessor-verified</b> — objective items grade themselves.</span></li>
+              <li><span><b>Role frameworks</b> with weighted competencies.</span></li>
+              <li><span><b>Assessor review</b> only where judgment is required.</span></li>
             </ul>
           </div>
 
           <div class="story-board" aria-hidden="true">
-            <span class="board-glow"></span>
-            <div class="glass mini-report">
-              <div class="mini-head"><span>Readiness snapshot</span><span class="mini-dots">•••</span></div>
+            <div class="mini-report">
+              <div class="mini-head"><span>Sample report</span></div>
               <div class="mini-score-row">
-                <svg class="mini-ring" viewBox="0 0 44 44">
-                  <circle class="ring-track" cx="22" cy="22" r="18"></circle>
-                  <circle class="ring-fill" cx="22" cy="22" r="18"></circle>
-                </svg>
-                <div class="mini-ring-label"><b><i data-count="86">0</i>%</b><small>Enterprise ready · Databricks RSA</small></div>
+                <div class="mini-ring-label"><b><i data-count="86">0</i>%</b><small>Databricks RSA · overall</small></div>
               </div>
               <div class="mini-bars">
                 <span style="--w:88%"></span><span style="--w:74%"></span><span style="--w:94%"></span>
               </div>
               <div class="mini-bar-labels"><span>Architecture</span><span>Advisory</span><span>Governance</span></div>
+              <div class="mini-foot-stat"><i data-count="24" data-suffix="%">0</i> of items auto-scored in this example</div>
             </div>
-            <div class="glass float-chip chip-one"><span class="chip-icon">${ICON.spark}</span><div><b><i data-count="24" data-suffix="%">0</i></b><small>faster decisions</small></div></div>
-            <div class="glass float-chip chip-two"><span class="chip-icon">${ICON.target}</span><div><b>360°</b><small>capability view</small></div></div>
           </div>
 
           <footer class="story-foot">
             <span>© ${new Date().getFullYear()} Anthroprime</span>
-            <span>Role-based access <b>·</b> Audit trailed <b>·</b> Built to scale</span>
+            <span>Role-based access · Audit log</span>
           </footer>
         </div>
       </section>
@@ -147,9 +133,8 @@ export function loginView(view, onSuccess) {
             </div>
 
             <div class="auth-heading">
-              <div class="eyebrow">Secure workspace</div>
-              <h2>Welcome back<span class="heading-dot">.</span></h2>
-              <p>Sign in to continue where your team left off.</p>
+              <h2>Sign in</h2>
+              <p>Use the account issued by your administrator.</p>
             </div>
 
             <div id="login-err" role="alert" aria-live="assertive"></div>
@@ -177,7 +162,6 @@ export function loginView(view, onSuccess) {
               </label>
 
               <button class="btn block login-submit" type="submit">
-                <span class="btn-shine" aria-hidden="true"></span>
                 <span class="btn-label">Sign in to Anthroprime ECOD</span>
                 <span class="btn-arrow" aria-hidden="true">${ICON.arrow}</span>
               </button>
@@ -195,8 +179,7 @@ export function loginView(view, onSuccess) {
               </div>
             </details>
 
-            <div class="auth-security"><span class="security-icon">${ICON.shield}</span><span>Sessions are token-authenticated and every action is audit-trailed.</span></div>
-            <div class="auth-foot"><span>Need access?</span><b> Contact your Anthroprime ECOD administrator.</b></div>
+            <div class="auth-foot"><span>Need an account? Contact your administrator.</span></div>
           </div>
         </div>
       </section>
@@ -241,19 +224,8 @@ export function loginView(view, onSuccess) {
   });
 
   /* ------------------------------------------------- card spotlight + tilt */
-  const onPointerMove = (e) => {
-    const r = card.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width;
-    const y = (e.clientY - r.top) / r.height;
-    card.style.setProperty('--mx', `${(x * 100).toFixed(2)}%`);
-    card.style.setProperty('--my', `${(y * 100).toFixed(2)}%`);
-    if (reduceMotion()) return;
-    card.style.setProperty('--tilt-x', `${((0.5 - y) * 5).toFixed(2)}deg`);
-    card.style.setProperty('--tilt-y', `${((x - 0.5) * 7).toFixed(2)}deg`);
-  };
-  const onPointerLeave = () => { card.style.setProperty('--tilt-x', '0deg'); card.style.setProperty('--tilt-y', '0deg'); };
-  card.addEventListener('pointermove', onPointerMove);
-  card.addEventListener('pointerleave', onPointerLeave);
+  const onPointerMove = () => {};
+  const onPointerLeave = () => {};
 
   /* ------------------------------------------------- field interactivity */
   const markFilled = (input) => input.closest('.login-field')?.classList.toggle('filled', input.value.trim() !== '');
@@ -336,9 +308,7 @@ export function loginView(view, onSuccess) {
       submitBtn.querySelector('.btn-arrow').innerHTML = ICON.check;
       wrap.classList.add('is-leaving');
       offTheme();
-      card.removeEventListener('pointermove', onPointerMove);
-      card.removeEventListener('pointerleave', onPointerLeave);
-      window.setTimeout(() => { wrap.remove(); onSuccess(res); }, reduceMotion() ? 0 : 380);
+      window.setTimeout(() => { wrap.remove(); onSuccess(res); }, reduceMotion() ? 0 : 180);
     } catch (error) {
       setBusy(false);
       showError(error.message || 'Sign in failed. Check your credentials and try again.');
@@ -349,12 +319,6 @@ export function loginView(view, onSuccess) {
 
   /* ------------------------------------------------- entrance + motion */
   requestAnimationFrame(() => wrap.classList.add('is-ready'));
-  if (!reduceMotion()) {
-    const ring = wrap.querySelector('.ring-fill');
-    if (ring) requestAnimationFrame(() => ring.classList.add('is-on'));
-  } else {
-    wrap.querySelector('.ring-fill')?.classList.add('is-on', 'no-anim');
-  }
   wrap.querySelectorAll('[data-count]').forEach((el) => {
     countUp(el, Number(el.dataset.count), { suffix: el.dataset.suffix || '' });
   });

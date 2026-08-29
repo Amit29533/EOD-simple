@@ -12,12 +12,16 @@ test('autoScore: mcq_single', () => {
   assert.equal(autoScore(question, null), 0);
 });
 
-test('autoScore: mcq_multi strict exact-set', () => {
+test('autoScore: mcq_multi proportional credit', () => {
   const question = q('mcq_multi', { correct_option_ids: ['a', 'c'], options: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] });
   assert.equal(autoScore(question, ['a', 'c']), 4);
   assert.equal(autoScore(question, ['c', 'a']), 4, 'order independent');
-  assert.equal(autoScore(question, ['a']), 0, 'partial set scores zero');
-  assert.equal(autoScore(question, ['a', 'b', 'c']), 0, 'extra option scores zero');
+  assert.equal(autoScore(question, ['a']), 2, 'one of two correct options → half marks');
+  assert.equal(autoScore(question, 'a'), 2, 'single string is treated as one pick');
+  assert.equal(autoScore(question, ['a', 'b', 'c']), 2, 'extra wrong option cancels one hit');
+  assert.equal(autoScore(question, ['b']), 0, 'only an incorrect option → 0');
+  const three = q('mcq_multi', { points: 4, correct_option_ids: ['a', 'b', 'c'] });
+  assert.equal(autoScore(three, ['b']), 1.33, '1 of 3 correct options on a 4-point item');
 });
 
 test('autoScore: scale maps 1..5 to 0..points', () => {

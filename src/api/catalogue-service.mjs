@@ -26,6 +26,9 @@ const questionRecord = (q, roleId, compIds) => ({
   options: q.options || [], correct_option_ids: q.correct_option_ids || [],
   points: q.points, difficulty: q.difficulty, rubric: q.rubric || '',
   order: q.order, active: true,
+  question_set: q.question_set || '',
+  pin_first: q.pin_first === true,
+  audio_required: q.audio_required === true,
 });
 
 /** The workspace track that matches the published catalogue, or null. */

@@ -325,7 +325,31 @@ const ADDITIONAL_RSA_QUESTIONS = [
     ['A list of every newly announced product feature', 'The current team preferences and preferred coding language', 'Business outcomes, capability gaps, dependencies, investment guardrails and measurable decision points', 'A promise that no architecture will need to change'], 'c', 'advanced'),
 ];
 
+/** Ten spoken advisory prompts. Item 1 is pinned for every candidate; a 50-question paper includes five from this set. */
+export const RSA_ORAL_SET = 'rsa-oral';
+const oralRubric = 'Expected evidence: plain-language problem framing; RSA as a trusted advisor (discover, recommend, enable); concrete trade-offs or next questions; audience-appropriate communication; a recommendation with rationale — not a product feature dump.';
+const oralQ = (order, prompt, pinFirst = false) => ({
+  competency: 'customer-advisory', type: 'text', points: 6, difficulty: 'advanced', order,
+  prompt, rubric: oralRubric, options: [], correct_option_ids: [],
+  question_set: RSA_ORAL_SET, pin_first: pinFirst, audio_required: true,
+  help_text: 'Record a spoken answer (required). Typed notes are optional.',
+});
+
+export const RSA_ORAL_QUESTIONS = [
+  oralQ(0, 'COMMON QUESTION — In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?', true),
+  oralQ(1, 'A client says, “We already have a data warehouse and Spark environment. Why do we need Databricks?” How would you answer?'),
+  oralQ(2, 'A client gives you a vague requirement: “We want to modernize our data platform.” What would you ask before proposing an architecture?'),
+  oralQ(3, 'A client wants the technically most advanced Databricks architecture, but their team has limited skills to operate it. What would you recommend and why?'),
+  oralQ(4, 'How would you explain the difference between a good Databricks implementation and a good Databricks architecture?'),
+  oralQ(5, 'A senior stakeholder challenges your proposed architecture in a meeting. How would you defend your recommendation without becoming defensive?'),
+  oralQ(6, 'You discover that the client’s stated requirement is not actually solving their underlying business problem. What would you do?'),
+  oralQ(7, 'A client asks you to choose between faster delivery, lower cost, and a more scalable architecture. How would you help them make that decision?'),
+  oralQ(8, 'How would you explain a Databricks architecture to a CIO differently from how you would explain it to a data engineer?'),
+  oralQ(9, 'Imagine you are joining your first meeting with a new Databricks client. What are the three most important things you want to understand before recommending anything?'),
+];
+
 export const RSA_QUESTIONS = [
+  ...RSA_ORAL_QUESTIONS,
   // ---------------- 1. Lakehouse Architecture & Platform Design
   { competency: 'lakehouse-architecture', type: 'mcq_single', points: 4, difficulty: 'intermediate', order: 1,
     prompt: 'A retail client runs a legacy EDW for BI and a separate S3 data lake for ML, with constant sync issues. Which target architecture do you recommend as the first move?',

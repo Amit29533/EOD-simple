@@ -119,13 +119,39 @@ test('candidate quiz payload contains NO correct answers or rubrics', async () =
   const res = await call('GET', `/candidate/assessments/${assessmentId}`, { token: rohitToken });
   assert.equal(res.status, 200);
   assert.equal(res.body.assessment.status, 'in_progress', 'first open starts the clock');
+  assert.equal(res.body.questions.length, 1, 'only the current question is issued');
+  assert.equal(res.body.exam.total, 2);
+  assert.ok(res.body.exam.remaining_ms <= 30_000);
+  assert.ok(res.body.current_question);
   for (const q of res.body.questions) {
     assert.equal(q.correct_option_ids, undefined);
     assert.equal(q.rubric, undefined);
   }
-  // someone else's assessment is simply not found
   const other = await call('GET', `/candidate/assessments/${assessmentId}`, { token: adminToken });
   assert.ok([403, 404].includes(other.status));
+});
+
+test('sequential exam advances a locked cursor and records integrity events', async () => {
+  const first = await call('GET', `/candidate/assessments/${assessmentId}`, { token: rohitToken });
+  const q1 = first.body.current_question.id;
+  const integ = await call('POST', `/candidate/assessments/${assessmentId}/integrity`, {
+    token: rohitToken, body: { event: 'copy' },
+  });
+  assert.equal(integ.status, 200);
+  assert.ok(integ.body.integrity.copy >= 1);
+  const nxt = await call('POST', `/candidate/assessments/${assessmentId}/next`, {
+    token: rohitToken, body: { answer: 'b' },
+  });
+  assert.equal(nxt.status, 200);
+  assert.equal(nxt.body.complete, false);
+  const second = await call('GET', `/candidate/assessments/${assessmentId}`, { token: rohitToken });
+  assert.notEqual(second.body.current_question.id, q1, 'previous question is not reissued');
+  assert.equal(second.body.current_question.type, 'text');
+  assert.equal(second.body.exam.phase, 'review');
+  // restore cursor so the remaining journey tests still submit both items from index 0 answers
+  await store.update('assessments', assessmentId, {
+    quiz_state: { ...(await store.get('assessments', assessmentId)).quiz_state, index: 0, phase: 'answer' },
+  });
 });
 
 test('candidate saves draft answers and submits; auto-scoring runs; incomplete submit is 422', async () => {
@@ -267,6 +293,157 @@ test('candidate with a finalized report cannot be deleted even with the admin pa
   });
   assert.equal(del.status, 409);
   assert.ok(await store.get('candidates', globalThis.__ids.candId), 'scored candidate is protected');
+});
+
+test('timed exam submit merges previously locked answers instead of wiping them', async () => {
+  const { roleId } = globalThis.__ids;
+  const cand = await store.insert('candidates', { name: 'Exam Merge', email: '', stage: 'role_mapped', target_role_id: roleId });
+  await store.insert('users', {
+    username: 'exam.merge', name: 'EM', role: 'candidate', email: '',
+    password_hash: hashPassword('em-pass-1234'), active: true, candidate_id: cand.id,
+  });
+  const priya = (await store.list('users', { username: 'priya.nair' }))[0];
+  const alloc = await call('POST', '/admin/assessments', {
+    token: adminToken, body: { candidate_id: cand.id, role_id: roleId, assessor_id: priya.id },
+  });
+  assert.equal(alloc.status, 201, JSON.stringify(alloc.body));
+  const tok = await login('exam.merge', 'em-pass-1234');
+  const aid = alloc.body.id;
+  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await call('GET', `/candidate/assessments/${aid}`, { token: tok });
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, {
+    token: tok, body: { answer: { text: 'Lakehouse with Unity Catalog.', transcript: '', source: 'typed' } },
+  })).status, 200);
+  const sub = await call('POST', `/candidate/assessments/${aid}/submit`, { token: tok, body: { answers: {} } });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  const responses = await store.list('responses', { assessment_id: aid });
+  const mcq = responses.find((r) => r.question_id === qs[0].id);
+  assert.equal(mcq.answer, 'b');
+  assert.equal(mcq.auto_score, 4, 'locked MCQ must survive an empty submit body');
+});
+
+test('open-response answers persist transcript + audio clip; oversized audio is rejected', async () => {
+  const { roleId } = globalThis.__ids;
+  const cand = await store.insert('candidates', { name: 'Audio Probe', email: '', stage: 'role_mapped', target_role_id: roleId });
+  await store.insert('users', {
+    username: 'audio.probe', name: 'AP', role: 'candidate', email: '',
+    password_hash: hashPassword('ap-pass-1234'), active: true, candidate_id: cand.id,
+  });
+  const priya = (await store.list('users', { username: 'priya.nair' }))[0];
+  const alloc = await call('POST', '/admin/assessments', {
+    token: adminToken, body: { candidate_id: cand.id, role_id: roleId, assessor_id: priya.id },
+  });
+  const tok = await login('audio.probe', 'ap-pass-1234');
+  const aid = alloc.body.id;
+  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const textQ = qs.find((q) => q.type === 'text');
+  await call('GET', `/candidate/assessments/${aid}`, { token: tok });
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
+
+  const phase = await call('POST', `/candidate/assessments/${aid}/phase`, { token: tok, body: { phase: 'answer' } });
+  assert.equal(phase.status, 200);
+  assert.equal(phase.body.phase, 'answer');
+
+  const clip = Buffer.from('fake-webm-bytes').toString('base64');
+  const nxt = await call('POST', `/candidate/assessments/${aid}/next`, {
+    token: tok,
+    body: {
+      answer: {
+        text: 'Lakehouse with Unity Catalog.',
+        transcript: 'Lakehouse with Unity Catalog.',
+        source: 'audio',
+        audio_b64: clip,
+        audio_mime: 'audio/webm',
+      },
+    },
+  });
+  assert.equal(nxt.status, 200, JSON.stringify(nxt.body));
+  assert.equal(nxt.body.complete, true);
+
+  const stored = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
+  assert.equal(stored.answer.source, 'audio');
+  assert.equal(stored.answer.transcript, 'Lakehouse with Unity Catalog.');
+  assert.equal(stored.answer.audio_b64, clip);
+  assert.equal(stored.answer.audio_mime, 'audio/webm');
+
+  const sub = await call('POST', `/candidate/assessments/${aid}/submit`, { token: tok, body: { answers: {} } });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  const after = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
+  assert.equal(after.answer.audio_b64, clip, 'submit merge must keep the recorded clip');
+
+  const huge = await call('PUT', `/candidate/assessments/${aid}/answers`, {
+    token: tok,
+    body: { answers: { [textQ.id]: { text: 'x', transcript: '', audio_b64: 'A'.repeat(400_001) } } },
+  });
+  assert.equal(huge.status, 409, 'assessment already submitted so answers are locked');
+});
+
+test('locked exam answers cannot be rewritten via draft PUT or submit overlay', async () => {
+  const { roleId } = globalThis.__ids;
+  const cand = await store.insert('candidates', { name: 'Lock Probe', email: '', stage: 'role_mapped', target_role_id: roleId });
+  await store.insert('users', {
+    username: 'lock.probe', name: 'LP', role: 'candidate', email: '',
+    password_hash: hashPassword('lp-pass-1234'), active: true, candidate_id: cand.id,
+  });
+  const priya = (await store.list('users', { username: 'priya.nair' }))[0];
+  const alloc = await call('POST', '/admin/assessments', {
+    token: adminToken, body: { candidate_id: cand.id, role_id: roleId, assessor_id: priya.id },
+  });
+  const tok = await login('lock.probe', 'lp-pass-1234');
+  const aid = alloc.body.id;
+  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await call('GET', `/candidate/assessments/${aid}`, { token: tok });
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
+
+  const rewrite = await call('PUT', `/candidate/assessments/${aid}/answers`, {
+    token: tok, body: { answers: { [qs[0].id]: 'a' } },
+  });
+  assert.equal(rewrite.status, 200);
+  const afterPut = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === qs[0].id);
+  assert.equal(afterPut.answer, 'b', 'locked MCQ must ignore a later draft PUT');
+
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, {
+    token: tok, body: { answer: { text: 'Lakehouse.', transcript: '', source: 'typed' } },
+  })).status, 200);
+  const sub = await call('POST', `/candidate/assessments/${aid}/submit`, {
+    token: tok, body: { answers: { [qs[0].id]: 'a' } },
+  });
+  assert.equal(sub.status, 200, JSON.stringify(sub.body));
+  const afterSub = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === qs[0].id);
+  assert.equal(afterSub.answer, 'b');
+  assert.equal(afterSub.auto_score, 4);
+});
+
+test('draft PUT of an audio answer is rejected when the clip is too large', async () => {
+  const { roleId } = globalThis.__ids;
+  const cand = await store.insert('candidates', { name: 'Audio Draft', email: '', stage: 'role_mapped', target_role_id: roleId });
+  await store.insert('users', {
+    username: 'audio.draft', name: 'AD', role: 'candidate', email: '',
+    password_hash: hashPassword('ad-pass-1234'), active: true, candidate_id: cand.id,
+  });
+  const priya = (await store.list('users', { username: 'priya.nair' }))[0];
+  const alloc = await call('POST', '/admin/assessments', {
+    token: adminToken, body: { candidate_id: cand.id, role_id: roleId, assessor_id: priya.id },
+  });
+  const tok = await login('audio.draft', 'ad-pass-1234');
+  const aid = alloc.body.id;
+  const textQ = [...alloc.body.snapshot_json.questions].find((q) => q.type === 'text');
+  const tooBig = await call('PUT', `/candidate/assessments/${aid}/answers`, {
+    token: tok,
+    body: { answers: { [textQ.id]: { text: 'spoken', transcript: 'spoken', source: 'audio', audio_b64: 'A'.repeat(400_001) } } },
+  });
+  assert.equal(tooBig.status, 422);
+  const ok = await call('PUT', `/candidate/assessments/${aid}/answers`, {
+    token: tok,
+    body: { answers: { [textQ.id]: { text: '', transcript: 'spoken lakehouse', source: 'audio', audio_b64: 'QQ==', audio_mime: 'audio/webm' } } },
+  });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const rows = await store.list('responses', { assessment_id: aid });
+  const row = rows.find((r) => r.question_id === textQ.id);
+  assert.equal(row.answer.transcript, 'spoken lakehouse');
+  assert.equal(row.answer.audio_b64, 'QQ==');
+  assert.equal(row.answer.source, 'audio');
 });
 
 test('non-admins cannot reach the delete-candidate route at all', async () => {

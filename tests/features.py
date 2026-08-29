@@ -222,8 +222,10 @@ call('PUT', '/admin/frameworks', AT, {'role_id': SR, 'config': {'readiness_bands
 st, snap = call('GET', f'/assessor/assessments/{AID}', PT)
 check('assessor blocked before submit -> 409', st == 409)
 quiz = call('GET', f'/candidate/assessments/{AID}', T3)[1]
-snap_q1 = next(q for q in quiz['questions'] if q['id'] == Q1['id'])
-check('snapshot frozen: prompt unchanged after edit', snap_q1['prompt'] == 'Core Q: pick B (edited)')
+check('exam hall: one question issued, total frozen in snapshot', quiz['exam']['total'] == 3 and len(quiz['questions']) == 1)
+check('snapshot frozen: edited prompt not leaked to candidate', 'COMPLETELY CHANGED' not in json.dumps(quiz))
+if quiz['current_question']['id'] == Q1['id']:
+    check('snapshot frozen: prompt unchanged after edit', quiz['current_question']['prompt'] == 'Core Q: pick B (edited)')
 # new allocation for a different candidate picks up the NEW config
 st, c4 = call('POST', '/admin/candidates', AT, {'name': 'Feature Candidate Four'})
 C4 = c4['id']
@@ -250,9 +252,12 @@ check('invalid scale (9) -> 422', call('PUT', f'/candidate/assessments/{AID}/ans
 check('invalid mcq option -> 422', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: 'zzz'}})[0] == 422)
 check('unknown question ids ignored', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {'nope': 1, Q1['id']: 'b'}})[0] == 200)
 quiz = call('GET', f'/candidate/assessments/{AID}', T3)[1]
-check('saved answers round-trip', quiz['answers'].get(Q1['id']) == 'b')
-check('clearing answer removes it', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: ''}})[0] == 200
-      and call('GET', f'/candidate/assessments/{AID}', T3)[1]['answers'].get(Q1['id']) in (None, ''))
+check('saved answers round-trip on current item', quiz.get('current_answer') == 'b' or quiz['answers'].get(Q1['id']) == 'b')
+cleared = call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: ''}})[0] == 200
+after = call('GET', f'/candidate/assessments/{AID}', T3)[1]
+check('clearing answer removes it', cleared and after.get('current_answer') in (None, '') and after['answers'].get(Q1['id']) in (None, ''))
+st, ig = call('POST', f'/candidate/assessments/{AID}/integrity', T3, {'event': 'copy'})
+check('integrity event recorded', st == 200 and ig.get('integrity', {}).get('copy', 0) >= 1)
 check('scoring blocked before submit', call('PUT', f'/assessor/assessments/{AID}/scores', PT, {'scores': [{'question_id': Q3['id'], 'score': 4}]})[0] == 409)
 check('finalize blocked before submit', call('POST', f'/assessor/assessments/{AID}/finalize', PT)[0] == 409)
 # submit: missing -> 422, then full
@@ -410,11 +415,17 @@ check('snapshot records the limit and the bank size',
       ax['snapshot_json']['question_limit'] == 6 and ax['snapshot_json']['bank_total'] == BANK)
 
 st, quiz = call('GET', f'/candidate/assessments/{AX}', CXT)
-check('candidate is served exactly 6 questions', st == 200 and len(quiz['questions']) == 6)
+check('candidate exam.total is 6 (one live question)', st == 200 and quiz['exam']['total'] == 6 and len(quiz['questions']) == 1)
+first_live = quiz['current_question']['id']
+st, nxt = call('POST', f'/candidate/assessments/{AX}/next', CXT, {'answer': None})
+check('lock-and-next advances the cursor', st == 200 and nxt.get('complete') is False)
+st, quiz = call('GET', f'/candidate/assessments/{AX}', CXT)
+check('previous question is not reissued', quiz['current_question']['id'] != first_live)
 check('served questions still hide correct answers/rubrics',
       'correct_option_ids' not in json.dumps(quiz) and 'rubric' not in json.dumps(quiz))
-served_comps = {q['competency_id'] for q in quiz['questions']}
-check('6 questions cover multiple competencies', len(served_comps) > 1)
+snap_qs = ax['snapshot_json']['questions']
+served_comps = {q['competency_id'] for q in snap_qs}
+check('6 questions cover multiple competencies', len(snap_qs) == 6 and len(served_comps) > 1)
 
 st, lst = call('GET', '/candidate/assessments', CXT)
 row = next(a for a in lst['assessments'] if a['id'] == AX)
@@ -427,7 +438,7 @@ check('admin list exposes served vs bank counts',
 
 # a capped assessment must still submit and score end-to-end
 db_answers = {}
-for q in quiz['questions']:
+for q in snap_qs:
     if q['type'] == 'mcq_single': db_answers[q['id']] = q['options'][0]['id']
     elif q['type'] == 'mcq_multi': db_answers[q['id']] = [q['options'][0]['id']]
     elif q['type'] == 'scale': db_answers[q['id']] = 4

@@ -11,7 +11,7 @@ export const TABLES = {
   competencies: { json: [] },
   questions:    { json: ['options', 'correct_option_ids'] },
   frameworks:   { json: ['config'] },
-  assessments:  { json: ['snapshot_json', 'report_json'] },
+  assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state'] },
   responses:    { json: ['answer'] },
   audit_log:    { json: ['meta'] },
 };

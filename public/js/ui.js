@@ -18,8 +18,8 @@ export const gapBadge = (c) => c.status === 'critical_gap' ? badge(`Gap ${c.gap}
   : c.status === 'strength' ? badge('Strength', 'green') : badge('On target', 'green');
 
 export const loading = (text = 'Loading…') => `<div class="loading"><span class="spinner"></span><span>${esc(text)}</span></div>`;
-export const emptyState = (title, sub = '', emoji = '🗂️') =>
-  `<div class="empty"><div class="big">${emoji}</div><div style="font-weight:600;color:var(--ink-2)">${esc(title)}</div>${sub ? `<div class="small">${esc(sub)}</div>` : ''}</div>`;
+export const emptyState = (title, sub = '', emoji = '') =>
+  `<div class="empty">${emoji ? `<div class="big">${emoji}</div>` : ''}<div style="font-weight:600;color:var(--ink-2)">${esc(title)}</div>${sub ? `<div class="small">${esc(sub)}</div>` : ''}</div>`;
 
 /* ------------------------------ toast ------------------------------ */
 const TOAST_ICONS = { success: '✓', error: '!', info: 'i' };

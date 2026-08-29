@@ -19,6 +19,8 @@
  *  - once sampled, the snapshot makes the chosen set auditable and immutable.
  */
 
+import { RSA_ORAL_IN_CAP, RSA_ORAL_SET } from './constants.mjs';
+
 /** Stable per-competency grouping, ordered by the competency configuration. */
 function groupByCompetency(questions, competencies) {
   const groups = new Map();
@@ -116,23 +118,70 @@ function sample(items, count, rng) {
  * deterministic and weighted, while the questions within each competency are
  * shuffled so repeated allocations do not always serve the same first items.
  * `rng` is injectable for tests; production allocations use Math.random.
- * Returns a new array in the original (display) order.
+ * Returns a new array: pinned oral item first, remaining oral-set items next,
+ * then the rest in configured display order.
  */
-export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random } = {}) {
-  const pool = [...questions];
-  const n = Number(limit);
-  if (!Number.isFinite(n) || n <= 0 || n >= pool.length) return pool;
+function isPinFirst(q) { return q?.pin_first === true; }
+function isOralSet(q) { return q?.question_set === RSA_ORAL_SET; }
 
+function arrange(selected) {
+  const pins = selected.filter(isPinFirst);
+  const oral = selected.filter((q) => isOralSet(q) && !isPinFirst(q))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const rest = selected.filter((q) => !isOralSet(q) && !isPinFirst(q))
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  return [...pins, ...oral, ...rest];
+}
+
+function pickWeighted(pool, competencies, count, randomize, rng) {
+  if (count <= 0) return [];
+  if (count >= pool.length) return pool;
   const groups = groupByCompetency(pool, competencies);
-  const quota = apportion(groups, Math.floor(n));
-
+  const quota = apportion(groups, Math.floor(count));
   const keep = new Set();
   for (const g of groups) {
-    const count = quota.get(g.id) ?? 0;
-    const selected = randomize ? sample(g.items, count, rng) : g.items.slice(0, count);
+    const n = quota.get(g.id) ?? 0;
+    const selected = randomize ? sample(g.items, n, rng) : g.items.slice(0, n);
     for (const q of selected) keep.add(q.id);
   }
   return pool.filter((q) => keep.has(q.id));
+}
+
+export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random } = {}) {
+  const pool = [...questions];
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0 || n >= pool.length) return arrange(pool);
+
+  const reserved = [];
+  const reservedIds = new Set();
+  const take = (q) => {
+    if (!q || reservedIds.has(q.id)) return;
+    reserved.push(q);
+    reservedIds.add(q.id);
+  };
+
+  for (const q of pool.filter(isPinFirst)) take(q);
+  const oralBank = pool.filter(isOralSet);
+  const oralNeed = Math.min(RSA_ORAL_IN_CAP, n, oralBank.length);
+  const oralRest = oralBank.filter((q) => !reservedIds.has(q.id));
+  const extra = Math.max(0, oralNeed - reserved.length);
+  const extraOral = randomize ? sample(oralRest, extra, rng) : oralRest.slice(0, extra);
+  for (const q of extraOral) take(q);
+  while (reserved.length > n) {
+    const idx = [...reserved.keys()].reverse().find((i) => !isPinFirst(reserved[i]));
+    if (idx === undefined) break;
+    reservedIds.delete(reserved[idx].id);
+    reserved.splice(idx, 1);
+  }
+
+  const rest = pickWeighted(
+    pool.filter((q) => !reservedIds.has(q.id) && !isOralSet(q)),
+    competencies,
+    n - reserved.length,
+    randomize,
+    rng,
+  );
+  return arrange([...reserved, ...rest]);
 }
 
 /**

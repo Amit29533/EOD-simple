@@ -32,11 +32,11 @@ const DEFAULT_ROUTE = { admin: '#/dashboard', assessor: '#/workspace', candidate
 function placeholderView(moduleName) {
   const fn = (view) => {
     view.innerHTML = `<div class="empty-page">
-      <div class="empty-illustration"><span>✦</span></div>
-      <div class="eyebrow">Coming next</div>
+      <div class="empty-illustration" aria-hidden="true"></div>
+      <div class="eyebrow">Not available</div>
       <h1>${esc(moduleName)}</h1>
-      <p>Hello <b>${esc(state.user?.name)}</b> — your workspace opens when the ${esc(moduleName)} module goes live in the next Anthroprime ECOD phase.</p>
-      <p class="muted small">You only have access to your own assignments. For questions, contact your Anthroprime ECOD administrator.</p>
+      <p>This module is not enabled for your account yet.</p>
+      <p class="muted small">Contact your administrator if you need access.</p>
     </div>`;
   };
   return fn;
@@ -88,7 +88,6 @@ function renderShell() {
         <span class="mark">${logoSvg({ className: 'mark-svg' })}</span>
         <span><strong>Anthroprime</strong><small>ECOD · Capability OS</small></span>
       </a>
-      <div class="brand-status"><span></span> Talent readiness platform</div>
     </div>
     <nav class="nav" aria-label="Primary navigation">
       ${navGroups.map(([label, items]) => `<div class="nav-group">
@@ -103,7 +102,7 @@ function renderShell() {
         <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span class="who-copy"><b>${esc(u.name)}</b><small>${esc(u.email || `${u.role} account`)}</small></span></div>
         <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
       </div>
-      <button class="btn secondary sm signout" id="logout-btn"><span class="btn-icon">↗</span> Sign out</button>
+      <button class="btn secondary sm signout" id="logout-btn">Sign out</button>
     </div>`;
 
   document.getElementById('logout-btn').onclick = async () => {
@@ -117,11 +116,9 @@ function renderShell() {
   document.getElementById('topbar').innerHTML = `
     <div class="topbar-left">
       <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
-      <div class="topbar-context"><span class="eyebrow">Anthroprime ECOD</span><strong>${esc(pageLabel)}</strong></div>
+      <div class="topbar-context"><span class="muted small">Anthroprime ECOD</span><strong>${esc(pageLabel)}</strong></div>
     </div>
     <div class="topbar-right">
-      <span class="live-status"><i></i> All systems normal</span>
-      <span class="topbar-divider"></span>
       ${themeToggleHtml()}
       <span class="topbar-role">${esc(u.role)}</span>
       <span class="topbar-avatar">${esc(initials(u.name))}</span>
@@ -186,6 +183,8 @@ async function renderOnce() {
     keys.forEach((k, i) => { params[k] = decodeURIComponent(match[i + 1]); });
     view.innerHTML = '<div class="loading"><span class="spinner"></span><span>Loading workspace</span></div>';
     try {
+      const isExam = state.user.role === 'candidate' && /\/quiz$/.test(hash);
+      document.body.classList.toggle('exam-lock', isExam);
       await fn(view, params);
       enhanceTables(view);
       view.scrollIntoView?.({ block: 'start' });

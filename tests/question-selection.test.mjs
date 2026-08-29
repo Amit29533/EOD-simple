@@ -92,6 +92,22 @@ test('orphan questions (competency removed) stay eligible', () => {
   assert.equal(selectQuestions(withOrphan, comps, 31).length, 31);
 });
 
+test('capped papers pin the common oral question first and include five from the oral set', () => {
+  const oral = Array.from({ length: 10 }, (_, i) => ({
+    id: `oral-${i}`, competency_id: 'c3', points: 6, order: i,
+    question_set: 'rsa-oral', pin_first: i === 0, prompt: `Oral ${i}`,
+  }));
+  const extra = Array.from({ length: 80 }, (_, i) => ({
+    id: `x${i}`, competency_id: comps[i % 3].id, points: 4, order: 100 + i,
+  }));
+  const mixed = [...bank, ...oral, ...extra];
+  const picked = selectQuestions(mixed, comps, 50, { randomize: true, rng: () => 0.3 });
+  assert.equal(picked.length, 50);
+  assert.equal(picked[0].id, 'oral-0', 'COMMON oral question is always first');
+  assert.equal(picked.filter((q) => q.question_set === 'rsa-oral').length, 5);
+  assert.ok(picked.slice(0, 5).every((q) => q.question_set === 'rsa-oral'));
+});
+
 test('allocationPreview reports the served split and its points total', () => {
   const preview = allocationPreview(bank, comps, 10);
   assert.equal(preview.total, 10);
