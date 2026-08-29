@@ -12,7 +12,7 @@ import fs from 'node:fs';
 const css = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
 /** Custom properties set from JS or an inline style attribute, not in CSS. */
-const RUNTIME_VARS = new Set(['--mx', '--my', '--tilt-x', '--tilt-y', '--w']);
+const RUNTIME_VARS = new Set(['--mx', '--my', '--tilt-x', '--tilt-y', '--w', '--stagger']);
 
 test('every var(--token) used in styles.css is declared', () => {
   const declared = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
