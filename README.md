@@ -43,17 +43,6 @@ python3 tests/features.py     # 186 checks: every feature — CRUD, validation, 
                               # published-catalogue sync (both honour BASE=http://…/api)
 ```
 
-### Demo sign-ins (seeded)
-
-| User          | Password              | Portal                                                   |
-| ------------- | --------------------- | -------------------------------------------------------- |
-| `admin`       | `ECOD-admin-2026`     | Admin dashboard — candidates, roles, users, allocation   |
-| `priya.nair`  | `ECOD-assessor-2026`  | Assessor workspace (Rohit Verma allocated to her)        |
-| `arjun.mehta` | `ECOD-assessor-2026`  | Assessor workspace (scored Neha Kulkarni example)        |
-| `rohit.verma` | `ECOD-candidate-2026` | Candidate portal → take the RSA quiz → report card        |
-
-> ⚠️ These are development credentials for the seeded demo. Rotate them before any real use.
-
 **End-to-end demo loop (2 minutes):**
 1. Sign in as **rohit.verma** → *Start assessment* → answer the full-bank RSA quiz (autosaves) → *Submit*.
 2. Sign in as **priya.nair** → *Score now* → review auto-scored MCQs, score the open answers against the rubric → *Finalize & generate report*.

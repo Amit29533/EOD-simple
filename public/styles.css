@@ -916,25 +916,6 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .login-submit.is-success .btn-arrow { transform: none; }
 .login-submit.is-success .btn-shine { animation: none; opacity: 0; }
 
-/* demo quick-fill */
-.demo-fold { margin-top: 20px; }
-.demo-fold summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; color: var(--ink-3); font-size: 11px; font-weight: 800; letter-spacing: .01em; padding: 7px 2px; transition: color .18s; }
-.demo-fold summary::-webkit-details-marker { display: none; }
-.demo-fold summary:hover { color: var(--brand-dark); }
-.demo-summary-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; color: var(--brand-dark); background: var(--brand-soft); }
-.demo-summary-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.demo-fold[open] summary { color: var(--brand-dark); }
-.demo-list { display: grid; gap: 8px; margin-top: 6px; animation: fadeSlide .26s ease-out; }
-.demo-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; width: 100%; text-align: left; padding: 9px 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink-2); cursor: pointer; font: inherit; transition: border-color .18s, transform .18s, box-shadow .18s; }
-.demo-row:hover { border-color: var(--brand-line); transform: translateX(3px); box-shadow: 0 6px 16px rgba(11, 44, 56, .07); }
-.demo-row.picked { border-color: var(--brand); background: var(--brand-wash); }
-.demo-role { font-size: 9px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--brand-dark); }
-.demo-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.demo-meta code { background: var(--brand-wash); color: var(--brand-deep); border-radius: 6px; padding: 1px 6px; font-size: 10.5px; width: max-content; }
-.demo-meta small { color: var(--ink-3); font-size: 9.5px; }
-.demo-use { font-size: 9.5px; font-weight: 800; color: var(--ink-3); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-strong); }
-.demo-row:hover .demo-use { color: #fff; background: var(--brand); border-color: var(--brand); }
-
 /* trust + footer */
 .auth-security { display: flex; align-items: flex-start; gap: 9px; margin-top: 22px; color: var(--ink-3); font-size: 10px; line-height: 1.5; }
 .security-icon { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; color: var(--green); background: var(--green-bg); }
