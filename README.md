@@ -23,8 +23,9 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 108 tests: scoring engine, question apportionment, API/RBAC journey,
-                    #           exam session & spoken-question contract, admin validation,
+npm test            # 120 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #           exam session & spoken-question contract, full exam lifecycle
+                    #           (phases/timers/audio/scoring/report), admin validation,
                     #           Airtable adapter contract, sign-in view, app shell, the
                     #           allocation dialog and the published-catalogue sync
                     #           (jsdom is optional; installed for the UI suites)

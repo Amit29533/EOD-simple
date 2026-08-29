@@ -1,9 +1,19 @@
 # Bug Fixes & UI Improvements Report
 
 ## Summary
-The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data.
+The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole.
 
-Current verification: **108/108 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+Current verification: **120/120 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+
+---
+
+## ⏱️ Exam lifecycle test pass (latest)
+
+A new end-to-end suite (`tests/exam-full-journey.test.mjs`, 12 tests) drives the whole exam over the real HTTP surface: the state machine (review/answer phases, countdown, resume, cursor integrity), spoken/audio answer handling, autosave drafting + locking, the integrity trail, submission validation, assessor scoring → finalize, exact weighted-report math (competency percentages, levels, gaps, bands), damaged-snapshot healing and compartmentalization.
+
+**Bug found and fixed — the answer-phase timer could be reset indefinitely.** `POST /candidate/assessments/:id/phase` accepted the review → answer transition regardless of the current phase, so repeating the call restarted `question_started_at` and a candidate could extend the two-minute answer window indefinitely (and re-arm it after every tab switch). The transition is now one-way: a second call returns **409** and the countdown continues from its original start. The client already treats a failed phase POST as benign (it re-fetches and repaints), so no UI change was needed.
+
+Also locked down by the suite (verified, no change needed): malformed answers never advance the cursor; oversized/non-base64 audio is rejected or dropped; locked answers ignore later autosaves; submit is closed after submission (as are `next`, autosave and integrity posts); early submission lists the unanswered questions while a completed exam may submit blanks (marked `timed_out`); assessor score entry validates the 0–points range and ignores auto-scored questions; the candidate report carries no rubrics, correct answers, assessor comments or per-question breakdown; a fully blank run scores 0 and maps every gap worst-first.
 
 ---
 
