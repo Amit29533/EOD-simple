@@ -493,18 +493,125 @@ body.exam-lock .view { max-width: 860px; padding-top: 28px; }
 .exam-brand { display: flex; align-items: center; gap: 12px; }
 .exam-brand h2 { margin: 2px 0 0; font-size: 17px; }
 .exam-lock-pip { width: 10px; height: 10px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 5px var(--brand-soft); }
-.exam-meter { width: min(280px, 42%); }
+.exam-meter { flex: 1; min-width: 0; width: auto; }
 .exam-timer { font-family: var(--mono); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--brand-dark); }
 .exam-timer.urgent { color: var(--red); }
+
+/* Big, visible timer on the right of the exam chrome. */
+.exam-clock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px 15px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--brand-soft, rgba(21,155,150,.12)), var(--surface-2, rgba(255,255,255,.52)));
+  border: 1px solid var(--brand-line, rgba(21,155,150,.26));
+  box-shadow: 0 8px 24px rgba(10, 32, 47, .10);
+  color: var(--brand-dark);
+  animation: riseIn .35s ease;
+}
+.exam-clock-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: right;
+  line-height: 1.1;
+}
+.exam-clock .exam-timer {
+  font-size: 31px;
+  line-height: 1;
+  min-width: 74px;
+  text-align: right;
+  color: inherit;
+}
+.exam-clock.urgent {
+  border-color: var(--red);
+  background: linear-gradient(135deg, rgba(181,58,53,.16), rgba(255,255,255,.52));
+  color: var(--red);
+  box-shadow: 0 0 0 4px rgba(181, 58, 53, .12), 0 8px 24px rgba(181, 58, 53, .16);
+  animation: examClockUrgent 1s var(--ease-smooth) infinite;
+}
+@keyframes examClockUrgent {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.035); }
+}
+
 .exam-comp { color: var(--ink-3); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; margin: -6px 0 12px; }
 .exam-review { padding: 12px 14px; border-radius: 12px; background: var(--note-bg); border: 1px solid var(--note-line); color: var(--note-ink); }
 .exam-answer textarea { min-height: 180px; user-select: text; }
-.exam-audio-bar { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.exam-answer.has-audio {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 12px 14px;
+  align-items: start;
+}
+.exam-answer.has-audio textarea { grid-column: 1; width: 100%; }
+
+/* Big, high-contrast record control sitting beside the answer box. */
+.exam-audio-side {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-items: stretch;
+}
+.rec-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 58px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.1;
+  box-shadow: 0 8px 18px rgba(21, 155, 150, .22);
+  transition: transform .18s var(--ease-smooth), box-shadow .22s var(--ease-smooth), background .22s var(--ease-smooth);
+}
+.rec-btn svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
+.rec-btn:hover { transform: translateY(-1px); box-shadow: 0 11px 24px rgba(21, 155, 150, .28); }
+.rec-btn:active { transform: translateY(0); }
+.rec-btn.recording {
+  background: var(--red);
+  border-color: var(--red);
+  box-shadow: 0 0 0 4px rgba(181, 58, 53, .14), 0 9px 20px rgba(181, 58, 53, .22);
+  animation: recPulse 1.4s var(--ease-smooth) infinite;
+}
+@keyframes recPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(181, 58, 53, .10), 0 9px 20px rgba(181, 58, 53, .22); }
+  50%      { box-shadow: 0 0 0 7px rgba(181, 58, 53, .16), 0 9px 20px rgba(181, 58, 53, .22); }
+}
+.rec-state { text-align: center; }
+.transcript-block {
+  grid-column: 1 / -1;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--note-bg);
+  border: 1px solid var(--note-line);
+  color: var(--note-ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .exam-audio-playback { display: block; width: 100%; max-width: 420px; margin-top: 10px; }
 .exam-actions { margin: 8px 0 40px; }
 @media (max-width: 650px) {
   .exam-chrome { flex-direction: column; align-items: stretch; }
   .exam-meter { width: 100%; }
+  .exam-clock { justify-content: flex-start; }
+  .exam-clock .exam-timer { font-size: 26px; }
+  .exam-answer.has-audio { grid-template-columns: 1fr; }
+  .exam-answer.has-audio textarea,
+  .exam-audio-side,
+  .transcript-block { grid-column: 1 / -1; }
 }
 
 /* rubric / assessor */
@@ -809,25 +916,6 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .login-submit.is-success .btn-arrow { transform: none; }
 .login-submit.is-success .btn-shine { animation: none; opacity: 0; }
 
-/* demo quick-fill */
-.demo-fold { margin-top: 20px; }
-.demo-fold summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; color: var(--ink-3); font-size: 11px; font-weight: 800; letter-spacing: .01em; padding: 7px 2px; transition: color .18s; }
-.demo-fold summary::-webkit-details-marker { display: none; }
-.demo-fold summary:hover { color: var(--brand-dark); }
-.demo-summary-icon { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; color: var(--brand-dark); background: var(--brand-soft); }
-.demo-summary-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.demo-fold[open] summary { color: var(--brand-dark); }
-.demo-list { display: grid; gap: 8px; margin-top: 6px; animation: fadeSlide .26s ease-out; }
-.demo-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; width: 100%; text-align: left; padding: 9px 11px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink-2); cursor: pointer; font: inherit; transition: border-color .18s, transform .18s, box-shadow .18s; }
-.demo-row:hover { border-color: var(--brand-line); transform: translateX(3px); box-shadow: 0 6px 16px rgba(11, 44, 56, .07); }
-.demo-row.picked { border-color: var(--brand); background: var(--brand-wash); }
-.demo-role { font-size: 9px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--brand-dark); }
-.demo-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.demo-meta code { background: var(--brand-wash); color: var(--brand-deep); border-radius: 6px; padding: 1px 6px; font-size: 10.5px; width: max-content; }
-.demo-meta small { color: var(--ink-3); font-size: 9.5px; }
-.demo-use { font-size: 9.5px; font-weight: 800; color: var(--ink-3); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-strong); }
-.demo-row:hover .demo-use { color: #fff; background: var(--brand); border-color: var(--brand); }
-
 /* trust + footer */
 .auth-security { display: flex; align-items: flex-start; gap: 9px; margin-top: 22px; color: var(--ink-3); font-size: 10px; line-height: 1.5; }
 .security-icon { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; color: var(--green); background: var(--green-bg); }
@@ -991,7 +1079,6 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
   .auth-card-top { margin-bottom: 20px; }
   .auth-heading { margin-bottom: 20px; }
   .auth-heading h2 { font-size: 26px; }
-  .demo-meta small { display: none; }
   h1 { font-size: 27px; }
   .view { padding: 20px 14px 44px; }
   .grid.cols-4, .grid.cols-3, .grid.cols-2, .f-row, .f-row-3 { grid-template-columns: 1fr; }

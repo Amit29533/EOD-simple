@@ -3,7 +3,7 @@
  *
  * These run the real browser modules (public/js/views/login.js, public/js/theme.js)
  * inside jsdom, so the assertions cover the markup, the theme switch, the password
- * toggle, the demo quick-fill and both submit paths — not a re-implementation.
+ * toggle, the absence of demo quick-fill and both submit paths — not a re-implementation.
  * jsdom is an optionalDependency: when it is not installed the suite reports skips
  * instead of failing, keeping `npm test` dependency-free.
  */
@@ -168,18 +168,14 @@ test('typing marks a field filled and clears a stale error', { skip: SKIP }, asy
   } finally { teardownDom(dom); }
 });
 
-test('demo quick-fill loads an account into the form', { skip: SKIP }, async () => {
+test('demo credentials are not exposed or quick-filled on the sign-in screen', { skip: SKIP }, async () => {
   const dom = setupDom();
   try {
     const { wrap } = await mount();
-    const row = wrap.querySelector('.demo-row[data-demo-user="admin"]');
-    assert.ok(row, 'admin demo row present');
-    row.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    const form = wrap.querySelector('#login-form');
-    assert.equal(form.elements.username.value, 'admin');
-    assert.equal(wrap.querySelector('#password-input').value, 'ECOD-admin-2026');
-    assert.equal(row.classList.contains('picked'), true);
-    assert.equal(wrap.querySelector('.demo-fold').open, false, 'demo list collapses after picking');
+    assert.equal(wrap.querySelector('.demo-fold'), null, 'no demo sign-ins block');
+    assert.equal(wrap.querySelector('.demo-row'), null, 'no demo account quick-fill rows');
+    assert.ok(!/ECOD-admin-2026|ECOD-assessor-2026|ECOD-candidate-2026/.test(wrap.textContent),
+      'demo passwords are not rendered in the login UI');
   } finally { teardownDom(dom); }
 });
 

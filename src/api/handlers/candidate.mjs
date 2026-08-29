@@ -187,9 +187,31 @@ export function candidateHandlers(route) {
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
     const questions = sortedQuestions(a.snapshot_json);
-    const quiz = integrityPatch(ensureQuizState(a, questions), body?.event);
+    const base = ensureQuizState(a, questions);
+    const q = questions[base.index];
+    const detail = typeof body?.detail === 'string'
+      ? body.detail.slice(0, 500)
+      : body?.detail && typeof body.detail === 'object'
+        ? JSON.stringify(body.detail).slice(0, 500)
+        : '';
+    const quiz = integrityPatch(base, body?.event, detail, {
+      question_index: base.index,
+      question_id: q?.id || '',
+      question_prompt: q?.prompt || '',
+    });
     await store.update('assessments', a.id, { quiz_state: quiz });
-    return ok({ integrity: quiz.integrity });
+    const candidate = await myCandidate(store, auth.user);
+    const event = String(body?.event || 'integrity').slice(0, 80);
+    await audit(
+      store,
+      auth.user,
+      `integrity_${event.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,
+      'assessments',
+      a.id,
+      `"${candidate?.name || 'Candidate'}" · ${event}${detail ? ` — ${detail}` : ''} · Q${base.index + 1}`,
+      { event, detail, question_index: base.index, question_id: q?.id || '', question_prompt: q?.prompt || '' },
+    );
+    return ok({ integrity: quiz.integrity, events: quiz.events });
   });
 
   route('POST', '/candidate/assessments/:id/phase', R, async ({ store, auth, params, body }) => {

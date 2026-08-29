@@ -19,19 +19,12 @@ const ICON = {
   bolt: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8 5.6 13.4h5l-1 7.8 7.8-10.6h-5z"></path></svg>',
   target: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.2"></circle><circle cx="12" cy="12" r="4.2"></circle><circle cx="12" cy="12" r="1"></circle></svg>',
   alert: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.6 21 19.4H3z"></path><path d="M12 10v4M12 16.6v.6"></path></svg>',
-  keyboard: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.6" y="6" width="18.8" height="12" rx="2.4"></rect><path d="M6.4 9.6h.6M9.6 9.6h.6M12.8 9.6h.6M16 9.6h.6M6.4 12.8h.6M9.6 12.8h.6M12.8 12.8h.6M16 12.8h.6M8.4 15.6h7.2"></path></svg>',
 };
 
 const THEME_OPTIONS = [
   { value: 'auto', label: 'Match system', icon: ICON.monitor },
   { value: 'light', label: 'Light', icon: ICON.sun },
   { value: 'dark', label: 'Dark', icon: ICON.moon },
-];
-
-const DEMO_ACCOUNTS = [
-  { role: 'Admin', username: 'admin', password: 'ECOD-admin-2026', blurb: 'Pipeline, roles & access' },
-  { role: 'Assessor', username: 'priya.nair', password: 'ECOD-assessor-2026', blurb: 'Score & finalize' },
-  { role: 'Candidate', username: 'rohit.verma', password: 'ECOD-candidate-2026', blurb: 'Take the RSA quiz' },
 ];
 
 const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -167,18 +160,6 @@ export function loginView(view, onSuccess) {
               </button>
             </form>
 
-            <details class="demo-fold">
-              <summary><span class="demo-summary-icon">${ICON.keyboard}</span> Demo sign-ins</summary>
-              <div class="demo-list">
-                ${DEMO_ACCOUNTS.map((d) => `
-                  <button type="button" class="demo-row" data-demo-user="${esc(d.username)}" data-demo-pass="${esc(d.password)}">
-                    <span class="demo-role">${esc(d.role)}</span>
-                    <span class="demo-meta"><code>${esc(d.username)}</code><small>${esc(d.blurb)}</small></span>
-                    <span class="demo-use">Use</span>
-                  </button>`).join('')}
-              </div>
-            </details>
-
             <div class="auth-foot"><span>Need an account? Contact your administrator.</span></div>
           </div>
         </div>
@@ -246,24 +227,6 @@ export function loginView(view, onSuccess) {
     togglePassword.querySelector('.pt-icon-eye-off').hidden = visible;
     passwordInput.focus();
   };
-
-  /* ------------------------------------------------- demo quick-fill */
-  wrap.querySelectorAll('.demo-row').forEach((row) => {
-    row.addEventListener('click', () => {
-      usernameInput.value = row.dataset.demoUser;
-      passwordInput.value = row.dataset.demoPass;
-      markFilled(usernameInput); markFilled(passwordInput);
-      wrap.querySelector('.demo-fold').open = false;
-      wrap.querySelectorAll('.demo-row').forEach((r) => r.classList.toggle('picked', r === row));
-      errBox.innerHTML = '';
-      submitBtn.classList.remove('is-error', 'is-success');
-      usernameInput.focus();
-      submitBtn.animate?.(
-        [{ transform: 'scale(1)' }, { transform: 'scale(1.02)' }, { transform: 'scale(1)' }],
-        { duration: 320, easing: 'ease-out' },
-      );
-    });
-  });
 
   /* ------------------------------------------------- error + states */
   function showError(message) {

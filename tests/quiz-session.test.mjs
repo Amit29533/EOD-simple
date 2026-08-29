@@ -31,7 +31,27 @@ test('quiz cursor starts at first item; integrity events increment counters', ()
   const state = ensureQuizState({ snapshot_json: { questions: qs } }, qs);
   assert.equal(state.index, 0);
   assert.equal(state.phase, 'answer');
-  const next = integrityPatch(state, 'copy');
+  const next = integrityPatch(state, 'copy', 'Copy blocked', { question_index: 0, question_id: 'q1', question_prompt: 'Prompt?' });
   assert.equal(next.integrity.copy, 1);
-  assert.equal(integrityPatch(next, 'unknown').integrity.copy, 1);
+  assert.equal(next.events.length, 1);
+  assert.equal(next.events[0].event, 'copy');
+  assert.equal(next.events[0].detail, 'Copy blocked');
+  assert.equal(next.events[0].question_id, 'q1');
+  const unknown = integrityPatch(next, 'select_all', 'Select-all blocked');
+  assert.equal(unknown.integrity.copy, 1);
+  assert.equal(unknown.integrity.other, 1, 'unknown integrity events are filed under other');
+  assert.equal(unknown.events.length, 2, 'unknown events are still appended to the trail');
+});
+
+test('sortedQuestions never serves a question twice', () => {
+  const questions = [
+    { id: 'a', order: 1, type: 'mcq_single', prompt: 'A?' },
+    { id: 'a', order: 1, type: 'text', prompt: 'A duplicate id?' },
+    { id: 'b', order: 2, type: 'text', prompt: 'B?' },
+    { id: 'b', order: 2, type: 'text', prompt: 'B duplicate id?' },
+    { id: 'c', order: 3, type: 'mcq_multi', prompt: 'B?' },
+  ];
+  const qs = sortedQuestions({ questions });
+  assert.deepEqual(qs.map((q) => q.id), ['a', 'b'], 'duplicate ids/prompts are dropped');
+  assert.deepEqual(qs.map((q) => q.prompt), ['A?', 'B?']);
 });

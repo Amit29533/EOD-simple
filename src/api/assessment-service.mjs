@@ -1,6 +1,7 @@
 import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS, MAX_ASSESSMENT_QUESTIONS } from '../core/constants.mjs';
 import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
-import { selectQuestions } from '../core/question-selection.mjs';
+import { selectQuestions, dedupeQuestions } from '../core/question-selection.mjs';
+import { sortedQuestions } from './quiz-session.mjs';
 
 /**
  * The active question bank for a role, in display order, with its competencies.
@@ -21,7 +22,7 @@ export async function roleBank(store, roleId) {
     role,
     framework,
     competencies: competencies.filter((c) => c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-    questions: questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    questions: dedupeQuestions(questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))),
   };
 }
 
@@ -62,7 +63,7 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
 export async function autoScoreResponses(store, assessment) {
   const responses = await store.list('responses', { assessment_id: assessment.id });
   const byQid = new Map(responses.map((r) => [r.question_id, r]));
-  for (const q of assessment.snapshot_json.questions) {
+  for (const q of sortedQuestions(assessment.snapshot_json)) {
     if (!isAutoQuestion(q)) continue;
     const r = byQid.get(q.id);
     if (!r) continue;
@@ -90,8 +91,11 @@ export async function finalizeScoring(store, assessment) {
   const byQid = new Map(responses.map((r) => [r.question_id, r]));
   const missingScores = [];
   const finalByQid = {};
+  // Score the de-duplicated served set so old snapshots that were built before
+  // duplicate protection never double-count a question in the report.
+  const questions = sortedQuestions(assessment.snapshot_json);
 
-  for (const q of assessment.snapshot_json.questions) {
+  for (const q of questions) {
     const r = byQid.get(q.id);
     if (isAutoQuestion(q)) {
       const score = autoScore(q, r?.answer) ?? 0;
@@ -109,7 +113,7 @@ export async function finalizeScoring(store, assessment) {
   }
   if (missingScores.length) return { missing: missingScores };
 
-  const report = computeReport(assessment.snapshot_json, finalByQid);
+  const report = computeReport({ ...assessment.snapshot_json, questions }, finalByQid);
   const updated = await store.update('assessments', assessment.id, {
     status: 'scored',
     scored_at: new Date().toISOString(),

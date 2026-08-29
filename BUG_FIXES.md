@@ -1,7 +1,46 @@
 # Bug Fixes & UI Improvements Report
 
 ## Summary
-Systematic audit of the Anthroprime ECOD application identified and fixed **7 critical bugs** and **6 UI/UX improvements**. All 96 tests pass successfully.
+The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins.
+
+Current verification: **99/99 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+
+---
+
+## 🛡️ Candidate Secure-Exam & Integrity Trail (latest)
+
+### 1. The same question could appear twice
+**Issue**: A question could be served more than once in an exam, violating the one-question rule.
+
+**Fix**: `sortedQuestions()` in `src/api/quiz-session.mjs` now de-duplicates snapshot questions by stable `id` (with a `prompt` fallback for legacy records). Every path that builds a quiz (candidate, assessor snapshot, admin allocation) uses this shared path, so an exam never issues the same question twice.
+
+### 2. Audio-recording availability was inconsistent
+**Issue**: Some open questions offered a record button while others did not, with no clear rule.
+
+**Fix**: The record control is rendered only for open questions whose question record says `audio_required === true`. The review/answer copy states whether the audio answer is required, and the answer box explains that typed notes are optional for required-audio questions. Consistency now follows the question data rather than incidental UI branching.
+
+### 3. Starting a recording silently filled the text area
+**Issue**: Speech-recognition results were being written into the candidate's answer `textarea`, so starting a recording introduced words the candidate did not type.
+
+**Fix**: Recognition transcripts are no longer written into the text area. They appear in a separate `Transcript:` preview block under the audio control so the candidate can decide whether/where to use them.
+
+### 4. RSA oral-question contract
+**Fix**: `selectQuestions()` serves at most **5** spoken/oral questions in a capped (and full-bank) RSA paper, and the shared/common oral question pinned with `pin_first` is always first. The allocation preview reports `standard_total`, `spoken_total`, and `spoken_served`.
+
+### 5. Record button and timer visibility
+**Fix**: The record button is larger and sits directly beside the answer box (`has-audio` layout + `.rec-btn`), and the exam timer is a large, right-aligned card (`.exam-clock`) with an urgent state.
+
+### 6. Persistent anti-cheat / integrity logging
+**Issue**: Tab switches, browser closes, exam exits/restarts, and anti-cheat attempts were not persisted for review.
+
+**Fix**:
+- Client (`public/js/views/candidate.js`) logs `exam_start` and attaches listeners for `tab_switch`/`tab_return`, `window_blur`, `browser_close` (pagehide w/ `keepalive`), `exam_exit`/`exam_reopen`, `multi_window` (storage + `window.open` override), `devtools_key`, `devtools_resize`, `copy_attempt`, `cut_attempt`, `paste_attempt`, `screenshot`, `fullscreen_exit`, and `contextmenu`; copy/paste/context menu are blocked and flagged.
+- Server persists events in `quiz_state.events`, increments per-event counters, attaches question context, and writes an `audit_log` entry with action `integrity_<event>`.
+- `POST /candidate/assessments/:id/integrity` accepts `{event, detail}`.
+- `GET /admin/assessments/:id/integrity` returns counters + full event history.
+- The admin assessments table now exposes `integrity_count` and `last_integrity_event`, with an Integrity detail view (`#/assessments/:id/integrity`).
+
+**Key files**: `src/api/quiz-session.mjs`, `src/api/handlers/candidate.mjs`, `src/api/handlers/admin.mjs`, `public/js/views/candidate.js`, `public/js/views/admin.js`, `public/js/app.js`, `tests/features.py`.
 
 ---
 
@@ -350,9 +389,9 @@ body {
 
 ---
 
-**Total Bugs Fixed**: 7  
-**Total Improvements**: 6  
-**Tests Passing**: 96/96 (100%)  
-**Files Modified**: 5  
-**Lines Changed**: ~120  
+**Total Bugs Fixed (original audit)**: 7
+**Total Improvements (original audit)**: 6
+**Current verification**: 99/99 Node tests · 39/39 smoke tests · 196/196 feature tests (100%)
+**Files Modified (original audit)**: 5
+**Lines Changed (original audit)**: ~120
 **Time Spent**: Comprehensive audit and fix

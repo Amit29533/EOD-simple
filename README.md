@@ -36,23 +36,13 @@ questions without recreating users or changing existing assessment snapshots. Us
 Full end-to-end suites (need a running, seeded server):
 
 ```bash
-python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 186 checks: every feature — CRUD, validation, config editing,
+python3 tests/smoke.py        # 39 checks: one candidate's complete journey + isolation proofs
+python3 tests/features.py     # 196 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
                               # password-gated candidate deletion, capped question allocation,
-                              # published-catalogue sync (both honour BASE=http://…/api)
+                              # integrity trail, and published-catalogue sync
+                              # (both honour BASE=http://…/api)
 ```
-
-### Demo sign-ins (seeded)
-
-| User          | Password              | Portal                                                   |
-| ------------- | --------------------- | -------------------------------------------------------- |
-| `admin`       | `ECOD-admin-2026`     | Admin dashboard — candidates, roles, users, allocation   |
-| `priya.nair`  | `ECOD-assessor-2026`  | Assessor workspace (Rohit Verma allocated to her)        |
-| `arjun.mehta` | `ECOD-assessor-2026`  | Assessor workspace (scored Neha Kulkarni example)        |
-| `rohit.verma` | `ECOD-candidate-2026` | Candidate portal → take the RSA quiz → report card        |
-
-> ⚠️ These are development credentials for the seeded demo. Rotate them before any real use.
 
 **End-to-end demo loop (2 minutes):**
 1. Sign in as **rohit.verma** → *Start assessment* → answer the full-bank RSA quiz (autosaves) → *Submit*.
@@ -76,8 +66,10 @@ python3 tests/features.py     # 186 checks: every feature — CRUD, validation, 
   snapshot. The effective ceiling is `min(50, active bank)` — when the bank is smaller than the
   cap the dialog says so and offers a one-click **published-catalogue top-up** (the same sync
   `npm run seed` performs, available in-app for deployments with no CLI). The seeded RSA track
-  contains **105 questions (15 per competency)** so capped allocations can sample a broad,
-  weighted set.
+  contains **115 published questions (105 standard across 7 competencies + 10 spoken
+  customer-advisory items)**. Every paper includes the pinned common spoken question
+  first and **at most 5 spoken questions**, so a capped allocation can sample a broad,
+  weighted set without over-representing the oral set.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.

@@ -338,7 +338,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
           if (token !== planToken) return; // a newer request won
           plan = out || null;
           if (plan) {
-            allHint.textContent = `All ${plan.bank_total} active question${plan.bank_total === 1 ? '' : 's'} for this track`;
+            allHint.textContent = `All ${plan.total} served question${plan.total === 1 ? '' : 's'} (${plan.bank_total} in the bank · max 5 spoken)`;
             const max = Math.min(plan.bank_total, maxQuestions);
             countInput.max = String(max);
             countMax.textContent = `1–${max}`;
@@ -466,10 +466,12 @@ export async function assessmentsView(view) {
         { label: 'Role', render: (a) => esc(a.role_name) },
         { label: 'Assessor', render: (a) => a.assessor_name ? esc(a.assessor_name) : '<span class="muted">unassigned</span>' },
         { label: 'Questions', render: (a) => questionScope(a) },
+        { label: 'Integrity', render: (a) => integrityBadge(a) },
         { label: 'Status', render: (a) => assessmentStatusBadge(M().assessmentStatuses, a.status) },
         { label: 'Outcome', render: (a) => a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '<span class="muted">—</span>' },
         { label: 'Created', render: (a) => `<span class="small muted">${esc(fmtDate(a.created_at))}</span>` },
         { label: '', cls: 'actions', render: (a) => `
+            <a class="btn ghost sm" href="#/assessments/${a.id}/integrity">Integrity</a>
             ${['scored', 'validated'].includes(a.status) ? `<a class="btn ghost sm" href="#/assessments/${a.id}/report">Report</a>` : ''}
             ${['assigned', 'in_progress', 'submitted'].includes(a.status) ? `<button class="btn ghost sm" data-re="${a.id}">Reassign</button>` : ''}
             ${['assigned', 'in_progress'].includes(a.status) ? `<button class="btn ghost sm" style="color:var(--red)" data-del="${a.id}">Delete</button>` : ''}` },
@@ -498,6 +500,59 @@ export async function reportView(view, { id }) {
   view.innerHTML = loading();
   const d = await api(`/admin/reports/${id}`);
   renderReport(view, { ...d, audience: 'admin' });
+}
+
+/* ============================== Integrity / anti-cheat trail ============================== */
+function integrityBadge(a) {
+  const n = Number(a.integrity_count || 0);
+  if (!n) return badge('0', 'grey');
+  const severe = [
+    'tab_switch', 'browser_close', 'exam_exit', 'exam_reopen', 'multi_window',
+    'devtools_key', 'devtools_resize', 'paste_attempt', 'copy_attempt',
+    'cut_attempt', 'screenshot', 'fullscreen_exit',
+  ].includes(a.last_integrity_event);
+  return `<a href="#/assessments/${esc(a.id)}/integrity" style="text-decoration:none">${badge(`${n}`, severe ? 'red' : 'amber')} <span class="small muted">${esc(a.last_integrity_event || 'events')}</span></a>`;
+}
+
+const INTEGRITY_EVENT_TONE = {
+  tab_switch: 'red', browser_close: 'red', exam_exit: 'red', exam_reopen: 'red',
+  multi_window: 'red', devtools_key: 'red', devtools_resize: 'red',
+  paste_attempt: 'amber', copy_attempt: 'amber', cut_attempt: 'amber',
+  screenshot: 'red', fullscreen_exit: 'red', contextmenu: 'amber',
+};
+
+export async function integrityView(view, { id }) {
+  view.innerHTML = loading();
+  const d = await api(`/admin/assessments/${id}/integrity`);
+  const counters = d.integrity || {};
+  const total = Object.values(counters).reduce((s, v) => s + Number(v || 0), 0);
+  const severeEvents = (d.events || []).filter((e) => INTEGRITY_EVENT_TONE[e.event] === 'red').length;
+  view.innerHTML = `
+    <div class="card" style="padding:12px 18px"><a class="btn ghost sm" href="#/assessments">← All assessments</a></div>
+    <div class="card">
+      <div class="row between">
+        <div><div class="section-kicker">Proctoring / integrity trail</div><h2 style="margin:0">${esc(d.candidate?.name || 'Candidate')} · ${esc(d.assessment.id)}</h2>
+          <div class="small muted" style="margin-top:5px">Status: ${esc(d.assessment.status)} · Started ${d.assessment.started_at ? esc(fmtDateTime(d.assessment.started_at)) : '—'}</div></div>
+        <div class="row">${badge(`${total} events`, total ? 'amber' : 'green')}${severeEvents ? badge(`${severeEvents} severe`, 'red') : badge('no severe events', 'green')}</div>
+      </div>
+      <div class="grid cols-3 metric-grid" style="margin-top:16px">
+        <div class="stat"><div class="lbl">Tab switches</div><div class="num">${counters.tab_switch || 0}</div></div>
+        <div class="stat"><div class="lbl">Window blur / browser close</div><div class="num">${((counters.window_blur || 0) + (counters.browser_close || 0))}</div></div>
+        <div class="stat"><div class="lbl">Exit / reopen exam</div><div class="num">${((counters.exam_exit || 0) + (counters.exam_reopen || 0))}</div></div>
+        <div class="stat"><div class="lbl">Copy / paste / devtools</div><div class="num">${((counters.copy_attempt || 0) + (counters.paste_attempt || 0) + (counters.cut_attempt || 0) + (counters.devtools_key || 0) + (counters.devtools_resize || 0))}</div></div>
+        <div class="stat"><div class="lbl">Fullscreen exit</div><div class="num">${counters.fullscreen_exit || 0}</div></div>
+        <div class="stat"><div class="lbl">Multi-window</div><div class="num">${counters.multi_window || 0}</div></div>
+      </div>
+    </div>
+    <div class="card table-card">
+      <h3 style="margin:0 0 10px">Event history</h3>
+      ${(d.events || []).length ? dataTable([
+        { label: 'When', render: (e) => `<span class="small muted">${esc(fmtDateTime(e.at))}</span>` },
+        { label: 'Event', render: (e) => badge(e.event, INTEGRITY_EVENT_TONE[e.event] || 'grey') },
+        { label: 'Question', render: (e) => e.question_index != null ? `Q${Number(e.question_index) + 1}` : '<span class="muted">—</span>' },
+        { label: 'Detail', render: (e) => `<span class="small">${esc(e.detail || '—')}</span>` },
+      ], d.events) : emptyState('No integrity events yet', 'Tab switch, blur, copy, paste, devtools, exit/reopen and window events are logged here.')}
+    </div>`;
 }
 
 /* ================================ Roles & frameworks ================================ */

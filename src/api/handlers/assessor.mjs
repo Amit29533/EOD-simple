@@ -2,6 +2,7 @@ import { ok, bad, notFound, conflict, unprocessable, audit, num, str } from '../
 import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring } from '../assessment-service.mjs';
+import { sortedQuestions } from '../quiz-session.mjs';
 
 const R = ['assessor'];
 
@@ -35,7 +36,8 @@ export function assessorHandlers(route) {
       return conflict('The candidate has not submitted this assessment yet.');
     const candidate = await store.get('candidates', a.candidate_id);
     const responses = await store.list('responses', { assessment_id: a.id });
-    const manualTotal = a.snapshot_json.questions.filter(isManualQuestion).length;
+    const questions = sortedQuestions(a.snapshot_json);
+    const manualTotal = questions.filter(isManualQuestion).length;
     const manualScored = responses.filter((r) => r.assessor_score !== undefined && r.assessor_score !== null).length;
     return ok({
       assessment: {
@@ -45,7 +47,7 @@ export function assessorHandlers(route) {
       },
       candidate: candidateForAssessor(candidate),
       competencies: a.snapshot_json.competencies,
-      questions: a.snapshot_json.questions, // full: includes rubric + correct answers (assessor-only)
+      questions, // full: includes rubric + correct answers (assessor-only)
       responses: responses.map((r) => {
         const q = a.snapshot_json.questions.find((x) => x.id === r.question_id);
         const live = q && isAutoQuestion(q) ? (autoScore(q, r.answer) ?? 0) : r.auto_score;

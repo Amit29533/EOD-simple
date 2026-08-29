@@ -14,7 +14,8 @@ const ROUTES = {
   admin: [
     ['#/dashboard', admin.dashboardView], ['#/candidates', admin.candidatesView],
     ['#/candidates/:id', admin.candidateDetailView], ['#/assessments', admin.assessmentsView],
-    ['#/assessments/:id/report', admin.reportView], ['#/roles', admin.rolesView],
+    ['#/assessments/:id/report', admin.reportView], ['#/assessments/:id/integrity', admin.integrityView],
+    ['#/roles', admin.rolesView],
     ['#/roles/:id', admin.roleDetailView], ['#/questions', admin.questionsView],
     ['#/users', admin.usersView], ['#/audit', admin.auditView],
   ],

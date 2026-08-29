@@ -1,6 +1,7 @@
 /**
  * The published Databricks RSA assessment catalogue: the role definition,
- * weighted competencies and the full question bank (105 questions).
+ * weighted competencies and the full question bank (105 standard questions +
+ * the 10-question spoken customer-advisory set = 115 published items).
  *
  * This is *published content*, not seed-only data: the API layer serves it to
  * admins so a workspace can top its bank up from inside the app (see the
@@ -45,7 +46,8 @@ export const RSA_COMPETENCIES = [
 
 // The starter set below contains a scenario MCQ, multi-select and open scenario
 // per competency; the extended catalogue below brings every competency to 15
-// questions (105 total), including scale items for self-assessment.
+// standard questions (105 total) plus the 10 spoken customer-advisory items
+// (115 published overall), including scale items for self-assessment.
 const O = (id, label) => ({ id, label });
 const optionSet = (labels) => labels.map((label, i) => O(String.fromCharCode(97 + i), label));
 const singleQ = (competency, order, prompt, labels, correct, difficulty = 'intermediate') => ({
@@ -68,7 +70,8 @@ const textQ = (competency, order, prompt, rubric) => ({
 /*
  * Extended RSA bank: the first three questions per competency above keep the
  * seeded demo compact and readable; this catalogue brings every competency to
- * fifteen questions (105 total). It is still ordinary seed data: administrators
+ * fifteen standard questions (105 total) plus the 10 spoken customer-advisory
+ * items (115 published overall). It is still ordinary seed data: administrators
  * can edit, deactivate or replace it from Question Bank after seeding.
  */
 const ADDITIONAL_RSA_QUESTIONS = [

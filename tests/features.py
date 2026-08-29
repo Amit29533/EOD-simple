@@ -372,7 +372,10 @@ section('S8 · allocate X questions, balanced across competencies')
 
 st, plan = call('GET', f'/admin/roles/{RSA}/question-plan', AT)
 BANK = plan['bank_total']
-check('question-plan: full bank by default', st == 200 and plan['total'] == BANK and BANK > 1)
+check('question-plan: full bank by default', st == 200
+      and plan['total'] == plan['standard_total'] + plan['spoken_served']
+      and plan['spoken_served'] == min(plan['spoken_total'], 5)
+      and plan['total'] <= BANK and BANK > 1)
 check('question-plan: per-competency split provided', len(plan['per_competency']) > 1
       and sum(r['count'] for r in plan['per_competency']) == plan['total'])
 check('question-plan: reports a points total', plan['points'] > 0)
@@ -436,6 +439,30 @@ arow = next(a for a in adm['assessments'] if a['id'] == AX)
 check('admin list exposes served vs bank counts',
       arow['question_count'] == 6 and arow['question_limit'] == 6 and arow['bank_total'] == BANK)
 
+# integrity / anti-cheat trail: candidate reports, admin reads counters + history
+st, start = call('POST', f'/candidate/assessments/{AX}/integrity', CXT,
+                 {'event': 'exam_start', 'detail': 'Candidate entered the secure exam'})
+check('candidate posts exam_start integrity event', st == 200
+      and start['integrity']['exam_start'] == 1 and len(start['events']) == 1)
+call('POST', f'/candidate/assessments/{AX}/integrity', CXT,
+     {'event': 'tab_switch', 'detail': 'Candidate switched away'})
+st, ig = call('POST', f'/candidate/assessments/{AX}/integrity', CXT,
+              {'event': 'copy_attempt', 'detail': 'Copy blocked'})
+check('candidate integrity events accumulate with detail', st == 200
+      and ig['integrity']['tab_switch'] == 1 and ig['integrity']['copy_attempt'] == 1
+      and len(ig['events']) == 3 and ig['events'][-1]['detail'] == 'Copy blocked')
+st, trail = call('GET', f'/admin/assessments/{AX}/integrity', AT)
+check('admin integrity trail exposes counters and event history', st == 200
+      and trail['integrity']['exam_start'] == 1 and trail['integrity']['tab_switch'] == 1
+      and trail['integrity']['copy_attempt'] == 1 and len(trail['events']) == 3)
+check('integrity event history includes question context',
+      all('question_index' in e and 'question_id' in e and 'question_prompt' in e
+          for e in trail['events']))
+st, adm = call('GET', '/admin/assessments', AT)
+irow = next(a for a in adm['assessments'] if a['id'] == AX)
+check('admin assessment list exposes integrity summary',
+      irow['integrity_count'] >= 3 and irow['last_integrity_event'] == 'copy_attempt')
+
 # a capped assessment must still submit and score end-to-end
 db_answers = {}
 for q in snap_qs:
@@ -446,9 +473,11 @@ for q in snap_qs:
 check('capped assessment submits', call('POST', f'/candidate/assessments/{AX}/submit', CXT, {'answers': db_answers})[0] == 200)
 
 st, unrel = call('GET', '/admin/assessments', AT)
-check('default allocation (no question_count) still serves the whole bank',
-      any(a['question_limit'] is None and a['question_count'] == a['bank_total']
-          for a in unrel['assessments'] if a['bank_total']))
+rsa_default = [a for a in unrel['assessments']
+               if a['role_id'] == RSA and a['question_limit'] is None and a['bank_total']]
+check('default allocation serves standard bank + at most five spoken prompts',
+      bool(rsa_default) and rsa_default[0]['question_count'] == plan['standard_total'] + plan['spoken_served']
+      and rsa_default[0]['question_count'] <= rsa_default[0]['bank_total'])
 
 # ================================ S9 published catalogue sync (bank below the cap)
 section('S9 · published catalogue: status, sync, unlocking the 50-question cap')
