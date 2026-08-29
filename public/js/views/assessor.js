@@ -31,7 +31,7 @@ export async function workspaceView(view) {
         <td>${esc(a.role_name)}</td>
         <td>${assessmentStatusBadge(state.meta.assessmentStatuses, a.status)}</td>
         <td><span class="small muted">${a.submitted_at ? esc(fmtDateTime(a.submitted_at)) : 'not yet'}</span></td>
-        <td>${a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge('', a.readiness_label)}` : '—'}</td>
+        <td>${a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '—'}</td>
         <td class="actions">${['submitted', 'scored', 'validated'].includes(a.status)
           ? `<a class="btn ${a.status === 'submitted' ? '' : 'secondary'} sm" href="#/assessments/${a.id}">${a.status === 'submitted' ? 'Score now' : 'View report'}</a>` : ''}</td>
       </tr>`).join('')}</tbody></table>`

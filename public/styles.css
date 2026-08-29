@@ -88,9 +88,19 @@
   --logo-navy: #22314a;
   --radius: 10px;
   --radius-sm: 8px;
+  --radius-lg: 16px;
   --blur: 10px;
+  --blur-lg: 20px;
   --shadow: 0 1px 2px rgba(16, 39, 56, .05);
   --shadow-lg: 0 8px 24px rgba(10, 32, 47, .1);
+  --shadow-xl: 0 20px 50px rgba(10, 32, 47, .12), 0 6px 16px rgba(10, 32, 47, .06);
+  --shadow-glow: 0 0 0 1px var(--brand-line), 0 4px 20px rgba(21, 155, 150, .12);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-smooth: cubic-bezier(.4, 0, .2, 1);
+  --transition-fast: .18s var(--ease-smooth);
+  --transition-base: .28s var(--ease-out);
+  --transition-slow: .42s var(--ease-out);
   --font: "Manrope", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --display: "Space Grotesk", "Manrope", sans-serif;
   --mono: "DM Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -180,6 +190,8 @@
   --switch-bg: rgba(255, 255, 255, .05);
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 30px rgba(0, 0, 0, .34);
   --shadow-lg: 0 24px 62px rgba(0, 0, 0, .5);
+  --shadow-xl: 0 32px 70px rgba(0, 0, 0, .6), 0 10px 24px rgba(0, 0, 0, .35);
+  --shadow-glow: 0 0 0 1px rgba(43, 181, 168, .28), 0 4px 24px rgba(43, 181, 168, .18);
 }
 }
 * { box-sizing: border-box; }
@@ -188,9 +200,11 @@ html { scroll-behavior: smooth; }
 body {
   background:
     radial-gradient(700px 360px at 82% -10%, var(--bg-glow), transparent 65%),
+    radial-gradient(500px 300px at 10% 90%, var(--bg-glow), transparent 60%),
     var(--bg);
   color: var(--ink); font-family: var(--font); font-size: 14px; line-height: 1.55;
   min-height: 100vh; display: flex; -webkit-font-smoothing: antialiased;
+  transition: background .4s var(--ease-smooth), color .4s var(--ease-smooth);
 }
 body::selection { background: var(--sel-bg); color: var(--sel-ink); }
 body { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
@@ -218,6 +232,17 @@ code { background: var(--grey-bg); padding: 2px 6px; border-radius: 6px; font-fa
   display: flex; flex-direction: column; overflow: hidden; color: var(--sidebar-ink);
   background: linear-gradient(170deg, var(--sidebar-1) 0%, var(--sidebar) 56%, var(--sidebar-3) 100%);
   box-shadow: 10px 0 35px rgba(8, 28, 43, .08);
+}
+#sidebar::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 160px;
+  background: linear-gradient(to top, rgba(21, 155, 150, .06), transparent);
+  pointer-events: none;
+  z-index: 0;
 }
 #sidebar::before { content: ""; position: absolute; width: 280px; height: 280px; right: -150px; top: 120px; border-radius: 50%; background: rgba(21, 155, 150, .09); filter: blur(2px); pointer-events: none; }
 #sidebar:empty { display: none; }
@@ -260,7 +285,7 @@ code { background: var(--grey-bg); padding: 2px 6px; border-radius: 6px; font-fa
 .side-user .signout { width: 100%; justify-content: center; margin-top: 11px; }
 
 /* top bar */
-#topbar { min-height: 76px; padding: 13px 42px; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--topbar-bg); border-bottom: 1px solid var(--topbar-line); backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur)); }
+#topbar { min-height: 76px; padding: 13px 42px; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--topbar-bg); border-bottom: 1px solid var(--topbar-line); backdrop-filter: blur(var(--blur-lg)) saturate(145%); -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(145%); }
 #topbar:empty { display: none; }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
 .topbar-context { display: flex; flex-direction: column; gap: 2px; }
@@ -276,7 +301,7 @@ code { background: var(--grey-bg); padding: 2px 6px; border-radius: 6px; font-fa
 .theme-toggle { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer; box-shadow: 0 2px 5px rgba(16, 39, 56, .03); transition: color .18s, border-color .18s, background .18s, transform .18s; }
 .theme-toggle:hover { color: var(--brand-dark); border-color: var(--brand-line); background: var(--brand-wash); transform: translateY(-1px); }
 .theme-toggle:active { transform: translateY(0) scale(.94); }
-.theme-toggle svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-.8; stroke-linecap: round; stroke-linejoin: round; }
+.theme-toggle svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ----------------------------- page chrome ----------------------------- */
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 0 0 28px; }
@@ -304,6 +329,19 @@ code { background: var(--grey-bg); padding: 2px 6px; border-radius: 6px; font-fa
 /* ----------------------------- components ----------------------------- */
 .card, .stat {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: none; padding: 20px 22px; margin-bottom: 16px;
+  position: relative;
+}
+/* Subtle gradient overlay for depth - excludes report cards which have their own decorative ::before */
+.card:not(.report)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(255,255,255,.04) 0%, transparent 50%);
+  pointer-events: none;
+}
+[data-theme="dark"] .card:not(.report)::before {
+  background: linear-gradient(135deg, rgba(255,255,255,.015) 0%, transparent 50%);
 }
 .card.flat { box-shadow: none; background: var(--card-bg-flat); }
 .card h2, .card h3 { margin-top: 0; }
@@ -586,8 +624,8 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .report-footer b { color: var(--brand-dark); }
 
 /* modal / toast */
-#modal-root .backdrop { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 40; padding: 20px; backdrop-filter: blur(5px); }
-.modal { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 22px 70px rgba(5, 22, 34, .3); width: 640px; max-width: 100%; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+#modal-root .backdrop { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 40; padding: 20px; backdrop-filter: blur(8px) saturate(120%); -webkit-backdrop-filter: blur(8px) saturate(120%); }
+.modal { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 22px 70px rgba(5, 22, 34, .3), 0 4px 14px rgba(5, 22, 34, .08); width: 640px; max-width: 100%; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
 .modal.wide { width: 780px; }
 .modal .m-head { padding: 19px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; background: var(--surface-2); }
 .modal .m-head h3 { margin: 0; font-size: 17px; }
@@ -1003,5 +1041,704 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
   .report-breakdown-heading { break-after: avoid; }
   .report-table tr { break-inside: avoid; }
   .report-footer { border-top: 1px solid #d9e2e6; margin-top: 5mm; }
+}
+
+/* ============================================================================
+   MOTION & ANIMATION SYSTEM
+   Elegant, fluid, modern. Respects prefers-reduced-motion throughout.
+   ============================================================================ */
+
+/* --- Staggered entrance animation --- */
+.animate-in {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity .48s var(--ease-out),
+    transform .48s var(--ease-out);
+  transition-delay: var(--stagger, 0ms);
+}
+.animate-in.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* --- View entrance: the main content area fades in on route change --- */
+.view-enter {
+  animation: viewFadeIn .42s var(--ease-out) both;
+}
+@keyframes viewFadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Enhanced cards: subtle lift + glow on hover --- */
+.card, .stat {
+  transition:
+    box-shadow .32s var(--ease-out),
+    transform .32s var(--ease-out),
+    border-color .32s var(--ease-out),
+    background .32s var(--ease-out);
+}
+.card:hover {
+  box-shadow: 0 4px 20px rgba(10, 32, 47, .06), 0 1px 3px rgba(10, 32, 47, .04);
+}
+[data-theme="dark"] .card:hover {
+  box-shadow: 0 4px 28px rgba(0, 0, 0, .35), 0 1px 4px rgba(0, 0, 0, .25);
+}
+
+/* Stat cards get a special hover: subtle scale + icon glow */
+.stat {
+  cursor: default;
+}
+.stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px rgba(10, 32, 47, .08);
+}
+.stat:hover .stat-icon {
+  transform: scale(1.08);
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+[data-theme="dark"] .stat:hover {
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .4);
+}
+.stat .stat-icon {
+  transition: transform .28s var(--ease-spring), box-shadow .28s var(--ease-out);
+}
+
+/* --- Button micro-interactions --- */
+.btn {
+  position: relative;
+  overflow: hidden;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    transform .22s var(--ease-spring),
+    box-shadow .28s var(--ease-out);
+}
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(10, 32, 47, .08);
+}
+.btn:active {
+  transform: translateY(0) scale(.97);
+  box-shadow: none;
+}
+.btn.secondary:hover {
+  box-shadow: 0 4px 14px rgba(10, 32, 47, .06);
+}
+.btn.ghost:hover {
+  box-shadow: none;
+}
+
+/* Ripple effect for buttons */
+.btn-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .25);
+  transform: scale(0);
+  animation: rippleOut .6s var(--ease-out) forwards;
+  pointer-events: none;
+  z-index: 0;
+}
+.btn.secondary .btn-ripple,
+.btn.ghost .btn-ripple {
+  background: rgba(21, 155, 150, .12);
+}
+@keyframes rippleOut {
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* --- Sidebar nav link animations --- */
+.nav a {
+  transition:
+    color .22s var(--ease-smooth),
+    background .22s var(--ease-smooth),
+    transform .22s var(--ease-spring),
+    box-shadow .22s var(--ease-out);
+}
+.nav a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 0 3px 3px 0;
+  background: var(--brand);
+  transform: translateY(-50%);
+  transition: height .28s var(--ease-spring);
+}
+.nav a {
+  position: relative;
+}
+.nav a.active::before {
+  height: 60%;
+}
+.nav a:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
+}
+
+/* --- Topbar glass enhancement --- */
+#topbar {
+  transition: background .32s var(--ease-out), border-color .32s var(--ease-out);
+}
+
+/* --- Theme toggle enhanced --- */
+.theme-toggle {
+  transition:
+    color .22s var(--ease-smooth),
+    border-color .22s var(--ease-smooth),
+    background .22s var(--ease-smooth),
+    transform .22s var(--ease-spring),
+    box-shadow .22s var(--ease-out);
+}
+.theme-toggle:hover {
+  box-shadow: 0 4px 12px rgba(21, 155, 150, .12);
+}
+
+/* --- Modal entrance/exit animations --- */
+#modal-root .backdrop {
+  animation: modalBackdropIn .3s var(--ease-out) both;
+}
+#modal-root .modal {
+  animation: modalSlideIn .38s var(--ease-spring) both;
+}
+@keyframes modalBackdropIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modalSlideIn {
+  from { opacity: 0; transform: translateY(20px) scale(.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* --- Toast entrance/exit enhancements --- */
+.toast.toast-in {
+  animation: toastSlideIn .32s var(--ease-spring);
+}
+.toast.toast-out {
+  animation: toastSlideOut .24s var(--ease-smooth) forwards;
+}
+@keyframes toastSlideIn {
+  from { transform: translateX(20px) scale(.95); opacity: 0; }
+  to   { transform: translateX(0) scale(1); opacity: 1; }
+}
+@keyframes toastSlideOut {
+  to { transform: translateX(20px) scale(.95); opacity: 0; }
+}
+
+/* --- Input focus glow --- */
+input[type="text"], input[type="email"], input[type="password"],
+input[type="number"], input[type="search"], select, textarea {
+  transition:
+    border-color .22s var(--ease-smooth),
+    box-shadow .22s var(--ease-out),
+    background .22s var(--ease-smooth);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 4px var(--focus-ring), 0 1px 4px rgba(21, 155, 150, .06);
+}
+
+/* --- Table row hover enhancements --- */
+table.data tbody tr {
+  transition:
+    background .18s var(--ease-smooth),
+    transform .18s var(--ease-smooth);
+}
+table.data tbody tr:hover {
+  background: var(--surface-hover);
+}
+table.data tbody tr:hover td:first-child {
+  box-shadow: inset 3px 0 var(--brand);
+}
+
+/* --- Badge and chip animations --- */
+.badge, .chip {
+  transition: transform .18s var(--ease-spring), box-shadow .18s var(--ease-out);
+}
+.badge:hover, .chip:hover {
+  transform: scale(1.04);
+}
+
+/* --- Progress bar animation --- */
+.progress > span, .stage-bars .fill, .quiz-track span {
+  transition: width .6s var(--ease-out);
+}
+
+/* --- Option card (quiz) selection animation --- */
+.opt {
+  transition:
+    border-color .18s var(--ease-smooth),
+    background .18s var(--ease-smooth),
+    transform .18s var(--ease-spring),
+    box-shadow .18s var(--ease-out);
+}
+.opt:hover {
+  transform: translateX(3px);
+  box-shadow: 0 2px 8px rgba(10, 32, 47, .04);
+}
+.opt.selected {
+  box-shadow: inset 3px 0 var(--brand), 0 2px 10px rgba(21, 155, 150, .08);
+}
+
+/* --- Scale button (quiz) enhanced --- */
+.scale-row button {
+  transition: all .22s var(--ease-spring);
+}
+.scale-row button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(21, 155, 150, .12);
+}
+.scale-row button.selected {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(21, 155, 150, .25);
+}
+
+/* --- Stepper dot animations --- */
+.step .dot {
+  transition: all .32s var(--ease-spring);
+}
+.step.current .dot {
+  animation: stepperPulse 2s var(--ease-smooth) infinite;
+}
+@keyframes stepperPulse {
+  0%, 100% { box-shadow: 0 0 0 5px var(--brand-soft); }
+  50%      { box-shadow: 0 0 0 8px var(--brand-soft), 0 0 0 12px rgba(21, 155, 150, .06); }
+}
+
+/* --- Loading state: elegant pulse --- */
+.spinner {
+  animation: spin .7s linear infinite;
+  border-width: 2.5px;
+}
+.loading {
+  animation: loadingPulse 1.8s var(--ease-smooth) infinite alternate;
+  gap: 12px;
+}
+.loading .spinner {
+  width: 22px;
+  height: 22px;
+  filter: drop-shadow(0 0 4px var(--brand-soft));
+}
+@keyframes loadingPulse {
+  from { opacity: .7; }
+  to   { opacity: 1; }
+}
+
+/* --- Empty state icon --- */
+.empty-icon {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 14px;
+  border-radius: 16px;
+  color: var(--brand-dark);
+  background: var(--brand-soft);
+  font-size: 24px;
+  font-weight: 700;
+  transition: transform .32s var(--ease-spring);
+}
+.empty:hover .empty-icon {
+  transform: scale(1.08) rotate(-3deg);
+}
+.empty {
+  animation: fadeUp .45s var(--ease-out) both;
+}
+
+/* --- Sidebar open/close smooth --- */
+#sidebar {
+  transition: transform .28s var(--ease-out), box-shadow .28s var(--ease-out);
+}
+
+/* --- Mobile scrim fade --- */
+#nav-scrim.visible {
+  animation: scrimIn .28s var(--ease-out) both;
+}
+@keyframes scrimIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* --- Page heading entrance --- */
+.page-heading {
+  animation: headingIn .5s var(--ease-out) both;
+}
+@keyframes headingIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Dashboard grid stagger --- */
+.dashboard-grid > * {
+  animation: cardRise .5s var(--ease-out) both;
+}
+.dashboard-grid > *:nth-child(1) { animation-delay: .05s; }
+.dashboard-grid > *:nth-child(2) { animation-delay: .12s; }
+@keyframes cardRise {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Metric grid entrance stagger --- */
+.metric-grid .stat {
+  animation: cardRise .45s var(--ease-out) both;
+}
+.metric-grid .stat:nth-child(1) { animation-delay: .04s; }
+.metric-grid .stat:nth-child(2) { animation-delay: .1s; }
+.metric-grid .stat:nth-child(3) { animation-delay: .16s; }
+.metric-grid .stat:nth-child(4) { animation-delay: .22s; }
+
+/* --- Card inner elements stagger --- */
+.card .panel-head { animation: fadeUp .4s var(--ease-out) .05s both; }
+.card .stage-bars, .card .status-list, .card .activity-list,
+.card table.data { animation: fadeUp .4s var(--ease-out) .12s both; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Scrollbar: elegant thin + themed --- */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 99px;
+  transition: background .2s;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--line-hover); }
+
+/* --- Glass morphism enhancements for topbar and cards --- */
+#topbar {
+  box-shadow: 0 1px 0 var(--topbar-line), 0 4px 20px rgba(10, 32, 47, .02);
+}
+[data-theme="dark"] #topbar {
+  box-shadow: 0 1px 0 var(--topbar-line), 0 4px 20px rgba(0, 0, 0, .15);
+}
+
+/* --- Focus visible: animated ring --- */
+:focus-visible {
+  outline: 3px solid var(--focus-outline);
+  outline-offset: 2px;
+  transition: outline-offset .18s var(--ease-smooth);
+}
+
+/* --- Smooth hover on interactive cards --- */
+.q-card {
+  transition:
+    border-color .22s var(--ease-smooth),
+    box-shadow .28s var(--ease-out),
+    transform .28s var(--ease-out);
+}
+.q-card:hover {
+  box-shadow: 0 6px 20px rgba(16, 39, 56, .04);
+}
+
+/* --- Report card: elegant hover on score ring --- */
+.score-ring {
+  transition: transform .32s var(--ease-spring), box-shadow .32s var(--ease-out);
+}
+.score-ring:hover {
+  transform: scale(1.04);
+  box-shadow: 0 14px 30px rgba(14, 114, 116, .14);
+}
+
+/* --- Status row: smooth slide on hover --- */
+.status-row {
+  transition: background .18s var(--ease-smooth), transform .18s var(--ease-spring);
+}
+.status-row:hover {
+  transform: translateX(4px);
+}
+
+/* --- Activity dot pulse --- */
+.activity-dot {
+  position: relative;
+}
+.activity-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  opacity: 0;
+  animation: dotPulse 3s var(--ease-smooth) infinite;
+}
+@keyframes dotPulse {
+  0%, 100% { opacity: 0; transform: scale(.8); }
+  50%      { opacity: .6; transform: scale(1.2); }
+}
+
+/* --- Exam hall entrance --- */
+.exam-hall {
+  animation: examRise .45s var(--ease-out) both;
+}
+@keyframes examRise {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Exam chrome card: glassmorphism --- */
+.exam-chrome.card {
+  backdrop-filter: blur(var(--blur-lg)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--blur-lg)) saturate(140%);
+  box-shadow: 0 4px 20px rgba(10, 32, 47, .06);
+}
+
+/* --- Toolbar card: subtle gradient border --- */
+.toolbar-card {
+  position: relative;
+  transition: border-color .22s var(--ease-smooth), box-shadow .28s var(--ease-out);
+}
+.toolbar-card:focus-within {
+  border-color: var(--brand-line);
+  box-shadow: var(--shadow-glow);
+}
+
+/* --- Filter pills smooth transitions --- */
+.filter-pills .chip {
+  transition:
+    background .18s var(--ease-smooth),
+    color .18s var(--ease-smooth),
+    transform .18s var(--ease-spring),
+    box-shadow .18s var(--ease-out);
+}
+.filter-pills .chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(10, 32, 47, .06);
+}
+.filter-pills .chip.selected {
+  box-shadow: 0 2px 8px rgba(21, 155, 150, .2);
+}
+
+/* --- Scope option (allocation modal) spring animation --- */
+.scope-opt {
+  transition:
+    border-color .2s var(--ease-smooth),
+    background .2s var(--ease-smooth),
+    box-shadow .2s var(--ease-out),
+    transform .2s var(--ease-spring);
+}
+.scope-opt:hover {
+  transform: translateY(-1px);
+}
+.scope-opt.selected {
+  box-shadow: 0 0 0 3px var(--focus-ring), 0 4px 12px rgba(21, 155, 150, .06);
+}
+
+/* --- Allocation preview bars animate in --- */
+.alloc-split-bar i {
+  transition: width .48s var(--ease-out);
+}
+
+/* --- Side user card: smooth hover --- */
+.side-user-card {
+  transition: background .22s var(--ease-smooth), border-color .22s var(--ease-smooth);
+}
+.side-user-card:hover {
+  background: rgba(255, 255, 255, .07);
+  border-color: rgba(255, 255, 255, .1);
+}
+
+/* --- Sign out button: subtle hover --- */
+.side-user .signout {
+  transition: all .22s var(--ease-smooth);
+}
+.side-user .signout:hover {
+  background: rgba(255, 255, 255, .08);
+  border-color: rgba(255, 255, 255, .15);
+}
+
+/* --- Empty/error page entrance --- */
+.empty-page, .error-page {
+  animation: cardRise .5s var(--ease-out) both;
+}
+
+/* --- Journey card: subtle gradient animation --- */
+.journey-card {
+  position: relative;
+  overflow: hidden;
+}
+.journey-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 40%, rgba(21, 155, 150, .04) 50%, transparent 60%);
+  background-size: 200% 100%;
+  animation: shimmer 6s var(--ease-smooth) infinite;
+  pointer-events: none;
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* --- Brand mark: subtle glow --- */
+.brand .logo .mark {
+  transition: box-shadow .32s var(--ease-out), transform .32s var(--ease-spring);
+}
+.brand .logo:hover .mark {
+  box-shadow: 0 10px 24px rgba(10, 22, 40, .38), 0 0 0 4px rgba(21, 155, 150, .12);
+  transform: scale(1.05);
+}
+
+/* --- Avatar: subtle hover ring --- */
+.side-user .avatar, .topbar-avatar {
+  transition: box-shadow .22s var(--ease-out), transform .22s var(--ease-spring);
+}
+.topbar-avatar:hover {
+  box-shadow: 0 0 0 3px var(--brand-soft);
+  transform: scale(1.06);
+}
+
+/* --- Mobile nav toggle: spring press --- */
+.mobile-nav-toggle {
+  transition: transform .22s var(--ease-spring), background .18s var(--ease-smooth), border-color .18s var(--ease-smooth);
+}
+.mobile-nav-toggle:active {
+  transform: scale(.9);
+}
+
+/* --- Skip link: smooth slide --- */
+.skip-link {
+  transition: transform .28s var(--ease-spring);
+}
+
+/* --- Print: disable all animations --- */
+@media print {
+  .animate-in, .view-enter, .toast.toast-in, .toast.toast-out,
+  #modal-root .backdrop, #modal-root .modal,
+  .card:hover, .stat:hover, .btn:hover, .btn:active {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
+}
+
+/* --- Page-top loading progress bar --- */
+.page-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand), var(--brand-dark), var(--brand));
+  background-size: 200% 100%;
+  z-index: 100;
+  transition: width .3s var(--ease-out), opacity .3s var(--ease-out);
+  animation: progressShimmer 1.5s linear infinite;
+}
+.page-progress.hidden {
+  opacity: 0;
+  width: 0 !important;
+}
+@keyframes progressShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* --- Smooth theme transition: applied to body so children inherit timing --- */
+/* Individual elements have their own transition rules; the body transition
+   ensures the background and text color change smoothly on theme toggle. */
+body {
+  transition:
+    background-color .35s var(--ease-smooth),
+    color .35s var(--ease-smooth);
+}
+
+/* --- Elegant link hover with underline slide --- */
+a {
+  transition: color .18s var(--ease-smooth);
+}
+
+/* --- Card section separators: elegant gradient lines --- */
+.hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+  margin: 20px 0;
+}
+@media print {
+  .hr {
+    background: var(--line);
+  }
+}
+
+/* --- Panel head icons: subtle bounce on hover --- */
+.panel-orb {
+  transition: transform .28s var(--ease-spring), box-shadow .28s var(--ease-out);
+}
+.panel-head:hover .panel-orb {
+  transform: scale(1.1);
+  box-shadow: 0 0 0 4px var(--brand-soft);
+}
+
+/* --- Journey spark icon animation --- */
+.journey-spark {
+  transition: transform .28s var(--ease-spring);
+}
+.journey-card:hover .journey-spark {
+  transform: rotate(12deg) scale(1.1);
+}
+
+/* --- Candidate heading smooth entrance --- */
+.candidate-heading {
+  animation: headingIn .5s var(--ease-out) both;
+}
+
+/* --- Better select dropdown styling --- */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%238a98a9' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 34px;
+}
+/* Ensure select text doesn't overlap with arrow */
+select option {
+  padding: 8px;
+}
+
+/* --- Search input with icon --- */
+input[type="search"] {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a98a9' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M16.5 16.5L21 21'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 12px center;
+  padding-left: 34px;
+}
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--ink-3);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: .5;
+  transition: opacity .18s;
+}
+input[type="search"]::-webkit-search-cancel-button:hover {
+  opacity: 1;
+}
+
+/* --- Reduced motion: comprehensive override --- */
+@media (prefers-reduced-motion: reduce) {
+  .animate-in, .view-enter, .toast.toast-in, .toast.toast-out,
+  #modal-root .backdrop, #modal-root .modal,
+  .page-heading, .dashboard-grid > *, .metric-grid .stat,
+  .card .panel-head, .card .stage-bars, .card .status-list,
+  .card .activity-list, .card table.data,
+  .exam-hall, .empty-page, .error-page,
+  #nav-scrim.visible, .journey-card::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .animate-in { opacity: 1; transform: none; }
+  .step.current .dot { animation: none !important; }
+  .activity-dot::after { animation: none !important; }
 }
 

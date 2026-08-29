@@ -6,6 +6,7 @@ import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
 import * as candidate from './views/candidate.js';
+import { staggerIn, animateView, initRipples } from './motion.js';
 
 export const state = { user: null, candidate: null, meta: null };
 
@@ -187,7 +188,15 @@ async function renderOnce() {
       document.body.classList.toggle('exam-lock', isExam);
       await fn(view, params);
       enhanceTables(view);
-      view.scrollIntoView?.({ block: 'start' });
+      // Animate the view entrance + stagger children
+      animateView(view);
+      staggerIn(view);
+      initRipples(view);
+      // Only scroll if view is not already in viewport
+      const rect = view.getBoundingClientRect();
+      if (rect.top < 0 || rect.top > window.innerHeight) {
+        view.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      }
     } catch (err) {
       renderRouteError(view, err);
     }
