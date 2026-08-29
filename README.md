@@ -36,11 +36,12 @@ questions without recreating users or changing existing assessment snapshots. Us
 Full end-to-end suites (need a running, seeded server):
 
 ```bash
-python3 tests/smoke.py        # 38 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 186 checks: every feature — CRUD, validation, config editing,
+python3 tests/smoke.py        # 39 checks: one candidate's complete journey + isolation proofs
+python3 tests/features.py     # 196 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
                               # password-gated candidate deletion, capped question allocation,
-                              # published-catalogue sync (both honour BASE=http://…/api)
+                              # integrity trail, and published-catalogue sync
+                              # (both honour BASE=http://…/api)
 ```
 
 **End-to-end demo loop (2 minutes):**
