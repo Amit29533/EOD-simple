@@ -71,6 +71,19 @@ function stubFetch({ ready = true, sent = [], createFails = null, importReport =
       });
     }
     if (url.includes('/auth/me')) return json({ user: { id: 'u1', name: 'Admin', role: 'admin', email: '' }, candidate: null });
+    // The served question set merged in from the retired Question Bank screen.
+    if (url.includes('/admin/roles')) {
+      return json({ roles: [{ id: 'role-1', name: 'Resident Solutions Architect (RSA)', technology: 'Databricks' }] });
+    }
+    if (url.includes('/admin/questions')) {
+      return json({
+        questions: [
+          { id: 'q-mcq', type: 'mcq_single', prompt: 'A served MCQ?', competency_name: 'Lakehouse Architecture', points: 4, difficulty: 'intermediate', active: true, audio_required: false },
+          { id: 'q-open', type: 'text', prompt: 'A served open question?', competency_name: 'Customer Advisory', points: 6, difficulty: 'advanced', active: true, audio_required: true },
+        ],
+      });
+    }
+    if (url.includes('/admin/content/catalogue')) return json({ available: false });
     if (url.includes('/question-bank/modules')) {
       return json({
         version: '1.2', blueprint: BLUEPRINT, groups: GROUPS, modules: MODULES,
@@ -489,3 +502,22 @@ test('a deactivated question is visibly marked in its family', { skip: SKIP }, a
     assert.doesNotMatch(on.textContent.replace(/\s+/g, ' '), /Inactive/, 'an active one is not');
   } finally { teardown(dom); }
 });
+
+/* ============ the retired Question Bank screen now lives on this one ============ */
+
+test('the served question set is managed on the modules screen', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    const view = await renderModules();
+    const panel = view.querySelector('#served-set');
+    assert.ok(panel, 'the served-set panel is part of the modules screen');
+    assert.match(panel.textContent, /Served question set/);
+    assert.match(panel.textContent, /A served MCQ\?/, 'the role questions are listed here');
+    assert.match(panel.textContent, /A served open question\?/);
+    assert.ok(panel.querySelector('#served-add'), 'questions can be added from this screen');
+    assert.ok(panel.querySelector('#served-role'), 'and filtered by role');
+    assert.equal(panel.querySelectorAll('[data-served-edit]').length, 2, 'each row can be edited');
+    assert.equal(panel.querySelectorAll('[data-served-del]').length, 2, 'and deleted');
+  } finally { teardown(dom); }
+});
+

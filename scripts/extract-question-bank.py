@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extract the ECOD RSA Question Bank (v1.2) from the source PDF into JSON.
+Extract the ECOD RSA Question Bank (v1.3) from the source PDF into JSON.
 
 The PDF is a landscape spreadsheet export: one table row per question, with
 fixed-height cells. Two properties make naive text extraction wrong:

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { selectQuestions, allocationPreview, promptKey } from '../src/core/question-selection.mjs';
+import { maxRunLength, maxRunOf } from '../src/core/paper-order.mjs';
 
 const comps = [
   { id: 'c1', name: 'Architecture', weight: 50 },
@@ -12,6 +13,18 @@ const bank = comps.flatMap((c, ci) =>
   Array.from({ length: 10 }, (_, i) => ({ id: `${c.id}-q${i + 1}`, competency_id: c.id, points: 4, order: ci * 10 + i })));
 
 const countBy = (rows) => rows.reduce((m, q) => ({ ...m, [q.competency_id]: (m[q.competency_id] || 0) + 1 }), {});
+
+/** Deterministic rng, so an ordering assertion is never a coin toss. */
+const seeded = (seed) => {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+};
+
+/** Number of contiguous runs of open questions in a served paper. */
+const openRuns = (rows) => {
+  const at = rows.map((q, i) => (q.type === 'text' ? i : -1)).filter((i) => i >= 0);
+  return { at, runs: at.filter((p, i) => i === 0 || p !== at[i - 1] + 1).length };
+};
 
 test('no limit (null / 0 / negative) serves the whole bank', () => {
   for (const limit of [null, undefined, 0, -5, '']) {
@@ -62,16 +75,43 @@ test('a competency with a small bank cannot be over-drawn; the surplus is redist
   assert.ok(by.c1 <= 3);
 });
 
-test('questions come back in configured display order', () => {
-  const picked = selectQuestions(bank, comps, 12);
-  const orders = picked.map((q) => q.order);
-  assert.deepEqual(orders, [...orders].sort((a, b) => a - b));
+test('every served question is stamped with the position it will be asked at', () => {
+  const picked = selectQuestions(bank, comps, 12, { rng: seeded(4) });
+  assert.deepEqual(picked.map((q) => q.position), picked.map((_, i) => i + 1));
 });
 
-test('selection is deterministic', () => {
-  const a = selectQuestions(bank, comps, 13).map((q) => q.id);
-  const b = selectQuestions(bank, comps, 13).map((q) => q.id);
-  assert.deepEqual(a, b);
+test('open questions are mixed through the paper, not served as one block', () => {
+  // Every third question is open. The old rule served the whole spoken set next
+  // and the rest in display order, which handed a candidate a wall of recorded
+  // answers followed by a wall of MCQs.
+  const typed = bank.map((q, i) => ({ ...q, type: i % 3 === 0 ? 'text' : 'mcq_single' }));
+  const picked = selectQuestions(typed, comps, null, { rng: seeded(3) });
+  const { at, runs } = openRuns(picked);
+  assert.equal(at.length, 10, 'no open question is dropped by the shuffle');
+  assert.ok(runs > 1, `open questions still arrived as one block: ${at.join(',')}`);
+  // Not merely "not one block": no two open questions are adjacent, and the
+  // objective runs are as short as a 20/10 mix allows (ceil(20/11) = 2).
+  const types = picked.map((q) => q.type);
+  assert.equal(maxRunOf(types, 'text'), 1, 'two open questions came back to back');
+  assert.equal(maxRunLength(types), 2, 'a block of MCQs survived the mix');
+  assert.deepEqual(
+    picked.map((q) => q.id).sort(), typed.map((q) => q.id).sort(),
+    'shuffling reorders the paper, it never changes its contents',
+  );
+});
+
+test('the served set is deterministic; only its order is shuffled', () => {
+  const ids = (opts) => selectQuestions(bank, comps, 13, opts).map((q) => q.id);
+  assert.deepEqual([...ids()].sort(), [...ids()].sort(), 'which questions are served never varies');
+  assert.deepEqual(ids({ rng: seeded(1) }), ids({ rng: seeded(1) }), 'the same seed reproduces the same paper');
+  assert.notDeepEqual(ids({ rng: seeded(1) }), ids({ rng: seeded(2) }), 'a different seed shuffles differently');
+});
+
+test('shuffle:false keeps the legacy grouping for callers that only count', () => {
+  const typed = bank.map((q, i) => ({ ...q, type: i % 3 === 0 ? 'text' : 'mcq_single' }));
+  const picked = selectQuestions(typed, comps, null, { shuffle: false });
+  const orders = picked.map((q) => q.order);
+  assert.deepEqual(orders, [...orders].sort((a, b) => a - b), 'unshuffled papers stay in display order');
 });
 
 test('randomized selection changes the question sample but keeps weighted quotas', () => {
@@ -120,7 +160,9 @@ test('full-bank papers also include exactly five oral prompts with the common on
   assert.equal(picked[0].id, 'oral-0', 'COMMON oral question is always first');
   const spoken = picked.filter((q) => q.question_set === 'rsa-oral');
   assert.equal(spoken.length, 5, 'never more than five spoken questions in one paper');
-  assert.ok(picked.slice(0, 5).every((q) => q.question_set === 'rsa-oral'));
+  // The remaining four are mixed into the paper rather than following the pin.
+  const at = picked.map((q, i) => (q.question_set === 'rsa-oral' ? i : -1)).filter((i) => i >= 0);
+  assert.ok(at.slice(1).some((p) => p > 4), `spoken questions are spread through the paper, not bunched at the front: ${at.join(',')}`);
 });
 
 test('capped papers pin the common oral question first and include five from the oral set', () => {
@@ -136,7 +178,8 @@ test('capped papers pin the common oral question first and include five from the
   assert.equal(picked.length, 50);
   assert.equal(picked[0].id, 'oral-0', 'COMMON oral question is always first');
   assert.equal(picked.filter((q) => q.question_set === 'rsa-oral').length, 5);
-  assert.ok(picked.slice(0, 5).every((q) => q.question_set === 'rsa-oral'));
+  const at = picked.map((q, i) => (q.question_set === 'rsa-oral' ? i : -1)).filter((i) => i >= 0);
+  assert.ok(at.slice(1).some((p) => p > 4), `spoken questions are mixed in, not bunched: ${at.join(',')}`);
 });
 
 test('allocationPreview reports the served split and its points total', () => {

@@ -127,11 +127,12 @@ Deliberately deferred to the next phases (architecture already supports them): E
 module, Independent Validation module, candidate-facing enrichment plan, client/commercial
 entities. There are no `clients`/commercial tables anywhere — nobody can stumble into them.
 
-## Question Bank v1.2 — modules, families and test generation
+## Question Bank v1.3 — modules, families and test generation
 
-The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`):
+The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`),
+generated from the source PDF in this repo (`Question bank 1.3.xlsx_4343.pdf`):
 **348 questions across 20 modules**, organised **module → family → question**, and
-listed in paper order: `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02`.
+listed module by module: `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02`.
 
 ```
 MODULE                                    FAMILY (where a question is added)
@@ -157,11 +158,16 @@ and belongs to exactly one family inside one module.
 Every generated test contains **exactly 50 questions**: 30 technical objective +
 10 technical open + 10 non-technical open. Questions are picked at **random** from
 each module's families while that structure is held exactly — nothing is pinned, and
-no question is guaranteed to appear. Sections and questions come back in module order.
+no question is guaranteed to appear. The paper is then **interleaved** by answer
+type, so MCQs and open questions never arrive in blocks; `sections` still reports the
+per-module structure in module order (`T01`→`F02`) for the admin preview.
 
-Browse it under **Admin → Modules & Families**: each module expands to its families,
-and any family opens to the questions a new one would join, with their tags. The
-screen also previews a freshly generated paper.
+Browse it under **Admin → Question Bank** — one screen for every question in the
+platform: the module/family tree, and below it the role-based *served question set*
+(what allocation actually puts in front of a candidate today). Each module expands to
+its families, any family opens to the questions a new one would join, and the screen
+previews a freshly generated paper. The former standalone *Question Bank* screen is
+gone; `#/questions` redirects here.
 
 ### Adding questions
 
@@ -203,12 +209,50 @@ module's quota — they are drawn only to cover a shortfall.
 > still apportions marks per competency, which the fixed per-module structure does not
 > supply. Tracked as the next step rather than silently half-done.
 
+### Question order: MCQ and open are interleaved, not shuffled into luck
+
+A plain shuffle leaves long runs of one answer type — measured on this platform:
+runs of 4–7 on the 50-question module paper and **10** on the 110-question served
+paper. So ordering is an **interleave**, not a coin flip (`core/paper-order.mjs`,
+shared by both builders):
+
+- The **smaller** group never appears twice in a row.
+- The larger group's longest run is bounded by `ceil(major / (minor + 1))`.
+- Which group is "smaller" is decided by count, not by the caller's predicate — a
+  paper with more open than objective questions is spaced just as correctly.
+
+Applied in two places:
+
+- **Module bank** (`core/test-generation.mjs`): quotas are filled module by module,
+  then the finished paper is interleaved by answer type. Longest run **2**; with
+  20 opens among 50 questions, no two opens are ever adjacent.
+- **Role-based served set** (`core/question-selection.mjs`): the pinned opening
+  question still comes first, everything after it is interleaved, and each row is
+  stamped with the `position` it will be asked at — so the candidate's cursor, the
+  assessor's review list and the scorer all read the identical order back from the
+  snapshot (`sortedQuestions` in `api/quiz-session.mjs`). On the 110-question
+  legacy paper that took the longest same-type run from **10 → 3** and never puts
+  two recorded answers back to back.
+
+`tests/paper-order.test.mjs` pins the permutation, the determinism per seed and both
+bounds; `tests/features.py` re-checks them black-box on a served paper.
+
+Snapshots allocated **before** positions existed carry no positions and keep the
+order they were allocated with: re-ordering a paper someone is halfway through would
+move questions out from under their cursor.
+
 The bank is regenerated from the source PDF with:
 
 ```bash
-python3 scripts/extract-question-bank.py "Question bank 1.2.pdf" bank.json
-python3 scripts/build-question-bank.py    bank.json src/content/rsa-question-bank.mjs
+python3 scripts/extract-question-bank.py "Question bank 1.3.xlsx_4343.pdf" bank.json
+python3 scripts/build-question-bank.py    bank.json src/content/rsa-question-bank.mjs 1.3
 ```
+
+The source export clips long MCQ option text — the extractor keeps what the PDF
+actually contains and flags each affected item `needs_option_review` (all 201
+objective items in v1.3, up from 155 in v1.2). Stems and correct answers are
+complete, so every item is servable, but the remaining distractors need finishing in
+the Admin UI.
 
 ## Compartmentalization matrix
 
@@ -227,7 +271,8 @@ Cross-participant isolation is by construction: handlers return fixed **projecti
 
 ## Configuration (no-code content management)
 
-Everything below is plain data, editable under **Admin → Roles & Frameworks / Question Bank**:
+Everything below is plain data, editable under **Admin → Roles & Frameworks** and
+**Admin → Question Bank** (served question set panel):
 
 - **Add a role/track** (any technology): name, slug, technology → a default scoring framework is created automatically.
 - **Competencies**: name, category, description, **weight** (100 across a role is a guideline; blends normalize either way), **target level 1–5**, **recommended focus** hint (used in the report's Areas to Improve), order, active flag.

@@ -228,8 +228,12 @@ check('assessor blocked before submit -> 409', st == 409)
 quiz = call('GET', f'/candidate/assessments/{AID}', T3)[1]
 check('exam hall: one question issued, total frozen in snapshot', quiz['exam']['total'] == 3 and len(quiz['questions']) == 1)
 check('snapshot frozen: edited prompt not leaked to candidate', 'COMPLETELY CHANGED' not in json.dumps(quiz))
-if quiz['current_question']['id'] == Q1['id']:
-    check('snapshot frozen: prompt unchanged after edit', quiz['current_question']['prompt'] == 'Core Q: pick B (edited)')
+# order-independent: whichever question is served, it must still carry the prompt it was
+# allocated with (the pre-edit text), never the post-edit one.
+_allocated = {q['id']: q for q in asg['snapshot_json']['questions']}
+_cur = quiz['current_question']
+check('snapshot frozen: served prompt is the allocated one', _cur['prompt'] == _allocated[_cur['id']]['prompt'])
+check('snapshot frozen: served prompt is not the edited one', _cur['prompt'] != 'Core Q: COMPLETELY CHANGED')
 # new allocation for a different candidate picks up the NEW config
 st, c4 = call('POST', '/admin/candidates', AT, {'name': 'Feature Candidate Four'})
 C4 = c4['id']
@@ -254,12 +258,16 @@ call('PATCH', f'/admin/assessments/{AID}', AT, {'assessor_id': meP['user']['id']
 # candidate draft answer features
 check('invalid scale (9) -> 422', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q2['id']: 9}})[0] == 422)
 check('invalid mcq option -> 422', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: 'zzz'}})[0] == 422)
-check('unknown question ids ignored', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {'nope': 1, Q1['id']: 'b'}})[0] == 200)
+# The exam payload echoes only the CURRENT item's answer, and the paper is
+# shuffled, so draft against whichever question was served first.
+cur = quiz['current_question']
+DRAFT = 'b' if cur['type'] == 'mcq_single' else (5 if cur['type'] == 'scale' else 'Draft answer.')
+check('unknown question ids ignored', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {'nope': 1, cur['id']: DRAFT}})[0] == 200)
 quiz = call('GET', f'/candidate/assessments/{AID}', T3)[1]
-check('saved answers round-trip on current item', quiz.get('current_answer') == 'b' or quiz['answers'].get(Q1['id']) == 'b')
-cleared = call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: ''}})[0] == 200
+check('saved answers round-trip on current item', quiz.get('current_answer') == DRAFT or quiz['answers'].get(cur['id']) == DRAFT)
+cleared = call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {cur['id']: ''}})[0] == 200
 after = call('GET', f'/candidate/assessments/{AID}', T3)[1]
-check('clearing answer removes it', cleared and after.get('current_answer') in (None, '') and after['answers'].get(Q1['id']) in (None, ''))
+check('clearing answer removes it', cleared and after.get('current_answer') in (None, '') and after['answers'].get(cur['id']) in (None, ''))
 st, ig = call('POST', f'/candidate/assessments/{AID}/integrity', T3, {'event': 'copy'})
 check('integrity event recorded', st == 200 and ig.get('integrity', {}).get('copy', 0) >= 1)
 check('scoring blocked before submit', call('PUT', f'/assessor/assessments/{AID}/scores', PT, {'scores': [{'question_id': Q3['id'], 'score': 4}]})[0] == 409)
@@ -482,6 +490,24 @@ rsa_default = [a for a in unrel['assessments']
 check('default allocation serves standard bank + at most five spoken prompts',
       bool(rsa_default) and rsa_default[0]['question_count'] == plan['standard_total'] + plan['spoken_served']
       and rsa_default[0]['question_count'] <= rsa_default[0]['bank_total'])
+
+# ---- paper order: MCQ and open must be mixed, never blocked -------------
+# The reported bug: every open question arrived together, then every MCQ.
+st, mixc = call('POST', '/admin/candidates', AT, {'name': 'Order Probe'})
+call('POST', '/admin/users', AT, {'username': 'order.probe', 'name': 'OP', 'role': 'candidate',
+                                  'password': 'op-pass-1234', 'candidate_id': mixc['id']})
+st, mixa = call('POST', '/admin/assessments', AT, {'candidate_id': mixc['id'], 'role_id': RSA, 'assessor_id': None})
+ordered = sorted(mixa['snapshot_json']['questions'], key=lambda q: q['position'])
+seq = ''.join('O' if q['type'] == 'text' else 'X' for q in ordered)
+opens = seq.count('O')
+check('served paper: every question is stamped with the position it is asked at',
+      st == 201 and [q['position'] for q in ordered] == list(range(1, len(ordered) + 1)))
+check('served paper: the pinned common question still opens it', ordered[0].get('pin_first') is True)
+check('served paper: no two open questions back to back',
+      max((len(p) for p in seq.split('X') if p), default=0) <= 1)
+check('served paper: MCQ runs are no longer than the mix requires',
+      max((len(p) for p in seq.split('O') if p), default=0) <= (len(seq) - opens + opens - 1) // opens)
+check('served paper: both answer types are actually present', 0 < opens < len(seq))
 
 # ================================ S9 published catalogue sync (bank below the cap)
 section('S9 · published catalogue: status, sync, unlocking the 50-question cap')

@@ -16,7 +16,7 @@ export function metaHandlers(route) {
     userRoles: USER_ROLES,
     difficulties: DIFFICULTIES,
     maxAssessmentQuestions: MAX_ASSESSMENT_QUESTIONS,
-    // Question Bank v1.2: module -> family structure and the fixed paper shape.
+    // Question Bank: module -> family structure and the fixed paper shape.
     moduleGroups: MODULE_GROUPS,
     modules: MODULES,
     families: FAMILIES,

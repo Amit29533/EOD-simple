@@ -39,6 +39,16 @@ export function sortedQuestions(snap) {
   // Restore the spoken-answer contract before partitioning, so a frozen row
   // that lost its flags still pins first and demands a recorded answer.
   const healed = applySpokenContract(rows);
+  // A paper allocated since shuffling was introduced records the position each
+  // question was drawn into, so the candidate's cursor, the assessor's review
+  // list and the scorer all read the same mixed objective/open order back.
+  // Snapshots allocated before that have no positions: they keep the grouping
+  // they were allocated with, because re-ordering a paper someone is halfway
+  // through would move questions out from under their cursor.
+  const stamped = healed.filter((q) => Number.isInteger(q.position));
+  if (healed.length && stamped.length === healed.length) {
+    return [...healed].sort((a, b) => a.position - b.position);
+  }
   const pin = healed.filter((q) => q.pin_first);
   const oral = healed.filter((q) => q.question_set && !q.pin_first)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));

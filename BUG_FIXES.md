@@ -3,7 +3,75 @@
 ## Summary
 The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **135/135 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+Current verification: **238/238 Node tests**, **39/39 smoke tests**, and **202/202 feature tests** pass.
+
+---
+
+## 📄 Question Bank v1.3, shuffled papers, one content screen (latest)
+
+**Three user-reported issues, fixed together:**
+
+**1. The new question bank was in the repo but not in the app.** `Question bank
+1.3.xlsx_4343.pdf` had been added next to the generated `src/content/rsa-question-bank.mjs`,
+which still held the v1.2 extract. The bank is now regenerated from that PDF through the
+existing pipeline (`extract-question-bank.py` → `build-question-bank.py`), so the platform
+serves **v1.3: 348 questions, 20 modules, 62 module-family pairs**. The published version is
+now an argument to the build script (`DEFAULT_VERSION`) instead of a string hard-coded in two
+places, and `bank-service.hydrate` stamps authored rows with `QUESTION_BANK_VERSION` rather
+than its own copy of `'1.2'`.
+
+The v1.3 export clips *every* MCQ's option text (201/201 objective items now carry
+`needs_option_review`, up from 155/201): the exporter truncated the long distractors, so the
+text is not in the PDF byte stream and cannot be recovered. Stems and correct answers are
+complete — the correct option is restored from the *Expected Evidence* column — so every item
+is servable, and the flag is what tells an admin which distractors to finish.
+
+**2. All the open questions arrived together.** A paper was assembled by type: the pinned
+spoken question, then the whole `rsa-oral` set, then the rest in display order — so a candidate
+met a wall of recorded answers followed by a wall of MCQs. The same shape appeared in the
+module generator, which emitted each module's objective questions before its open one.
+
+Now both paths **shuffle**:
+- `core/test-generation.mjs` fills the per-module quotas exactly, then Fisher-Yates the
+  finished paper with the same injectable `rng`. `sections` keeps module order for the preview.
+- `core/question-selection.mjs` keeps the `pin_first` question first and shuffles everything
+  after it, stamping each row with the `position` it will be asked at.
+
+The stamp is what makes the shuffle safe: `sortedQuestions` (`api/quiz-session.mjs`) re-reads
+the snapshot on every request, and it now sorts by `position` when the rows carry one — so the
+candidate's cursor, the assessor's review list and the scorer cannot disagree about which
+question is next. Snapshots allocated *before* this change carry no positions and keep the
+grouping they were allocated with, because re-ordering a paper someone is halfway through
+would move questions out from under their cursor.
+
+**3. Shuffling was not enough — blocks of one answer type survived.** A Fisher-Yates
+shuffle only makes a *block* unlikely, not impossible: measured on this platform it still
+produced runs of 4–7 same-type questions on the 50-question module paper and **10** on the
+110-question served paper. Ordering is now an **interleave**, in a helper shared by both
+builders (`src/core/paper-order.mjs`):
+
+- the **smaller** group is spread evenly through the larger and never appears twice in a row;
+- the larger group's longest run is bounded by `ceil(major / (minor + 1))`;
+- which group is smaller is decided by **count**, not by the caller's predicate — a paper with
+  more open than objective questions is spaced correctly too (the first version of the helper
+  assumed the predicate named the minority and failed `tests/paper-order.test.mjs`).
+
+Measured effect: 50-question paper longest run **4–7 → 2** with no two opens adjacent (20
+opens among 50); served 110-question paper longest run **10 → 3**, longest open run **1**,
+`pin_first` still first. `tests/paper-order.test.mjs` (10 tests) pins the permutation,
+per-seed determinism and both bounds; `features.py` re-checks them black-box on a served paper.
+
+One `features.py` check ("snapshot frozen: prompt unchanged after edit") was gated on the
+edited question happening to be the *first* served one — a condition the interleave makes
+rare, so it was silently skipping. It now compares whichever question is served against the
+prompt that question was allocated with, so the immutability check runs on every seed.
+
+**4. The Question Bank screen duplicated Modules & Families.** Two admin screens managed the
+same content from different angles. They are now **one screen at `#/modules`**, labelled
+*Question Bank*: the module → family tree on top, and the role/competency **served question
+set** below it (list, role filter, add/edit/delete and the published-catalogue top-up —
+everything the standalone screen did). `questionsView` is deleted, `#/questions` redirects to
+`#/modules` with its `?role=` filter intact, and the Roles screens link there.
 
 ---
 

@@ -59,7 +59,7 @@ export const DEFAULT_FRAMEWORK_CONFIG = {
 export const MAX_ASSESSMENT_QUESTIONS = 50;
 
 /**
- * Module-structured test generation (Question Bank v1.2).
+ * Module-structured test generation (the module Question Bank).
  *
  * A generated paper is assembled from fixed per-module quotas rather than by
  * competency-weight apportionment. See src/core/test-generation.mjs for the

@@ -576,7 +576,7 @@ export async function rolesView(view) {
         { label: 'Assessments', render: (r) => esc(r.assessment_count) },
         { label: 'Status', render: (r) => r.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
         { label: '', cls: 'actions', render: (r) => `<a class="btn ghost sm" href="#/roles/${r.id}">Configure</a>
-          <a class="btn ghost sm" href="#/questions?role=${r.id}">Questions</a>` },
+          <a class="btn ghost sm" href="#/modules?role=${r.id}">Questions</a>` },
       ], roles) : emptyState('No roles yet', 'Create your first assessment track.')}
     </div>`;
   view.querySelector('#add-role').onclick = async () => {
@@ -603,7 +603,7 @@ export async function roleDetailView(view, { id }) {
   view.innerHTML = `
     <div class="card" style="padding:12px 18px"><div class="row between">
       <a class="btn ghost sm" href="#/roles">← All roles</a>
-      <a class="btn secondary sm" href="#/questions?role=${role.id}">Open question bank (${d.questions.length})</a>
+      <a class="btn secondary sm" href="#/modules?role=${role.id}">Open in the question bank (${d.questions.length})</a>
     </div></div>
     <div class="card">
       <div class="row between">
@@ -726,80 +726,15 @@ function renderFramework(box, role, fw, done) {
   };
 }
 
-/* ================================ Question bank ================================ */
-export async function questionsView(view) {
-  view.innerHTML = loading();
-  const filterRole = new URLSearchParams(location.hash.split('?')[1] || '').get('role') || '';
-  const [{ roles }, { questions }, catalogue] = await Promise.all([
-    api('/admin/roles'),
-    api(`/admin/questions${filterRole ? `?role_id=${filterRole}` : ''}`),
-    attempt(() => api('/admin/content/catalogue')),
-  ]);
-  const typeLabel = Object.fromEntries(M().questionTypes.map((t) => [t.key, t.label]));
-  const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
-  view.innerHTML = `
-    <div class="page-heading">
-      <div><div class="eyebrow">Assessment design</div><h1>Question bank</h1><p>Prompts, options, rubrics and points.</p></div>
-      <div class="heading-actions"><button class="btn" id="add-q">＋ Add question</button></div>
-    </div>
-    ${missing ? `
-    <div class="card flat catalogue-strip">
-      <span class="info-strip-icon">＋</span>
-      <span class="catalogue-strip-copy"><b>${missing} published question${missing === 1 ? '' : 's'} not in this workspace yet.</b>
-        <small>The published ${esc(catalogue.role.name)} catalogue carries ${catalogue.catalogue_total} questions — this bank has ${catalogue.bank_total}, so assessments top out below the ${maxAssessmentQuestions()}-question cap.</small></span>
-      <button class="btn sm" id="sync-catalogue">Add published questions</button>
-    </div>` : ''}
-    <div class="card flat toolbar-card">
-      <div class="toolbar-label"><span class="toolbar-icon">⌘</span><span>Show questions for</span></div>
-      <select id="q-role" aria-label="Filter questions by role"><option value="">All roles</option>
-        ${roles.map((r) => `<option value="${r.id}" ${r.id === filterRole ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
-      <span class="toolbar-hint">${questions.length} question${questions.length === 1 ? '' : 's'} in this view</span>
-    </div>
-    <div class="card table-card" id="q-list">
-      ${questions.length ? dataTable([
-        { label: 'Question', render: (qq) => `<div style="max-width:520px">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name)}</div>` },
-        { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>${qq.audio_required ? '<div class="small muted" style="margin-top:4px">🎙 recorded answer required</div>' : ''}` },
-        { label: 'Points', render: (qq) => esc(qq.points) },
-        { label: 'Difficulty', render: (qq) => esc(qq.difficulty || '') },
-        { label: 'Status', render: (qq) => qq.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
-        { label: '', cls: 'actions', render: (qq) => `<button class="btn ghost sm" data-edit="${qq.id}">Edit</button><button class="btn ghost sm" style="color:var(--red)" data-del="${qq.id}">Delete</button>` },
-      ], questions) : emptyState('No questions', filterRole ? 'This role has no questions yet.' : 'Choose a role and add questions.')}
-    </div>`;
-  const syncBtn = view.querySelector('#sync-catalogue');
-  if (syncBtn) syncBtn.onclick = async () => {
-    syncBtn.disabled = true;
-    syncBtn.textContent = 'Adding…';
-    const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
-    if (!out) { syncBtn.disabled = false; syncBtn.textContent = 'Add published questions'; return; }
-    toast(out.added
-      ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
-      : 'The bank already has the full published catalogue.', 'success');
-    questionsView(view);
-  };
-  view.querySelector('#q-role').onchange = (e) => { location.hash = e.target.value ? `#/questions?role=${e.target.value}` : '#/questions'; };
-  const editQ = async (existing) => {
-    const roleId = existing?.role_id || filterRole || roles[0]?.id;
-    if (!roleId) { toast('Create a role first.', 'error'); return; }
-    const detail = await api(`/admin/roles/${roleId}`);
-    if (!detail.competencies.length) { toast('Add competencies to this role first.', 'error'); return; }
-    const vals = await questionEditorModal(existing, detail.competencies);
-    if (!vals) return;
-    await attempt(() => existing
-      ? api(`/admin/questions/${existing.id}`, { method: 'PATCH', body: vals })
-      : api('/admin/questions', { method: 'POST', body: { ...vals, role_id: roleId } }),
-      { okMessage: existing ? 'Question updated' : 'Question added' });
-    questionsView(view);
-  };
-  view.querySelector('#add-q').onclick = () => editQ(null);
-  view.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => editQ(questions.find((x) => x.id === b.dataset.edit))));
-  view.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
-    const yes = await confirmModal('Delete question', 'Delete this question? In-flight assessments keep their snapshot.', 'Delete', true);
-    if (!yes) return;
-    await attempt(() => api(`/admin/questions/${b.dataset.del}`, { method: 'DELETE' }), { okMessage: 'Question deleted' });
-    questionsView(view);
-  }));
-}
-
+/* ============================ Question editor ============================ */
+/**
+ * The competency-based question editor.
+ *
+ * The standalone "Question Bank" screen this used to power is gone: its list,
+ * filters, published-catalogue sync and editing all live on the Modules screen
+ * now (see modulesView -> "Served question set"), so there is one place to
+ * manage questions instead of two that duplicate each other.
+ */
 /** Custom editor: dynamic options with correct-answer markers, type-conditional fields. */
 function questionEditorModal(existing, competencies) {
   return new Promise((resolve) => {
@@ -1040,7 +975,7 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-/* ============================ Question Bank v1.2 ============================ */
+/* ==================== Question bank: modules & families ==================== */
 /**
  * MODULE -> FAMILY view of the finalized question bank, plus the fixed shape of
  * a generated paper.
@@ -1052,13 +987,26 @@ function debounce(fn, ms) {
  */
 export async function modulesView(view) {
   view.innerHTML = loading();
-  const [bank, plan] = await Promise.all([
+  // ONE screen for the whole bank. The module -> family tree is the primary
+  // view; below it sits the role/competency question set that allocation
+  // actually serves today (the same retired catalogue the tree lists as its
+  // optional pool). `role` in the query string is what the Roles screen links
+  // here with, and it only filters that lower panel.
+  const roleParam = new URLSearchParams(location.hash.split('?')[1] || '').get('role') || '';
+  const [bank, plan, rolesOut, servedOut, catalogue] = await Promise.all([
     api('/admin/question-bank/modules?include_optional=1'),
     attempt(() => api('/admin/question-bank/plan')),
+    attempt(() => api('/admin/roles')),
+    attempt(() => api(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`)),
+    attempt(() => api('/admin/content/catalogue')),
   ]);
+  const roles = rolesOut?.roles || [];
+  const served = servedOut?.questions || [];
+  const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
 
   const bp = bank.blueprint;
   const groupName = Object.fromEntries(bank.groups.map((g) => [g.key, g.name]));
+  const typeLabel = Object.fromEntries((M()?.questionTypes || []).map((t) => [t.key, t.label]));
   const planFor = new Map((plan?.modules || []).map((r) => [r.module, r]));
   const modules = [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
@@ -1079,10 +1027,12 @@ export async function modulesView(view) {
     <div class="page-heading">
       <div>
         <div class="eyebrow">Assessment design</div>
-        <h1>Modules &amp; families</h1>
-        <p>Question bank v${esc(bank.version)} — ${bank.bank_total} questions in
+        <h1>Question bank</h1>
+        <p>v${esc(bank.version)} — ${bank.bank_total} questions in
            ${modules.length} modules, organised into ${bank.family_total} families.
-           A new question belongs to exactly one family inside one module.</p>
+           A new question belongs to exactly one family inside one module; the
+           role-based set that allocation serves today is managed at the bottom
+           of this same screen.</p>
       </div>
       <div class="heading-actions">
         <button class="btn secondary" id="mv-import">Import from Excel</button>
@@ -1146,6 +1096,42 @@ export async function modulesView(view) {
         fallback. Never served while a family can fill its module's quota — only drawn to cover a
         shortfall.</p></div>
         <span class="chip chip-optional">${bank.optional.total} questions</span></div>
+    </div>
+
+    <div class="card" id="served-set">
+      <div class="panel-head">
+        <div><h2>Served question set</h2>
+          <p class="small muted">What allocation puts in front of a candidate today: questions grouped by role and
+          competency, drawn from the same retired catalogue the optional pool above is built from. Edits apply to the
+          <b>next</b> allocation — in-flight papers keep the snapshot they were allocated with.</p></div>
+        <div class="row">
+          <span class="chip">${served.length} in view</span>
+          <button class="btn secondary sm" id="served-add">＋ Add question</button>
+        </div>
+      </div>
+      ${missing ? `
+      <div class="card flat catalogue-strip">
+        <span class="info-strip-icon">＋</span>
+        <span class="catalogue-strip-copy"><b>${missing} published question${missing === 1 ? '' : 's'} not in this workspace yet.</b>
+          <small>The published ${esc(catalogue.role.name)} catalogue carries ${catalogue.catalogue_total} questions — this bank has ${catalogue.bank_total}, so assessments top out below the ${maxAssessmentQuestions()}-question cap.</small></span>
+        <button class="btn sm" id="served-sync">Add published questions</button>
+      </div>` : ''}
+      <div class="card flat toolbar-card">
+        <div class="toolbar-label"><span class="toolbar-icon">⌘</span><span>Show questions for</span></div>
+        <select id="served-role" aria-label="Filter the served set by role"><option value="">All roles</option>
+          ${roles.map((r) => `<option value="${r.id}" ${r.id === roleParam ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+        <span class="toolbar-hint">${served.length} question${served.length === 1 ? '' : 's'} in this view</span>
+      </div>
+      <div class="table-card">
+        ${served.length ? dataTable([
+          { label: 'Question', render: (qq) => `<div style="max-width:520px">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name || '')}</div>` },
+          { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>${qq.audio_required ? '<div class="small muted" style="margin-top:4px">🎙 recorded answer required</div>' : ''}` },
+          { label: 'Points', render: (qq) => esc(qq.points) },
+          { label: 'Difficulty', render: (qq) => esc(qq.difficulty || '') },
+          { label: 'Status', render: (qq) => qq.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
+          { label: '', cls: 'actions', render: (qq) => `<button class="btn ghost sm" data-served-edit="${qq.id}">Edit</button><button class="btn ghost sm" style="color:var(--red)" data-served-del="${qq.id}">Delete</button>` },
+        ], served) : emptyState('No questions', roleParam ? 'This role has no questions yet.' : 'Choose a role and add questions.')}
+      </div>
     </div>`;
 
   // Re-render after a write so the counts, chips and readiness badges reflect
@@ -1169,6 +1155,54 @@ export async function modulesView(view) {
       e.preventDefault();
       e.stopPropagation();
       addQuestionModal(bank, { module: btn.dataset.addModule }, refresh);
+    };
+  }
+
+  // ---- served question set: the role/competency bank allocation draws on ----
+  // This is the panel the standalone Question Bank screen used to be. It stays
+  // here so one screen manages every question in the platform.
+  const syncBtn = view.querySelector('#served-sync');
+  if (syncBtn) syncBtn.onclick = async () => {
+    syncBtn.disabled = true;
+    syncBtn.textContent = 'Adding…';
+    const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
+    if (!out) { syncBtn.disabled = false; syncBtn.textContent = 'Add published questions'; return; }
+    toast(out.added
+      ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
+      : 'The bank already has the full published catalogue.', 'success');
+    refresh();
+  };
+
+  const roleSelect = view.querySelector('#served-role');
+  if (roleSelect) roleSelect.onchange = (e) => {
+    location.hash = e.target.value ? `#/modules?role=${e.target.value}` : '#/modules';
+  };
+
+  const editServed = async (existing) => {
+    const roleId = existing?.role_id || roleParam || roles[0]?.id;
+    if (!roleId) { toast('Create a role first.', 'error'); return; }
+    const detail = await attempt(() => api(`/admin/roles/${roleId}`));
+    if (!detail) return;
+    if (!detail.competencies?.length) { toast('Add competencies to this role first.', 'error'); return; }
+    const vals = await questionEditorModal(existing, detail.competencies);
+    if (!vals) return;
+    await attempt(() => existing
+      ? api(`/admin/questions/${existing.id}`, { method: 'PATCH', body: vals })
+      : api('/admin/questions', { method: 'POST', body: { ...vals, role_id: roleId } }),
+      { okMessage: existing ? 'Question updated' : 'Question added' });
+    refresh();
+  };
+  const addServed = view.querySelector('#served-add');
+  if (addServed) addServed.onclick = () => editServed(null);
+  for (const btn of view.querySelectorAll('[data-served-edit]')) {
+    btn.onclick = () => editServed(served.find((x) => x.id === btn.dataset.servedEdit));
+  }
+  for (const btn of view.querySelectorAll('[data-served-del]')) {
+    btn.onclick = async () => {
+      const yes = await confirmModal('Delete question', 'Delete this question? In-flight assessments keep their snapshot.', 'Delete', true);
+      if (!yes) return;
+      await attempt(() => api(`/admin/questions/${btn.dataset.servedDel}`, { method: 'DELETE' }), { okMessage: 'Question deleted' });
+      refresh();
     };
   }
 }

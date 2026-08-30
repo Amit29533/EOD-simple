@@ -1,15 +1,15 @@
 /**
  * The legacy RSA catalogue, re-shaped as the OPTIONAL question pool.
  *
- * Before the finalized Question Bank v1.2 (src/content/rsa-question-bank.mjs)
+ * Before the finalized module Question Bank (src/content/rsa-question-bank.mjs)
  * the platform served a 115-question bank organised by *competency*. Those
- * questions are no longer part of a generated test: v1.2 is the authoritative
+ * questions are no longer part of a generated test: the module bank is the authoritative
  * bank and its MODULE -> FAMILY structure drives selection.
  *
- * They are not discarded, though. Each one is mapped onto the closest v1.2
+ * They are not discarded, though. Each one is mapped onto the closest
  * module, tagged `optional: true`, and kept as a **fallback pool**: the
  * generator ignores optional questions while a module can satisfy its quota
- * from the v1.2 bank, and only draws on them when a module would otherwise
+ * from the primary bank, and only draws on them when a module would otherwise
  * come up short (see src/core/test-generation.mjs). That keeps a generated
  * paper at its full length even if an admin deactivates or deletes a chunk of
  * the primary bank.
@@ -24,7 +24,7 @@ import { RSA_QUESTIONS, RSA_COMPETENCIES, RSA_ORAL_SET } from './rsa-catalogue.m
 import { MODULES } from './rsa-question-bank.mjs';
 
 /**
- * Retired competency -> the v1.2 module that now covers it.
+ * Retired competency -> the module that now covers it.
  * Chosen by subject overlap, so a fallback question is always at least
  * on-topic for the module it stands in for.
  */
@@ -52,7 +52,7 @@ const COMPETENCY_NAME = Object.fromEntries(
 
 /**
  * Retired questions keep their own identity rather than being forced into one
- * of the v1.2 families: each retired competency becomes a "Legacy - <name>"
+ * of the curated families: each retired competency becomes a "Legacy - <name>"
  * family inside its target module. That way the optional pool is visible in
  * the same MODULE -> FAMILY tree without diluting the curated families a new
  * question should be added to.
@@ -61,7 +61,7 @@ const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^
 const familyNameFor = (competency) => `Legacy - ${COMPETENCY_NAME[competency] || competency}`;
 const familyIdFor = (module, competency) => `${module}:legacy-${slug(competency)}`;
 
-/** Legacy storage types map onto the two v1.2 answer modes. */
+/** Legacy storage types map onto the two current answer modes. */
 const isOpenType = (type) => type === 'text';
 
 /**
@@ -83,7 +83,7 @@ const nextId = (module) => {
 
 /**
  * The optional pool, in the shape the generator and the storage layer expect
- * (identical to a v1.2 question, plus the `optional` flags).
+ * (identical to a published question, plus the `optional` flags).
  */
 export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
   .filter((q) => LEGACY_COMPETENCY_TO_MODULE[q.competency])
@@ -130,7 +130,7 @@ export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
 
 /**
  * The legacy families this pool contributes, so the Admin UI can show them in
- * the MODULE -> FAMILY tree alongside the curated v1.2 families.
+ * the MODULE -> FAMILY tree alongside the curated families.
  */
 export const OPTIONAL_FAMILIES = [...new Map(
   OPTIONAL_QUESTIONS.map((q) => [q.family_id, {

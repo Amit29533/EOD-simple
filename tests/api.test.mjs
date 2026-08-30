@@ -7,6 +7,7 @@ import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
+import { sortedQuestions } from '../src/api/quiz-session.mjs';
 
 /** End-to-end journey + RBAC/compartmentalization proofs against the real app. */
 
@@ -121,8 +122,12 @@ test('candidate quiz payload contains NO correct answers or rubrics', async () =
   assert.equal(res.body.assessment.status, 'in_progress', 'first open starts the clock');
   assert.equal(res.body.questions.length, 1, 'only the current question is issued');
   assert.equal(res.body.exam.total, 2);
-  assert.ok(res.body.exam.remaining_ms <= 30_000);
   assert.ok(res.body.current_question);
+  // The paper is shuffled, so the clock asserted here follows the question
+  // actually served: 30s for an MCQ, the 60s review window for an open one.
+  const openFirst = res.body.current_question.type === 'text';
+  assert.ok(res.body.exam.remaining_ms <= (openFirst ? 60_000 : 30_000));
+  assert.equal(res.body.exam.phase, openFirst ? 'review' : 'answer');
   for (const q of res.body.questions) {
     assert.equal(q.correct_option_ids, undefined);
     assert.equal(q.rubric, undefined);
@@ -133,21 +138,23 @@ test('candidate quiz payload contains NO correct answers or rubrics', async () =
 
 test('sequential exam advances a locked cursor and records integrity events', async () => {
   const first = await call('GET', `/candidate/assessments/${assessmentId}`, { token: rohitToken });
-  const q1 = first.body.current_question.id;
+  const q1 = first.body.current_question;
   const integ = await call('POST', `/candidate/assessments/${assessmentId}/integrity`, {
     token: rohitToken, body: { event: 'copy' },
   });
   assert.equal(integ.status, 200);
   assert.ok(integ.body.integrity.copy >= 1);
+  // The paper is shuffled, so answer whatever was actually served first.
   const nxt = await call('POST', `/candidate/assessments/${assessmentId}/next`, {
-    token: rohitToken, body: { answer: 'b' },
+    token: rohitToken, body: { answer: q1.type === 'text' ? 'A spoken answer.' : 'b' },
   });
-  assert.equal(nxt.status, 200);
+  assert.equal(nxt.status, 200, JSON.stringify(nxt.body));
   assert.equal(nxt.body.complete, false);
   const second = await call('GET', `/candidate/assessments/${assessmentId}`, { token: rohitToken });
-  assert.notEqual(second.body.current_question.id, q1, 'previous question is not reissued');
-  assert.equal(second.body.current_question.type, 'text');
-  assert.equal(second.body.exam.phase, 'review');
+  assert.notEqual(second.body.current_question.id, q1.id, 'previous question is not reissued');
+  assert.notEqual(second.body.current_question.type, q1.type,
+    'the two-question bank serves its MCQ and its open question mixed, in either order');
+  assert.equal(second.body.exam.phase, second.body.current_question.type === 'text' ? 'review' : 'answer');
   // restore cursor so the remaining journey tests still submit both items from index 0 answers
   await store.update('assessments', assessmentId, {
     quiz_state: { ...(await store.get('assessments', assessmentId)).quiz_state, index: 0, phase: 'answer' },
@@ -155,6 +162,11 @@ test('sequential exam advances a locked cursor and records integrity events', as
 });
 
 test('candidate saves draft answers and submits; auto-scoring runs; incomplete submit is 422', async () => {
+  // The walk above locked whichever question the shuffled paper served first.
+  // Clear it so "incomplete" here means what it says.
+  for (const r of await store.list('responses', { assessment_id: assessmentId })) {
+    await store.remove('responses', r.id);
+  }
   const put = await call('PUT', `/candidate/assessments/${assessmentId}/answers`, {
     token: rohitToken, body: { answers: { q_missing: 'nope' } },
   });
@@ -309,16 +321,20 @@ test('timed exam submit merges previously locked answers instead of wiping them'
   assert.equal(alloc.status, 201, JSON.stringify(alloc.body));
   const tok = await login('exam.merge', 'em-pass-1234');
   const aid = alloc.body.id;
-  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // The served order is shuffled, so read the paper the way the candidate gets it.
+  const qs = sortedQuestions(alloc.body.snapshot_json);
+  const answerFor = (q) => (q.type === 'text'
+    ? { text: 'Lakehouse with Unity Catalog.', transcript: '', source: 'typed' }
+    : 'b');
   await call('GET', `/candidate/assessments/${aid}`, { token: tok });
-  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
-  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, {
-    token: tok, body: { answer: { text: 'Lakehouse with Unity Catalog.', transcript: '', source: 'typed' } },
-  })).status, 200);
+  for (const q of qs) {
+    assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: answerFor(q) } })).status, 200);
+  }
   const sub = await call('POST', `/candidate/assessments/${aid}/submit`, { token: tok, body: { answers: {} } });
   assert.equal(sub.status, 200, JSON.stringify(sub.body));
   const responses = await store.list('responses', { assessment_id: aid });
-  const mcq = responses.find((r) => r.question_id === qs[0].id);
+  const mcqQ = qs.find((q) => q.type === 'mcq_single');
+  const mcq = responses.find((r) => r.question_id === mcqQ.id);
   assert.equal(mcq.answer, 'b');
   assert.equal(mcq.auto_score, 4, 'locked MCQ must survive an empty submit body');
 });
@@ -336,29 +352,34 @@ test('open-response answers persist transcript + audio clip; oversized audio is 
   });
   const tok = await login('audio.probe', 'ap-pass-1234');
   const aid = alloc.body.id;
-  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const qs = sortedQuestions(alloc.body.snapshot_json);
   const textQ = qs.find((q) => q.type === 'text');
-  await call('GET', `/candidate/assessments/${aid}`, { token: tok });
-  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
-
-  const phase = await call('POST', `/candidate/assessments/${aid}/phase`, { token: tok, body: { phase: 'answer' } });
-  assert.equal(phase.status, 200);
-  assert.equal(phase.body.phase, 'answer');
-
   const clip = Buffer.from('fake-webm-bytes').toString('base64');
-  const nxt = await call('POST', `/candidate/assessments/${aid}/next`, {
-    token: tok,
-    body: {
-      answer: {
-        text: 'Lakehouse with Unity Catalog.',
-        transcript: 'Lakehouse with Unity Catalog.',
-        source: 'audio',
-        audio_b64: clip,
-        audio_mime: 'audio/webm',
+  await call('GET', `/candidate/assessments/${aid}`, { token: tok });
+
+  // Walk the shuffled paper: an open question needs its review window closed
+  // first, whichever end of the paper it landed at.
+  let nxt;
+  for (const q of qs) {
+    if (q.type === 'text') {
+      const phase = await call('POST', `/candidate/assessments/${aid}/phase`, { token: tok, body: { phase: 'answer' } });
+      assert.equal(phase.status, 200);
+      assert.equal(phase.body.phase, 'answer');
+    }
+    nxt = await call('POST', `/candidate/assessments/${aid}/next`, {
+      token: tok,
+      body: {
+        answer: q.type === 'text' ? {
+          text: 'Lakehouse with Unity Catalog.',
+          transcript: 'Lakehouse with Unity Catalog.',
+          source: 'audio',
+          audio_b64: clip,
+          audio_mime: 'audio/webm',
+        } : 'b',
       },
-    },
-  });
-  assert.equal(nxt.status, 200, JSON.stringify(nxt.body));
+    });
+    assert.equal(nxt.status, 200, JSON.stringify(nxt.body));
+  }
   assert.equal(nxt.body.complete, true);
 
   const stored = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
@@ -392,27 +413,38 @@ test('locked exam answers cannot be rewritten via draft PUT or submit overlay', 
   });
   const tok = await login('lock.probe', 'lp-pass-1234');
   const aid = alloc.body.id;
-  const qs = [...alloc.body.snapshot_json.questions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const qs = sortedQuestions(alloc.body.snapshot_json);
+  const first = qs[0];
+  const locked = first.type === 'text' ? { text: 'Lakehouse.', transcript: '', source: 'typed' } : 'b';
+  const attempt = first.type === 'text' ? { text: 'Rewritten.', transcript: '', source: 'typed' } : 'a';
   await call('GET', `/candidate/assessments/${aid}`, { token: tok });
-  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: 'b' } })).status, 200);
+  assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { answer: locked } })).status, 200);
 
   const rewrite = await call('PUT', `/candidate/assessments/${aid}/answers`, {
-    token: tok, body: { answers: { [qs[0].id]: 'a' } },
+    token: tok, body: { answers: { [first.id]: attempt } },
   });
   assert.equal(rewrite.status, 200);
-  const afterPut = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === qs[0].id);
-  assert.equal(afterPut.answer, 'b', 'locked MCQ must ignore a later draft PUT');
+  // An open answer is stored with the spoken contract's `audio_missing` flag
+  // added, so compare the fields this test actually wrote.
+  const kept = (stored) => (first.type === 'text'
+    ? { text: stored.text, transcript: stored.transcript, source: stored.source }
+    : stored);
+  const afterPut = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === first.id);
+  assert.deepEqual(kept(afterPut.answer), locked, 'a locked answer must ignore a later draft PUT');
 
+  const other = qs[1];
   assert.equal((await call('POST', `/candidate/assessments/${aid}/next`, {
-    token: tok, body: { answer: { text: 'Lakehouse.', transcript: '', source: 'typed' } },
+    token: tok, body: { answer: other.type === 'text' ? { text: 'Lakehouse.', transcript: '', source: 'typed' } : 'b' },
   })).status, 200);
   const sub = await call('POST', `/candidate/assessments/${aid}/submit`, {
-    token: tok, body: { answers: { [qs[0].id]: 'a' } },
+    token: tok, body: { answers: { [first.id]: attempt } },
   });
   assert.equal(sub.status, 200, JSON.stringify(sub.body));
-  const afterSub = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === qs[0].id);
-  assert.equal(afterSub.answer, 'b');
-  assert.equal(afterSub.auto_score, 4);
+  const afterSub = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === first.id);
+  assert.deepEqual(kept(afterSub.answer), locked, 'a locked answer survives the submit overlay too');
+  const mcqQ = qs.find((q) => q.type === 'mcq_single');
+  const mcqResp = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === mcqQ.id);
+  assert.equal(mcqResp.auto_score, 4);
 });
 
 test('draft PUT of an audio answer is rejected when the clip is too large', async () => {

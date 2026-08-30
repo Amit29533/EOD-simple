@@ -65,6 +65,17 @@ test('signed-in shell: Anthroprime ECOD brand + theme toggle that persists', { s
     assert.equal(document.documentElement.dataset.theme, expected, 'theme flipped');
     assert.equal(localStorage.getItem('anthroprime-ecod-theme'), expected, 'choice persisted for the next visit');
     assert.match(btn.getAttribute('aria-label'), new RegExp(`Switch to ${before} mode`), 'label follows the new state');
+
+    // The Question Bank screen was merged into Modules: one nav entry, and the
+    // old route still lands an admin on the merged screen.
+    const links = [...sidebar.querySelectorAll('a[href^="#/"]')].map((a) => a.getAttribute('href'));
+    assert.equal(links.filter((h) => h.startsWith('#/modules')).length, 1, 'exactly one Modules entry');
+    assert.ok(!links.some((h) => h.startsWith('#/questions')), 'no separate Question Bank entry');
+    assert.match(sidebar.querySelector('a[href="#/modules"]').textContent, /Question Bank/);
+
+    window.location.hash = '#/questions?role=role-9';
+    await flush(80);
+    assert.equal(window.location.hash, '#/modules?role=role-9', 'the retired route redirects, filter intact');
   } finally {
     dom.window.close();
     for (const k of ['window', 'document', 'location', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch']) delete globalThis[k];
