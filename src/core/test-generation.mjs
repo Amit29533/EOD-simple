@@ -58,7 +58,12 @@ export const TEST_BLUEPRINT = {
 const isObjective = (q) => q?.type === 'objective';
 const isOpen = (q) => q?.type === 'open';
 const isOptional = (q) => q?.optional === true;
-const isActive = (q) => q?.active !== false && q?.status !== 'Retired' && q?.status !== 'Inactive';
+/**
+ * A question is servable unless it has been switched off. Exported because the
+ * admin bank counts must use the *same* rule as selection — otherwise the UI
+ * advertises questions that can never be drawn.
+ */
+export const isActive = (q) => q?.active !== false && q?.status !== 'Retired' && q?.status !== 'Inactive';
 
 /**
  * Fisher-Yates over a copy, then take `count`. A caller-supplied rng keeps

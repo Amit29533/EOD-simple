@@ -88,7 +88,8 @@ function stubFetch({ ready = true, sent = [], createFails = null, importReport =
         family: { id: 'T01:advanced-technical-judgment', key: 'advanced-technical-judgment',
           name: 'Advanced Technical Judgment', module: 'T01', role: 'objective', objective: 10, open: 0 },
         questions: [
-          { id: 'RSA-T01-011', type: 'objective', prompt: 'A judgment question in this family?', optional: false, needs_option_review: false },
+          { id: 'RSA-T01-011', type: 'objective', prompt: 'A judgment question in this family?', optional: false, active: true, needs_option_review: false },
+          { id: 'RSA-T01-A001', type: 'open', prompt: 'A switched-off question in this family?', optional: false, authored: true, active: false, needs_option_review: false },
         ],
       });
     }
@@ -471,5 +472,20 @@ test('a module can be added to directly from its card', { skip: SKIP }, async ()
     const dialog = document.querySelector('#modal-root .modal');
     assert.ok(dialog, 'add dialog opened from the module card');
     assert.equal(dialog.querySelector('#aq-module').value, 'C01', 'the module is pre-selected');
+  } finally { teardown(dom); }
+});
+
+test('a deactivated question is visibly marked in its family', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    const view = await renderModules();
+    view.querySelector('[data-family="T01:advanced-technical-judgment"]').click();
+    await flush(60);
+    const dialog = document.querySelector('#modal-root .modal');
+    const off = dialog.querySelector('[data-qid="RSA-T01-A001"]');
+    assert.ok(off, 'the inactive question is still listed');
+    assert.match(off.textContent.replace(/\s+/g, ' '), /Inactive/, 'and is labelled as inactive');
+    const on = dialog.querySelector('[data-qid="RSA-T01-011"]');
+    assert.doesNotMatch(on.textContent.replace(/\s+/g, ' '), /Inactive/, 'an active one is not');
   } finally { teardown(dom); }
 });

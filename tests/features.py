@@ -1,11 +1,15 @@
 """
 ECOD full-feature test suite. Exercises every feature of the platform against
-a running server (isolated seed data). Usage:
-    BASE=http://127.0.0.1:8765/api python3 tests/features.py
+a running server.
+
+Run with `npm run test:features` while `npm start` is up. Some checks consume
+seeded records (the candidate-deletion case removes a demo candidate), so the
+suite is not idempotent: start from `npm run seed:fresh` and restart the server
+before a run, or a second pass will report false failures.
 """
 import json, os, sys, urllib.request, urllib.error, uuid
 
-BASE = os.environ.get('BASE', 'http://127.0.0.1:8765/api')
+BASE = os.environ.get('BASE', 'http://127.0.0.1:3000/api')
 ROOT = BASE[:-4]  # strip /api
 
 def call(method, path, token=None, body=None, raw=False):

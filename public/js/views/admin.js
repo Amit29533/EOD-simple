@@ -1108,6 +1108,7 @@ export async function modulesView(view) {
           <span class="module-metrics">
             <span class="chip">${m.objective} objective</span>
             <span class="chip">${m.open} open</span>
+            ${m.inactive ? `<span class="chip chip-optional">${m.inactive} inactive</span>` : ''}
             ${m.optional ? `<span class="chip chip-optional">${m.optional} optional</span>` : ''}
             ${row ? (row.sufficient ? badge('Ready', 'green') : badge('Short', 'amber')) : ''}
           </span>
@@ -1170,6 +1171,7 @@ function familyModal({ family, questions }, bank, onChanged) {
       <td class="muted">${i + 1}</td>
       <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
       <td style="max-width:480px">${esc(q.prompt)}
+        ${q.active === false ? '<span class="chip chip-optional">Inactive</span>' : ''}
         ${q.authored ? '<span class="chip">Added here</span>' : ''}
         ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}
         ${q.needs_option_review ? '<span class="chip chip-optional">Options need review</span>' : ''}

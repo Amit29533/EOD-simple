@@ -1,7 +1,13 @@
-"""Black-box smoke test against a running dev server (not part of npm test)."""
+"""Black-box smoke test against a running dev server.
+
+Run with `npm run test:smoke` while `npm start` is up. It asserts against the
+seeded demo data and consumes it (submitting, scoring, finalizing), so start
+from a fresh database -- `npm run seed:fresh`, then restart the server so it
+does not write its in-memory copy back over the new file.
+"""
 import json, os, urllib.request, urllib.error, sys
 
-BASE = os.environ.get('BASE', 'http://127.0.0.1:8741/api')
+BASE = os.environ.get('BASE', 'http://127.0.0.1:3000/api')
 def call(method, path, token=None, body=None):
     req = urllib.request.Request(BASE + path, method=method)
     req.add_header('content-type', 'application/json')

@@ -14,7 +14,7 @@ import {
   MODULE_GROUPS, MODULES, QUESTIONS, QUESTION_BANK_VERSION,
 } from '../../content/rsa-question-bank.mjs';
 import { OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary } from '../../content/rsa-optional-bank.mjs';
-import { generateTest, testPlan, TEST_BLUEPRINT } from '../../core/test-generation.mjs';
+import { generateTest, testPlan, TEST_BLUEPRINT, isActive } from '../../core/test-generation.mjs';
 import {
   validateQuestion as validateBankQuestion, validateBatch, promptKey,
 } from '../../core/question-intake.mjs';
@@ -44,6 +44,44 @@ const IMPORT_COLUMNS = [
   { key: 'Minutes', required: false, note: 'Expected answer time' },
   { key: 'Tags', required: false, note: 'Comma-separated' },
 ];
+
+/**
+ * Merge a PATCH body over the stored question before re-validating.
+ *
+ * A plain spread is wrong here: the stored record carries fields *derived* from
+ * values the patch is changing, and those stale leftovers then beat the new
+ * input. Moving a question to another module kept the old `family_id`, which
+ * out-ranks `family` in the validator ("family X does not exist in module Y");
+ * switching an objective question to open kept its `options`, which an open
+ * question is forbidden to have. Both made the edit impossible rather than
+ * merely wrong. So: drop the derived field whenever its source is being
+ * changed, and drop the fields belonging to the other answer type on a type
+ * switch.
+ */
+function mergeForPatch(current, body = {}) {
+  const merged = { ...current, ...body };
+  const changing = (k) => body[k] !== undefined;
+
+  // `family_id` is derived from module + family; re-derive it when either moves.
+  if ((changing('module') || changing('family')) && !changing('family_id')) {
+    delete merged.family_id;
+  }
+  // Switching answer type retires the other type's payload.
+  const nextType = changing('type') ? String(body.type).toLowerCase() : current.type;
+  if (nextType !== current.type) {
+    if (nextType === 'open') {
+      delete merged.options;
+      delete merged.correct_option_ids;
+      delete merged.correct;
+      delete merged.rationale;
+      delete merged.needs_option_review;
+    } else {
+      delete merged.rubric;
+      delete merged.probes;
+    }
+  }
+  return merged;
+}
 
 /** A downloadable CSV template with the header row and one example of each type. */
 function importTemplateCsv() {
@@ -622,9 +660,12 @@ export function adminHandlers(route) {
           : [];
         return { ...m, optional: optionalByModule.get(m.key) || 0, families: [...own, ...legacy] };
       }),
-      bank_total: questions.length,
-      published_total: QUESTIONS.length,
-      authored_total: questions.filter((q) => q.authored).length,
+      // Totals describe what generation can actually draw; deactivated
+      // questions are reported separately instead of padding the headline.
+      bank_total: questions.filter(isActive).length,
+      published_total: QUESTIONS.filter(isActive).length,
+      authored_total: questions.filter((q) => q.authored && isActive(q)).length,
+      inactive_total: questions.filter((q) => !isActive(q)).length,
       family_total: composeFamilies(questions).length,
       optional: optionalSummary(),
     });
@@ -646,6 +687,7 @@ export function adminHandlers(route) {
         difficulty: q.difficulty, band: q.band, minutes: q.minutes,
         optional: q.optional === true,
         authored: q.authored === true,
+        active: isActive(q),
         tags: q.tags || [],
         needs_option_review: q.needs_option_review === true,
       })),
@@ -705,7 +747,7 @@ export function adminHandlers(route) {
       return notFound('Only admin-authored questions can be edited; this id is not one of them.');
     }
     const { questions, families } = await bankContext(store);
-    const merged = { ...hydrate(existing), ...body };
+    const merged = mergeForPatch(hydrate(existing), body);
     const result = validateBankQuestion(merged, { modules: MODULES, families });
     if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
 

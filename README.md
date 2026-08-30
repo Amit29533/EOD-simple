@@ -23,13 +23,26 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 120 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 207 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & spoken-question contract, full exam lifecycle
                     #           (phases/timers/audio/scoring/report), admin validation,
-                    #           Airtable adapter contract, sign-in view, app shell, the
-                    #           allocation dialog and the published-catalogue sync
+                    #           question-bank authoring (add/edit/import), Airtable adapter
+                    #           contract, sign-in view, app shell, the allocation dialog and
+                    #           the published-catalogue sync
                     #           (jsdom is optional; installed for the UI suites)
 ```
+
+Two black-box suites run against a **live server** and are not part of `npm test`:
+
+```bash
+npm run seed:fresh && npm start   # in one shell (restart the server after reseeding)
+npm run test:smoke                # candidate -> assessor -> report lifecycle + compartmentalization
+npm run test:features             # 196 checks across every admin/candidate/assessor feature
+```
+
+Both consume seeded records as they go (submitting, scoring, deleting a demo candidate), so
+they are **not idempotent** — reseed and restart between runs or a second pass reports false
+failures. Override the target with `BASE=http://host:port/api`.
 
 `npm run seed` is idempotent for an existing store: it adds newly published RSA seed
 questions and repairs the spoken-question contract flags (`question_set`, `pin_first`,
@@ -166,6 +179,16 @@ of a generated test. Each retired competency becomes a `Legacy - …` family ins
 closest module, so it stays visible in the same tree without diluting the curated
 families. Optional questions are **never** served while a family can fill its
 module's quota — they are drawn only to cover a shortfall.
+
+> **Not yet wired to allocation.** The 50-question generator currently backs the admin
+> *Preview a test* screen only. Allocating a real assessment
+> (`POST /admin/assessments`) still builds its snapshot from the legacy
+> competency-weighted bank via `core/question-selection.mjs`, so a candidate today sits
+> the **110-question** legacy paper, not the 50-question module paper. Switching the
+> candidate journey over means pointing `buildSnapshot` at `generateTest` and teaching
+> `core/scoring.mjs` to weight by module instead of `competency_id` — the report card
+> still apportions marks per competency, which the fixed per-module structure does not
+> supply. Tracked as the next step rather than silently half-done.
 
 The bank is regenerated from the source PDF with:
 

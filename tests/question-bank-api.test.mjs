@@ -218,3 +218,139 @@ test('the paper-wide blueprint matches the published per-module quotas', async (
   assert.equal(blueprint.technical_open / technical_modules, 1);
   assert.equal(blueprint.non_technical_open / non_technical_modules, 1);
 });
+
+/* ------------------- editing an authored question -------------------- */
+// Regression cover for a PATCH merge that used to spread the stored record
+// over the body: fields *derived* from what the patch was changing survived
+// and then beat the new input, making legitimate edits impossible.
+
+const addQuestion = (body) => call('POST', '/admin/question-bank/questions', { token: adminToken, body });
+
+test('an authored question can be moved to another module', async () => {
+  const created = await addQuestion({
+    module: 'T01', family: 'Advanced Technical Judgment', type: 'open',
+    prompt: 'A question that will be moved to a different module entirely?',
+    rubric: 'Some expected evidence.',
+  });
+  assert.equal(created.status, 201);
+  const id = created.body.question.id;
+  assert.equal(created.body.question.family_id, 'T01:advanced-technical-judgment');
+
+  // The stale family_id must not veto the new module.
+  const moved = await call('PATCH', `/admin/question-bank/questions/${id}`, {
+    token: adminToken, body: { module: 'C02', family: 'Advanced Consulting Judgment' },
+  });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.question.module, 'C02');
+  assert.equal(moved.body.question.family_id, 'C02:advanced-consulting-judgment');
+
+  await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
+});
+
+test('an authored question can be switched between objective and open', async () => {
+  const created = await addQuestion({
+    module: 'T02', family: 'Advanced Technical Judgment', type: 'objective',
+    prompt: 'Which ingestion mode suits a bursty append-only source of events?',
+    options: [{ id: 'a', label: 'Batch nightly' }, { id: 'b', label: 'Auto Loader' }],
+    correct_option_ids: ['b'],
+  });
+  assert.equal(created.status, 201);
+  const id = created.body.question.id;
+
+  // objective -> open: the leftover options must not block it.
+  const toOpen = await call('PATCH', `/admin/question-bank/questions/${id}`, {
+    token: adminToken, body: { type: 'open', rubric: 'Explains the latency/cost tradeoff.' },
+  });
+  assert.equal(toOpen.status, 200, JSON.stringify(toOpen.body));
+  assert.equal(toOpen.body.question.type, 'open');
+  assert.ok(!('options' in toOpen.body.question), 'the retired options are dropped');
+  assert.match(toOpen.body.question.rubric, /tradeoff/);
+
+  // ...and back again: the leftover rubric must not block it either.
+  const toObjective = await call('PATCH', `/admin/question-bank/questions/${id}`, {
+    token: adminToken,
+    body: {
+      type: 'objective',
+      options: [{ id: 'a', label: 'Batch nightly' }, { id: 'b', label: 'Auto Loader' }],
+      correct_option_ids: ['b'],
+    },
+  });
+  assert.equal(toObjective.status, 200, JSON.stringify(toObjective.body));
+  assert.equal(toObjective.body.question.type, 'objective');
+  assert.equal(toObjective.body.question.options.length, 2);
+  assert.ok(!('rubric' in toObjective.body.question), 'the retired rubric is dropped');
+
+  await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
+});
+
+test('editing only the prompt leaves the module and family alone', async () => {
+  const created = await addQuestion({
+    module: 'P02', family: 'Advanced Communication Judgment', type: 'open',
+    prompt: 'An original prompt that is about to be reworded by an admin?',
+    rubric: 'Evidence.',
+  });
+  const id = created.body.question.id;
+  const patched = await call('PATCH', `/admin/question-bank/questions/${id}`, {
+    token: adminToken, body: { prompt: 'A reworded prompt that still belongs where it was?' },
+  });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.question.module, 'P02');
+  assert.equal(patched.body.question.family_id, 'P02:advanced-communication-judgment');
+  await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
+});
+
+/* -------------- deactivated questions are not advertised -------------- */
+// The bank tree used to count every stored question while generation skipped
+// inactive ones, so the UI promised a quota the plan knew could not be filled.
+
+test('a deactivated question is excluded from the counts it can no longer fill', async () => {
+  const before = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const beforeT03 = before.body.modules.find((m) => m.key === 'T03');
+  const beforeTotal = before.body.bank_total;
+
+  const created = await addQuestion({
+    module: 'T03', family: 'Advanced Technical Judgment', type: 'open',
+    prompt: 'A question that is about to be switched off by an administrator?',
+    rubric: 'Evidence.',
+  });
+  const id = created.body.question.id;
+
+  const active = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  assert.equal(active.body.modules.find((m) => m.key === 'T03').open, beforeT03.open + 1);
+  assert.equal(active.body.bank_total, beforeTotal + 1);
+
+  await call('PATCH', `/admin/question-bank/questions/${id}`, { token: adminToken, body: { active: false } });
+
+  const after = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const afterT03 = after.body.modules.find((m) => m.key === 'T03');
+  assert.equal(afterT03.open, beforeT03.open, 'an inactive question stops counting toward the quota');
+  assert.equal(afterT03.inactive, 1, 'it is reported as inactive instead');
+  assert.equal(after.body.bank_total, beforeTotal, 'the headline total excludes it');
+  assert.equal(after.body.inactive_total, 1);
+
+  await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
+});
+
+test('the module tree never advertises more than the plan can serve', async () => {
+  const created = await addQuestion({
+    module: 'T04', family: 'Advanced Technical Judgment', type: 'objective',
+    prompt: 'An objective question destined to be deactivated for this check?',
+    options: [{ id: 'a', label: 'First choice' }, { id: 'b', label: 'Second choice' }],
+    correct_option_ids: ['a'],
+  });
+  const id = created.body.question.id;
+  await call('PATCH', `/admin/question-bank/questions/${id}`, { token: adminToken, body: { active: false } });
+
+  const [tree, plan] = await Promise.all([
+    call('GET', '/admin/question-bank/modules', { token: adminToken }),
+    call('GET', '/admin/question-bank/plan', { token: adminToken }),
+  ]);
+  const planFor = new Map(plan.body.modules.map((m) => [m.module, m]));
+  for (const mod of tree.body.modules) {
+    const row = planFor.get(mod.key);
+    assert.equal(mod.objective, row.available_objective, `${mod.key} objective count agrees with the plan`);
+    assert.equal(mod.open, row.available_open, `${mod.key} open count agrees with the plan`);
+  }
+
+  await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
+});

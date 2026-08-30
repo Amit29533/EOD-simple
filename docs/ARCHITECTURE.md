@@ -143,6 +143,19 @@ Admin endpoints, all admin-only and all reading through `effectiveBank`:
 | `POST /admin/question-bank/import` | bulk import; `dry_run` validates and reports without writing |
 | `GET /admin/question-bank/import-template` | the starter CSV with the recognised columns |
 
+A `PATCH` re-validates the whole question, so the merge has to drop fields the
+patch invalidates: `family_id` is re-derived when the module or family moves, and
+a type switch retires the other type's payload. Spreading the stored record over
+the body instead lets a stale derived value beat the new input — which made
+"move this question to another module" and "turn this into an open question"
+impossible rather than merely wrong.
+
+**Counts describe what can actually be served.** `isActive` lives in
+`test-generation.mjs` and is used by the bank counts as well as by selection, so
+the module tree can never advertise a question the generator will skip;
+deactivated rows are reported as a separate `inactive` count instead. The
+`/modules` tree and `/plan` readiness are asserted to agree module-by-module.
+
 The **Modules & Families** admin screen renders all of them. Uploads arrive as base64
 inside JSON because the dev server parses JSON only and caps a request at 2 MB; imports
 are additionally bounded at 2000 rows to keep request time and memory predictable. The

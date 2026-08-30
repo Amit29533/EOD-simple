@@ -16,6 +16,7 @@
 
 import { MODULES, QUESTIONS, FAMILIES } from '../content/rsa-question-bank.mjs';
 import { slug } from '../core/question-intake.mjs';
+import { isActive } from '../core/test-generation.mjs';
 
 /** A stored row -> the shape the generator and the UI expect. */
 export function hydrate(row) {
@@ -92,16 +93,23 @@ export function composeModules(questions) {
   const byFamily = new Map();
   for (const q of questions) {
     const row = byFamily.get(q.family_id)
-      || { objective: 0, open: 0, authored: 0 };
-    if (q.type === 'objective') row.objective += 1; else row.open += 1;
-    if (q.authored) row.authored += 1;
+      || { objective: 0, open: 0, authored: 0, inactive: 0 };
+    // Count only what generation can actually draw. A deactivated question is
+    // reported separately rather than inflating the family's usable total —
+    // otherwise the tree claims a quota the plan knows cannot be filled.
+    if (isActive(q)) {
+      if (q.type === 'objective') row.objective += 1; else row.open += 1;
+      if (q.authored) row.authored += 1;
+    } else {
+      row.inactive += 1;
+    }
     byFamily.set(q.family_id, row);
   }
 
   return MODULES.map((m) => {
     const published = m.families.map((f) => ({
       ...f,
-      ...(byFamily.get(f.id) || { objective: 0, open: 0, authored: 0 }),
+      ...(byFamily.get(f.id) || { objective: 0, open: 0, authored: 0, inactive: 0 }),
     }));
     const known = new Set(m.families.map((f) => f.id));
     const extra = [...byFamily.keys()]
@@ -127,6 +135,7 @@ export function composeModules(questions) {
       objective: families.reduce((n, f) => n + f.objective, 0),
       open: families.reduce((n, f) => n + f.open, 0),
       authored: families.reduce((n, f) => n + (f.authored || 0), 0),
+      inactive: families.reduce((n, f) => n + (f.inactive || 0), 0),
     };
   });
 }
@@ -147,7 +156,7 @@ export function resolveFamily(familyId, questions) {
   const found = composeFamilies(questions).find((f) => f.id === id);
   if (found) return found;
   const published = FAMILIES.find((f) => f.id === id);
-  if (published) return { ...published, objective: 0, open: 0, authored: 0 };
+  if (published) return { ...published, objective: 0, open: 0, authored: 0, inactive: 0 };
   return null;
 }
 
