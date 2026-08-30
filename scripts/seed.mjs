@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import { createStore } from '../src/storage/index.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
+import { requiresSpokenAnswer } from '../src/core/spoken-answer.mjs';
 import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
 import { synchronizeBank } from '../src/api/catalogue-service.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
@@ -34,7 +35,9 @@ const questionRecord = (q, roleId, compIds) => ({
   points: q.points, difficulty: q.difficulty, rubric: q.rubric || '', order: q.order, active: true,
   question_set: q.question_set || '',
   pin_first: q.pin_first === true,
-  audio_required: q.audio_required === true,
+  // Mirrors the published-catalogue service: an open question is stored as a
+  // recorded-answer question (core/spoken-answer.mjs), not by opt-in.
+  audio_required: requiresSpokenAnswer(q),
 });
 
 // `seed` is also safe to run against an existing demo/MVP store. This matters

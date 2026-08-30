@@ -1,5 +1,6 @@
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
+import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 
 /**
  * Published-catalogue service.
@@ -23,6 +24,9 @@ import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
  *    `help_text`/`rubric` is filled from the catalogue. This heals banks whose
  *    rows predate the flags or lost them to an older admin edit — the cause of
  *    spoken questions appearing without the microphone control;
+ *  - an open question always carries the microphone requirement, because
+ *    `audio_required` is a rule of the question *type* (see
+ *    core/spoken-answer.mjs) and not a per-question preference;
  *  - deactivated rows stay deactivated (an admin who unpublished a question is
  *    never overridden) and no other admin customization is touched;
  *  - competencies the published questions rely on are created if missing;
@@ -37,7 +41,8 @@ const questionRecord = (q, roleId, compIds) => ({
   order: q.order, active: true,
   question_set: q.question_set || '',
   pin_first: q.pin_first === true,
-  audio_required: q.audio_required === true,
+  // Stored, not just served: an open question is a recorded-answer question.
+  audio_required: requiresSpokenAnswer(q),
 });
 
 /** The workspace track that matches the published catalogue, or null. */
@@ -62,22 +67,27 @@ export function catalogueMissing(bankQuestions = []) {
 const ORAL_CONTRACT = new Map(RSA_ORAL_QUESTIONS.map((q) => [promptKey(q.prompt), q]));
 
 /**
- * Serve-time guarantee for the spoken-question contract: any question whose
- * prompt is one of the published oral prompts demands a recorded audio
- * answer, is pinned when the catalogue pins it, belongs to the oral set, and
- * is shown in the published wording (a retired leading label such as
- * "COMMON QUESTION —" is dropped) — even when the stored/frozen row lost those
- * flags or still carries the old label (a legacy store seeded before the
- * flags existed, an older admin edit, or an assessment snapshot frozen while
- * the bank was in that state).
+ * Serve-time guarantee for the spoken-answer contract:
+ *
+ *  - any question whose prompt is one of the published oral prompts demands a
+ *    recorded audio answer, is pinned when the catalogue pins it, belongs to
+ *    the oral set, and is shown in the published wording (a retired leading
+ *    label such as "COMMON QUESTION —" is dropped) — even when the stored or
+ *    frozen row lost those flags or still carries the old label (a legacy store
+ *    seeded before the flags existed, an older admin edit, or an assessment
+ *    snapshot frozen while the bank was in that state);
+ *  - *every* open question demands the recorded answer, oral set or not, so a
+ *    bank that predates the microphone requirement still shows the control and
+ *    the candidate can never be served a silent open question (see
+ *    core/spoken-answer.mjs).
  *
  * Copy-on-write: input rows are never mutated; only additive — flags are
  * only ever restored, never removed, and the prompt is only rewritten when it
  * is exactly the published prompt plus a leading label (an unpublished/
  * admin-authored question, or an admin-reworded variant, is left as typed).
  */
-export function applyOralContract(questions = []) {
-  return questions.map((q) => {
+export function applySpokenContract(questions = []) {
+  const oralHealed = questions.map((q) => {
     if (!q) return q;
     const published = ORAL_CONTRACT.get(promptKey(q.prompt));
     if (!published) return q;
@@ -99,7 +109,12 @@ export function applyOralContract(questions = []) {
     if (healPrompt) out.prompt = publishedPrompt;
     return out;
   });
+  // Then the type rule: any open row still missing the flag gets it back.
+  return healSpokenContract(oralHealed);
 }
+
+/** Kept as an alias: the contract used to cover only the published oral set. */
+export const applyOralContract = applySpokenContract;
 
 /** Status payload for the admin UI: what a sync would (and would not) do. */
 export async function catalogueStatus(store) {
@@ -128,7 +143,8 @@ function repairPatch(row, published) {
   const patch = {};
   const wantSet = published.question_set || '';
   const wantPin = published.pin_first === true;
-  const wantAudio = published.audio_required === true;
+  // An open row must demand the recording even if the published copy predates it.
+  const wantAudio = published.audio_required === true || isOpenQuestion(row) || isOpenQuestion(published);
   if (row.question_set !== wantSet) patch.question_set = wantSet;
   if (row.pin_first !== wantPin) patch.pin_first = wantPin;
   if (row.audio_required !== wantAudio) patch.audio_required = wantAudio;

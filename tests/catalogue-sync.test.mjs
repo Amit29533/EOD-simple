@@ -8,6 +8,7 @@ import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { MAX_ASSESSMENT_QUESTIONS } from '../src/core/constants.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
+import { buildSnapshot } from '../src/api/assessment-service.mjs';
 
 /**
  * The published-catalogue sync: a workspace whose RSA bank predates the
@@ -277,4 +278,36 @@ test('sync recognizes a restyled copy of a published prompt instead of duplicati
   const why = after.filter((q) => q.question_set === 'rsa-oral' && /Why do we need Databricks/.test(q.prompt));
   assert.equal(why.length, 1, 'the straight-quotes retyping is repaired, not duplicated');
   assert.equal(why[0].audio_required, true, 'its microphone requirement is restored');
+});
+
+test('sync restores the microphone on standard open questions, not only the spoken set', async () => {
+  // The reported bug: a bank seeded before `audio_required` existed (this
+  // helper deliberately inserts rows without any contract flags) left every
+  // standard open question — the ones late in the paper — as a silent text box.
+  const { store, role } = await buildStore({ questions: RSA_QUESTIONS.slice(0, 21) });
+  const before = await store.list('questions', { role_id: role.id });
+  assert.equal(before.some((q) => q.audio_required === true), false, 'the legacy bank has no flags at all');
+
+  const app = await createApp(store);
+  const call = await adminClient(app);
+  const synced = await call('POST', '/admin/content/sync');
+  assert.equal(synced.status, 200, JSON.stringify(synced.body));
+
+  const after = await store.list('questions', { role_id: role.id });
+  const open = after.filter((q) => q.type === 'text');
+  assert.ok(open.length >= 20, 'the topped-up bank has the full set of open prompts');
+  assert.ok(open.every((q) => q.audio_required === true), 'every open question stores the microphone requirement');
+  assert.equal(
+    after.filter((q) => q.type !== 'text').every((q) => q.audio_required !== true),
+    true,
+    'choice and scale rows are untouched',
+  );
+
+  // A freshly allocated paper inherits the requirement from the bank itself, so
+  // even a client running an older bundle sees flagged rows in the snapshot.
+  const snap = await buildSnapshot(store, role.id, { questionLimit: 10 });
+  assert.ok(
+    snap.questions.filter((q) => q.type === 'text').every((q) => q.audio_required === true),
+    'every open question in the frozen snapshot demands a recording',
+  );
 });

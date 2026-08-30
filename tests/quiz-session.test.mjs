@@ -4,6 +4,7 @@ import {
   sortedQuestions, budgetsFor, remainingMs, ensureQuizState, integrityPatch, isOpenQuestion,
 } from '../src/api/quiz-session.mjs';
 import { questionForCandidate } from '../src/api/projections.mjs';
+import { requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent } from '../src/core/spoken-answer.mjs';
 import { EXAM_MCQ_SECONDS, EXAM_OPEN_REVIEW_SECONDS, EXAM_OPEN_ANSWER_SECONDS } from '../src/core/constants.mjs';
 
 test('MCQ budget is 30s; open questions get 60s review + 2 minutes answer', () => {
@@ -98,9 +99,11 @@ test('sortedQuestions merges a flagged twin onto an unflagged survivor (frozen l
   assert.equal(qs.filter((q) => String(q.prompt).includes('Why do we need')).length, 1, 'served once');
 });
 
-test('candidate projection never hides the microphone on spoken-set questions', () => {
-  // A frozen or legacy row can lose its audio_required flag; membership in the
-  // spoken set is the contract, so the projection enforces it.
+test('candidate projection shows the microphone on EVERY open question', () => {
+  // The microphone is a rule of the open-question type, not a per-question
+  // opt-in (core/spoken-answer.mjs), so the projection cannot be talked out of
+  // it by a stripped flag, an unhealed legacy row or a standard (non-spoken)
+  // prompt. This is what fixes "no record button on questions 7-10".
   assert.equal(
     questionForCandidate({ id: 'a', type: 'text', prompt: 'p', question_set: 'rsa-oral', audio_required: false }).audio_required,
     true,
@@ -113,11 +116,32 @@ test('candidate projection never hides the microphone on spoken-set questions', 
     questionForCandidate({ id: 'c', type: 'text', prompt: 'p', audio_required: true }).audio_required,
     true,
   );
-  // Standard open questions stay typed-answer questions.
   assert.equal(
     questionForCandidate({ id: 'd', type: 'text', prompt: 'p' }).audio_required,
-    false,
+    true,
+    'a standard open question demands the recorded answer too',
   );
+  // Non-open questions are untouched unless they explicitly opt in.
+  assert.equal(questionForCandidate({ id: 'e', type: 'mcq_single', prompt: 'p' }).audio_required, false);
+  assert.equal(questionForCandidate({ id: 'f', type: 'scale', prompt: 'p' }).audio_required, false);
+  assert.equal(questionForCandidate({ id: 'g', type: 'mcq_multi', prompt: 'p', audio_required: true }).audio_required, true);
+});
+
+test('the open-question contract is decided by type, and spoken evidence by payload', () => {
+  assert.equal(requiresSpokenAnswer({ type: 'text' }), true, 'open = recorded answer');
+  assert.equal(requiresSpokenAnswer({ type: 'mcq_single' }), false, 'choice questions stay as they are');
+  assert.equal(requiresSpokenAnswer({ type: 'mcq_single', audio_required: true }), true, 'an explicit opt-in still works');
+  assert.equal(requiresSpokenAnswer(null), false);
+
+  assert.equal(hasSpokenEvidence({ audio_b64: 'QUJDRA==' }), true, 'a recording alone counts');
+  assert.equal(hasSpokenEvidence({ transcript: 'spoken answer' }), true, 'a transcript alone counts');
+  assert.equal(hasSpokenEvidence({ text: 'typed notes', transcript: '  ', audio_b64: '   ' }), false, 'whitespace is nothing');
+  assert.equal(hasSpokenEvidence('a plain string answer'), false, 'typed-only strings carry no audio');
+
+  // An audio-only answer is NOT blank: it must never be discarded as empty.
+  assert.equal(openAnswerHasContent({ text: '', transcript: '', audio_b64: 'QUJDRA==' }), true);
+  assert.equal(openAnswerHasContent({ text: 'notes only' }), true);
+  assert.equal(openAnswerHasContent({ text: '', transcript: '', audio_b64: '' }), false);
 });
 
 test('a frozen paper whose oral rows lost every flag still pins first and demands audio', () => {
@@ -143,6 +167,8 @@ test('a frozen paper whose oral rows lost every flag still pins first and demand
   assert.equal(second.question_set, 'rsa-oral');
   assert.equal(second.audio_required, true, 'every spoken prompt gets the mic back');
   const std = qs.find((q) => q.id === 'std');
-  assert.equal(std.question_set, undefined, 'a standard question is left untouched');
-  assert.equal(std.audio_required, undefined);
+  assert.equal(std.question_set, undefined, 'a standard question keeps its own set');
+  // ...but it still demands the microphone: the open-question contract is a rule
+  // of the type, applied to every served row.
+  assert.equal(std.audio_required, true);
 });

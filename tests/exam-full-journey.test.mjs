@@ -540,3 +540,137 @@ test('E2 · one open assessment per candidate per role; allocation guards hold',
   assert.equal(overBank.status, 400, 'a cap beyond the bank is rejected');
   assert.match(overBank.body.error, /only has 6 active question/);
 });
+
+/* ============================== F. open-question microphone contract ============================== */
+
+test('F1 · EVERY open question is projected with the microphone, standard prompts included', async () => {
+  // The reported bug: only the published spoken set carried `audio_required`,
+  // so open questions 7-10 of a 10-question paper rendered a bare textarea with
+  // no record control. The requirement is a property of the question type now.
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const tok = w.tokens.cand ||= await w.login('candidate.one', 'c1-pass-x');
+
+  const seen = [];
+  for (let i = 0; i < 6; i += 1) {
+    const d = await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok });
+    if (d.body.exam.complete) break;
+    seen.push(d.body.current_question);
+    await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: null } });
+  }
+  assert.equal(seen.length, 6, 'the whole paper is walked');
+  const open = seen.filter((q) => q.type === 'text');
+  assert.equal(open.length, 3, 'two spoken prompts plus the standard open question');
+  assert.ok(open.every((q) => q.audio_required === true), 'every open question demands a recording');
+  assert.equal(open.find((q) => q.id === w.ids.open).audio_required, true, 'the unflagged standard prompt gets the mic');
+  assert.deepEqual(
+    seen.filter((q) => q.type !== 'text').map((q) => q.audio_required),
+    [false, false, false],
+    'choice and scale questions keep their typed/click answer',
+  );
+});
+
+test('F2 · an audio-only open answer is stored and locked, never treated as blank', async () => {
+  // Blankness used to be judged on text/transcript alone, so a candidate who
+  // answered out loud without typing a word had their recording silently
+  // dropped by /next (and by autosave).
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const tok = w.tokens.cand ||= await w.login('candidate.one', 'c1-pass-x');
+
+  await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
+  const locked = await w.call('POST', `/candidate/assessments/${alloc.id}/next`, {
+    token: tok,
+    body: { answer: { text: '', transcript: '', audio_b64: B64, audio_mime: 'audio/webm', source: 'audio' } },
+  });
+  assert.equal(locked.status, 200, JSON.stringify(locked.body));
+
+  const rows = await w.store.list('responses', { assessment_id: alloc.id });
+  const r = rows.find((x) => x.question_id === w.ids.pin);
+  assert.ok(r, 'the recording was persisted');
+  assert.equal(r.locked, true, 'and locked like any other exam answer');
+  assert.equal(r.answer.audio_b64, B64);
+  assert.equal(r.answer.audio_missing, undefined, 'a spoken answer satisfies the contract');
+
+  // the draft/autosave path keeps audio-only answers too
+  assert.equal((await w.call('PUT', `/candidate/assessments/${alloc.id}/answers`, {
+    token: tok, body: { answers: { [w.ids.open]: { text: '', transcript: '', audio_b64: B64 } } },
+  })).status, 200);
+  const drafted = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.open);
+  assert.ok(drafted, 'an audio-only draft is not discarded as blank');
+  assert.equal(drafted.answer.audio_b64, B64, 'and it is not stripped down to an empty answer');
+
+  // the recording must also survive the final submit, which re-walks every answer
+  for (let i = 0; i < 5; i += 1) await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: null } });
+  const submit = await w.call('POST', `/candidate/assessments/${alloc.id}/submit`, { token: tok, body: { answers: {} } });
+  assert.equal(submit.status, 200, JSON.stringify(submit.body));
+  const final = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.pin);
+  assert.equal(final.answer.audio_b64, B64, 'submit keeps the recording instead of rewriting it as timed_out');
+  assert.equal(final.answer.source, 'audio');
+});
+
+test('F3 · a typed-only open answer is kept but flagged, and lands in the integrity trail', async () => {
+  // Deliberate policy: the exam UI hard-gates the record button, but the API
+  // never destroys a candidate's work inside a timed exam. A submission that
+  // skipped the mandatory microphone is stored, flagged and audited so the
+  // assessor sees the gap instead of guessing from a silent textarea answer.
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const tok = w.tokens.cand ||= await w.login('candidate.one', 'c1-pass-x');
+
+  await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
+  await w.call('POST', `/candidate/assessments/${alloc.id}/next`, {
+    token: tok, body: { answer: { text: 'Typed notes only, no recording.', transcript: '', source: 'typed' } },
+  });
+
+  const rows = await w.store.list('responses', { assessment_id: alloc.id });
+  const r = rows.find((x) => x.question_id === w.ids.pin);
+  assert.equal(r.answer.text, 'Typed notes only, no recording.', 'nothing was thrown away');
+  assert.equal(r.answer.audio_missing, true, 'but the missing recording is recorded');
+
+  const exam = (await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.exam;
+  assert.equal(exam.integrity.spoken_answer_missing, 1, 'the proctoring counter sees it');
+  const a = await w.store.get('assessments', alloc.id);
+  const event = a.quiz_state.events.find((e) => e.event === 'spoken_answer_missing');
+  assert.ok(event, 'the exam trail carries the event');
+  assert.equal(event.question_id, w.ids.pin);
+
+  const auditRows = await w.store.list('audit_log');
+  assert.ok(auditRows.some((e) => e.action === 'exam_spoken_answer_missing'), 'and so does the audit log');
+
+  // an answer with a transcript but no stored clip satisfies the contract:
+  // browsers disagree about which of the two they can produce.
+  await w.call('POST', `/candidate/assessments/${alloc.id}/next`, {
+    token: tok, body: { answer: { text: '', transcript: 'spoken, but the clip was dropped', source: 'audio' } },
+  });
+  const second = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.oral2);
+  assert.equal(second.answer.audio_missing, undefined, 'a transcript alone counts as spoken');
+});
+
+test('F4 · a legacy bank of silent open questions allocates a paper that requires the microphone', async () => {
+  // The workspace the bug was reported from: rows seeded before the flag
+  // existed, so the stored bank says `audio_required: false`. Allocation heals
+  // the contract into the snapshot instead of freezing the gap in place.
+  const w = await makeWorld();
+  const admin = w.tokens.admin ||= await w.login('admin', 'admin-pass-x');
+  await w.store.update('questions', w.ids.open, { audio_required: false, question_set: '' });
+
+  const res = await w.call('POST', '/admin/assessments', {
+    token: admin,
+    body: { candidate_id: w.cand1.id, role_id: w.role.id, assessor_id: w.assessor1.id },
+  });
+  assert.equal(res.status, 201);
+  const snap = res.body.snapshot_json || (await w.store.get('assessments', res.body.id)).snapshot_json;
+  assert.equal(snap.questions.find((q) => q.id === w.ids.open).audio_required, true, 'snapshot carries the contract');
+
+  const tok = w.tokens.cand ||= await w.login('candidate.one', 'c1-pass-x');
+  const walk = [];
+  for (let i = 0; i < 6; i += 1) {
+    const d = await w.call('GET', `/candidate/assessments/${res.body.id}`, { token: tok });
+    if (d.body.exam.complete) break;
+    walk.push(d.body.current_question);
+    await w.call('POST', `/candidate/assessments/${res.body.id}/next`, { token: tok, body: { answer: null } });
+  }
+  const openFromLegacyBank = walk.find((q) => q.id === w.ids.open);
+  assert.equal(openFromLegacyBank.audio_required, true, 'and the candidate is served the record control');
+});

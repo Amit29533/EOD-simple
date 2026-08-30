@@ -6,6 +6,7 @@ import {
   PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE,
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
+import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 import { buildSnapshot, roleBank } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
@@ -1000,6 +1001,13 @@ function normalizeQuestion(body, existing = {}) {
     // form does not send these, so they persist from the existing record.
     question_set: str(body.question_set ?? existing.question_set ?? '', 80),
     pin_first: body.pin_first !== undefined ? bool(body.pin_first) : existing.pin_first === true,
-    audio_required: body.audio_required !== undefined ? bool(body.audio_required) : existing.audio_required === true,
+    // The microphone is a rule of the open-question type, not a preference:
+    // `requiresSpokenAnswer` makes an open row always demand a recording, so an
+    // edit can never store a silent open question (and a non-open row keeps
+    // whatever explicit opt-in the caller sent).
+    audio_required: requiresSpokenAnswer({
+      type: body.type || existing.type,
+      audio_required: body.audio_required !== undefined ? bool(body.audio_required) : existing.audio_required === true,
+    }),
   };
 }

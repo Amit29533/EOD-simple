@@ -23,10 +23,11 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 207 tests: scoring engine, question apportionment, API/RBAC journey,
-                    #           exam session & spoken-question contract, full exam lifecycle
-                    #           (phases/timers/audio/scoring/report), admin validation,
-                    #           question-bank authoring (add/edit/import), Airtable adapter
+npm test            # 222 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #           exam session & open-question microphone contract, full exam
+                    #           lifecycle (phases/timers/audio/scoring/report), the exam
+                    #           answer screen (jsdom), admin validation, question-bank
+                    #           authoring (add/edit/import), Airtable adapter
                     #           contract, sign-in view, app shell, the allocation dialog and
                     #           the published-catalogue sync
                     #           (jsdom is optional; installed for the UI suites)
@@ -45,9 +46,10 @@ they are **not idempotent** — reseed and restart between runs or a second pass
 failures. Override the target with `BASE=http://host:port/api`.
 
 `npm run seed` is idempotent for an existing store: it adds newly published RSA seed
-questions and repairs the spoken-question contract flags (`question_set`, `pin_first`,
-`audio_required`) on existing copies — without recreating users, overwriting admin
-customizations or changing existing assessment snapshots. Use
+questions, repairs the spoken-question contract flags (`question_set`, `pin_first`,
+`audio_required`) on existing copies, and restores the microphone requirement on every
+open question — without recreating users, overwriting admin customizations or changing
+existing assessment snapshots. Use
 `npm run seed:fresh` only when you intentionally want to reset the local JSON store.
 
 Full end-to-end suites (need a running, seeded server):
@@ -94,8 +96,19 @@ python3 tests/features.py     # 196 checks: every feature — CRUD, validation, 
   legacy rows instead of duplicating them. The pinned common question carries no label —
   the retired "COMMON QUESTION —" prefix is dropped from the catalogue and removed from
   legacy rows by the sync, while already-frozen papers are de-labeled at serve time.
+- **Open questions are spoken** — `src/core/spoken-answer.mjs` holds the one rule: *every*
+  open / scenario question (not only the published spoken set) is answered with a **recorded
+  microphone answer**, and the text box beside the recorder is **optional** supporting notes.
+  The exam renders the record control for all of them and keeps "Lock & continue" disabled
+  until the candidate has actually spoken — a stored clip *or* a live transcript, since
+  browsers support one or the other — while the 60-second review window offers a microphone
+  pre-check so the permission dialog never eats answer time. A browser that cannot capture
+  audio at all is never hard-locked: it may type, and the answer is flagged. The API keeps
+  the truth of it: an audio-only answer is a real answer (never discarded as blank), and a
+  typed-only lock is stored but marked `audio_missing` and logged as `spoken_answer_missing`
+  in the proctoring trail, the audit log and the assessor's paper.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
-- **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario), autosaving quiz, strict submission validation, optional per-assessment question count.
+- **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario answered by microphone recording), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
