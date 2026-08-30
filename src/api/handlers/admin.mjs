@@ -11,10 +11,89 @@ import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
 import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
 import {
-  MODULE_GROUPS, MODULES, QUESTIONS, FAMILIES, findFamily, QUESTION_BANK_VERSION,
+  MODULE_GROUPS, MODULES, QUESTIONS, QUESTION_BANK_VERSION,
 } from '../../content/rsa-question-bank.mjs';
 import { OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary } from '../../content/rsa-optional-bank.mjs';
 import { generateTest, testPlan, TEST_BLUEPRINT } from '../../core/test-generation.mjs';
+import {
+  validateQuestion as validateBankQuestion, validateBatch, promptKey,
+} from '../../core/question-intake.mjs';
+import { parseSheet } from '../../core/sheet-parser.mjs';
+import {
+  effectiveBank, composeModules, composeFamilies, resolveFamily,
+  nextAuthoredId, toStoredRecord, hydrate,
+} from '../bank-service.mjs';
+
+/** Upper bound on one spreadsheet import, to bound request time and memory. */
+const MAX_IMPORT_ROWS = 2000;
+
+/** The columns the import understands, in the order the template lists them. */
+const IMPORT_COLUMNS = [
+  { key: 'Module', required: true, note: 'T01-T10, C01-C04, P01-P04, F01-F02' },
+  { key: 'Family', required: false, note: 'Family name inside that module; a new name creates a new family' },
+  { key: 'Type', required: true, note: 'objective or open' },
+  { key: 'Prompt', required: true, note: 'The question itself' },
+  { key: 'Option A', required: false, note: 'Objective questions only' },
+  { key: 'Option B', required: false, note: 'Objective questions only' },
+  { key: 'Option C', required: false, note: '' },
+  { key: 'Option D', required: false, note: '' },
+  { key: 'Correct', required: false, note: 'Objective only, e.g. B' },
+  { key: 'Rubric', required: false, note: 'Open only: what good evidence looks like' },
+  { key: 'Difficulty', required: false, note: '1-5 (default 4)' },
+  { key: 'Band', required: false, note: 'Foundation / Intermediate / Advanced' },
+  { key: 'Minutes', required: false, note: 'Expected answer time' },
+  { key: 'Tags', required: false, note: 'Comma-separated' },
+];
+
+/** A downloadable CSV template with the header row and one example of each type. */
+function importTemplateCsv() {
+  const esc = (v) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const header = IMPORT_COLUMNS.map((c) => c.key);
+  const example = [
+    ['T01', 'Advanced Technical Judgment', 'objective',
+      'Which Unity Catalog object is the boundary for cross-workspace data sharing?',
+      'The cluster', 'The metastore', 'The notebook', 'The job',
+      'B', '', '4', 'Advanced', '2', 'governance,unity-catalog'],
+    ['C01', 'Customer Solutioning', 'open',
+      'A client cannot articulate their success criteria. How do you run the discovery?',
+      '', '', '', '', '',
+      'Structures discovery, maps stakeholders, converts vague goals into measurable criteria.',
+      '4', 'Intermediate', '5', 'discovery'],
+  ];
+  return [header, ...example].map((r) => r.map((c) => esc(String(c))).join(',')).join('\n');
+}
+
+/**
+ * Read an uploaded spreadsheet out of a JSON request body.
+ *
+ * The API is JSON-only (no multipart), so the browser sends either
+ * `file_base64` for a binary .xlsx or `csv` for text. Both land here and come
+ * out as { headers, rows }.
+ */
+function readImportPayload(body = {}) {
+  const name = String(body.filename || '').toLowerCase();
+  if (body.file_base64) {
+    const raw = String(body.file_base64).replace(/^data:[^;]+;base64,/, '');
+    if (!/^[A-Za-z0-9+/\r\n]*={0,2}$/.test(raw)) throw new Error('The uploaded file is not valid base64.');
+    const buf = Buffer.from(raw, 'base64');
+    if (!buf.length) throw new Error('The uploaded file is empty.');
+    if (buf.length > 8_000_000) throw new Error('The file is larger than 8 MB.');
+    // A .xlsx always starts with the ZIP magic "PK"; anything else is text.
+    const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
+    if (isZip || name.endsWith('.xlsx')) {
+      try {
+        return parseSheet(buf, { format: 'xlsx' });
+      } catch (err) {
+        throw new Error(`That .xlsx could not be read: ${err.message}`);
+      }
+    }
+    return parseSheet(buf.toString('utf8'), { format: 'csv' });
+  }
+  if (typeof body.csv === 'string' && body.csv.trim()) {
+    return parseSheet(body.csv, { format: 'csv' });
+  }
+  throw new Error('Attach a .xlsx or .csv file to import.');
+}
 
 const A = ['admin'];
 
@@ -496,33 +575,29 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ question bank v1.2
-  // The finalized, module-structured bank: families, modules and the fixed
-  // 51-question paper shape. Read-only published content, so it is served
-  // straight from src/content rather than from the store.
-  route('GET', '/admin/question-bank/modules', A, async ({ query }) => {
+  // The module-structured bank: modules, families and the fixed 50-question
+  // paper shape.
+  //
+  // The published catalogue in src/content is generated and read-only, so
+  // every read below goes through effectiveBank(), which merges it with the
+  // admin-authored questions in the `bank_questions` table. One source of
+  // truth for the tree, the drill-down, the plan, the preview and generation.
+  const bankContext = async (store) => {
+    const questions = await effectiveBank(store);
+    return { questions, modules: composeModules(questions), families: composeFamilies(questions) };
+  };
+
+  route('GET', '/admin/question-bank/modules', A, async ({ store, query }) => {
     const includeOptional = bool(query.include_optional);
-    const pool = includeOptional ? [...QUESTIONS, ...OPTIONAL_QUESTIONS] : QUESTIONS;
+    const { questions, modules } = await bankContext(store);
 
-    const blank = () => ({ objective: 0, open: 0, optional: 0 });
-    const tally = (row, q) => {
-      if (q.optional) row.optional += 1;
-      else if (q.type === 'open') row.open += 1;
-      else row.objective += 1;
-    };
-
-    // Counts are kept per module AND per family, so the UI can show a module's
-    // total alongside the breakdown of the families inside it.
-    const byModule = new Map();
-    const byFamily = new Map();
-    for (const q of pool) {
-      const mod = byModule.get(q.module) || blank();
-      tally(mod, q);
-      byModule.set(q.module, mod);
-
-      const fid = q.family_id || `${q.module}:${q.family || 'unassigned'}`;
-      const fam = byFamily.get(fid) || blank();
-      tally(fam, q);
-      byFamily.set(fid, fam);
+    const optionalByFamily = new Map();
+    const optionalByModule = new Map();
+    if (includeOptional) {
+      for (const q of OPTIONAL_QUESTIONS) {
+        optionalByFamily.set(q.family_id, (optionalByFamily.get(q.family_id) || 0) + 1);
+        optionalByModule.set(q.module, (optionalByModule.get(q.module) || 0) + 1);
+      }
     }
 
     return ok({
@@ -533,58 +608,64 @@ export function adminHandlers(route) {
       technical_modules: MODULE_TEST_STRUCTURE.technical_modules,
       non_technical_modules: MODULE_TEST_STRUCTURE.non_technical_modules,
       groups: MODULE_GROUPS,
-      modules: MODULES.map((m) => {
-        const own = m.families.map((f) => ({ ...f, ...(byFamily.get(f.id) || blank()) }));
+      modules: modules.map((m) => {
+        const own = m.families.map((f) => ({ ...f, optional: optionalByFamily.get(f.id) || 0 }));
         // Legacy families are appended after the curated ones so the tree shows
         // where retired questions live without implying they are the default
-        // place to add a new question.
-        // A legacy family's members are all optional, so `objective`/`open`
-        // describe what it *holds* while `optional` carries the same total —
-        // otherwise the row would read 0/0 and look empty.
+        // place to add a new question. Their members are all optional, so
+        // `objective`/`open` describe what the family holds while `optional`
+        // carries the same total - otherwise the row would read 0/0.
         const legacy = includeOptional
           ? OPTIONAL_FAMILIES.filter((f) => f.module === m.key).map((f) => ({
-              ...f,
-              optional: (byFamily.get(f.id) || blank()).optional,
+              ...f, optional: optionalByFamily.get(f.id) || 0,
             }))
           : [];
-        return { ...m, ...(byModule.get(m.key) || blank()), families: [...own, ...legacy] };
+        return { ...m, optional: optionalByModule.get(m.key) || 0, families: [...own, ...legacy] };
       }),
-      bank_total: QUESTIONS.length,
-      family_total: FAMILIES.length,
+      bank_total: questions.length,
+      published_total: QUESTIONS.length,
+      authored_total: questions.filter((q) => q.authored).length,
+      family_total: composeFamilies(questions).length,
       optional: optionalSummary(),
     });
   });
 
   // One family's questions, so an admin can review a family before adding to
   // it. Families are addressed by their compound `<MODULE>:<slug>` id.
-  route('GET', '/admin/question-bank/families/:id', A, async ({ params }) => {
-    const family = findFamily(params.id)
+  route('GET', '/admin/question-bank/families/:id', A, async ({ store, params }) => {
+    const { questions } = await bankContext(store);
+    const family = resolveFamily(params.id, questions)
       || OPTIONAL_FAMILIES.find((f) => f.id === params.id)
       || null;
     if (!family) return notFound('Family not found.');
-    const rows = [...QUESTIONS, ...OPTIONAL_QUESTIONS].filter((q) => q.family_id === family.id);
+    const rows = [...questions, ...OPTIONAL_QUESTIONS].filter((q) => q.family_id === family.id);
     return ok({
       family,
       questions: rows.map((q) => ({
         id: q.id, type: q.type, prompt: q.prompt,
         difficulty: q.difficulty, band: q.band, minutes: q.minutes,
-        mandatory: q.mandatory === true, optional: q.optional === true,
+        optional: q.optional === true,
+        authored: q.authored === true,
+        tags: q.tags || [],
         needs_option_review: q.needs_option_review === true,
       })),
     });
   });
 
   // What a generated paper would look like, and whether every module can meet
-  // its quota — the module-based equivalent of /roles/:id/question-plan.
-  route('GET', '/admin/question-bank/plan', A, async () =>
-    ok(testPlan({ modules: MODULES, questions: [...QUESTIONS, ...OPTIONAL_QUESTIONS] })));
+  // its quota - the module-based equivalent of /roles/:id/question-plan.
+  route('GET', '/admin/question-bank/plan', A, async ({ store }) => {
+    const { questions } = await bankContext(store);
+    return ok(testPlan({ modules: MODULES, questions: [...questions, ...OPTIONAL_QUESTIONS] }));
+  });
 
   // Draw a sample paper so an admin can inspect the structure before relying
-  // on it. Never persisted — allocation builds its own paper.
-  route('POST', '/admin/question-bank/preview', A, async () => {
+  // on it. Never persisted - allocation builds its own paper.
+  route('POST', '/admin/question-bank/preview', A, async ({ store }) => {
+    const { questions } = await bankContext(store);
     const result = generateTest({
       modules: MODULES,
-      questions: [...QUESTIONS, ...OPTIONAL_QUESTIONS],
+      questions: [...questions, ...OPTIONAL_QUESTIONS],
     });
     return ok({
       counts: result.counts,
@@ -593,10 +674,132 @@ export function adminHandlers(route) {
       sections: result.sections,
       questions: result.questions.map((q) => ({
         id: q.id, module: q.module, family_id: q.family_id, family: q.family, type: q.type,
-        prompt: q.prompt, mandatory: q.mandatory === true, optional: q.optional === true,
+        prompt: q.prompt, optional: q.optional === true, authored: q.authored === true,
       })),
     });
   });
+
+  // ---- authoring: add one question ------------------------------------
+  // Validated by exactly the same code the bulk import uses, so the two can
+  // never diverge on what counts as a usable question.
+  route('POST', '/admin/question-bank/questions', A, async ({ store, body, auth }) => {
+    const { questions, families } = await bankContext(store);
+    const result = validateBankQuestion(body, { modules: MODULES, families });
+    if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
+
+    const key = promptKey(result.question.prompt);
+    if (questions.some((q) => promptKey(q.prompt) === key)) {
+      return conflict('A question with this prompt already exists in the bank.');
+    }
+
+    const id = nextAuthoredId(result.question.module, await store.list('bank_questions'));
+    const rec = await store.insert('bank_questions', toStoredRecord(result.question, { id, actorId: auth.user.id }));
+    await audit(store, auth.user, 'bank_question_created', 'bank_questions', rec.id,
+      `Question added to ${rec.module} / ${rec.family}`);
+    return created({ question: hydrate(rec) });
+  });
+
+  route('PATCH', '/admin/question-bank/questions/:id', A, async ({ store, body, params, auth }) => {
+    const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
+    if (!existing) {
+      return notFound('Only admin-authored questions can be edited; this id is not one of them.');
+    }
+    const { questions, families } = await bankContext(store);
+    const merged = { ...hydrate(existing), ...body };
+    const result = validateBankQuestion(merged, { modules: MODULES, families });
+    if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
+
+    const key = promptKey(result.question.prompt);
+    if (questions.some((q) => q.id !== params.id && promptKey(q.prompt) === key)) {
+      return conflict('Another question already uses this prompt.');
+    }
+    const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by });
+    if (body.active !== undefined) patch.active = bool(body.active);
+    const rec = await store.update('bank_questions', params.id, patch);
+    await audit(store, auth.user, 'bank_question_updated', 'bank_questions', params.id, 'Question updated');
+    return ok({ question: hydrate(rec) });
+  });
+
+  route('DELETE', '/admin/question-bank/questions/:id', A, async ({ store, params, auth }) => {
+    const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
+    if (!existing) {
+      return notFound('Only admin-authored questions can be deleted; the published bank is read-only.');
+    }
+    await store.remove('bank_questions', params.id);
+    await audit(store, auth.user, 'bank_question_deleted', 'bank_questions', params.id,
+      `Question removed from ${existing.module}`);
+    return ok({ ok: true });
+  });
+
+  // ---- authoring: bulk import from a spreadsheet -----------------------
+  // Accepts a base64 .xlsx or raw .csv text. `dry_run` validates and reports
+  // without writing, which is what the UI calls first so an admin sees the
+  // per-row outcome before committing.
+  route('POST', '/admin/question-bank/import', A, async ({ store, body, auth }) => {
+    let parsed;
+    try {
+      parsed = readImportPayload(body);
+    } catch (err) {
+      return bad(err.message);
+    }
+    if (!parsed.rows.length) {
+      return unprocessable('No data rows found. The first row must be a header (Module, Type, Prompt, ...).', {
+        headers: parsed.headers,
+      });
+    }
+    if (parsed.rows.length > MAX_IMPORT_ROWS) {
+      return unprocessable(`This file has ${parsed.rows.length} rows; the limit is ${MAX_IMPORT_ROWS} per import.`);
+    }
+
+    const { questions, families } = await bankContext(store);
+    const report = validateBatch(parsed.rows, {
+      modules: MODULES, families, existingPrompts: questions.map((q) => q.prompt),
+    });
+
+    const dryRun = bool(body.dry_run);
+    const summary = {
+      headers: parsed.headers,
+      total: parsed.rows.length,
+      accepted: report.accepted.length,
+      rejected: report.rejected.length,
+      duplicates: report.duplicates.length,
+      dry_run: dryRun,
+      errors: report.rejected.slice(0, 50),
+      duplicate_rows: report.duplicates.slice(0, 50),
+      preview: report.accepted.slice(0, 10).map((a) => ({
+        line: a.line, module: a.question.module, family: a.question.family,
+        type: a.question.type, prompt: a.question.prompt.slice(0, 160),
+      })),
+    };
+    if (dryRun) return ok({ ...summary, imported: 0 });
+
+    // Ids are allocated against a list that grows as we insert, so a batch
+    // cannot hand two questions the same id.
+    const existingRows = await store.list('bank_questions');
+    const allocated = [...existingRows];
+    let imported = 0;
+    for (const { question } of report.accepted) {
+      const id = nextAuthoredId(question.module, allocated);
+      const rec = toStoredRecord(question, { id, actorId: auth.user.id });
+      await store.insert('bank_questions', rec);
+      allocated.push(rec);
+      imported += 1;
+    }
+    if (imported) {
+      await audit(store, auth.user, 'bank_questions_imported', 'bank_questions', '',
+        `${imported} question(s) imported from a spreadsheet`);
+    }
+    return ok({ ...summary, imported });
+  });
+
+  // A ready-to-fill template, so an admin never has to guess the columns.
+  route('GET', '/admin/question-bank/import-template', A, async () => ok({
+    filename: 'ecod-question-import-template.csv',
+    content_type: 'text/csv',
+    columns: IMPORT_COLUMNS,
+    csv: importTemplateCsv(),
+  }));
+
 
   // ------------------------------------------------ published catalogue
   // The effective allocation ceiling is min(cap, bank size). These endpoints

@@ -69,19 +69,20 @@ export const MAX_ASSESSMENT_QUESTIONS = 50;
  * below is PER MODULE (except the module counts and the derived total);
  * test-generation.mjs derives the paper-wide totals (TEST_BLUEPRINT) from it,
  * so the two can never drift apart.
+ *
+ * There is no mandatory/common question: a paper is exactly the sum of the
+ * per-module quotas below.
  */
 export const MODULE_TEST_STRUCTURE = {
-  mandatory: 1,              // the common question, always served first
   technical_modules: 10,     // T01-T10
   technical_objective: 3,    // per technical module
   technical_open: 1,         // per technical module
   non_technical_modules: 10, // C01-C04, P01-P04, F01-F02
   non_technical_open: 1,     // per non-technical module
 };
-// 1 + (10 x (3 + 1)) + (10 x 1) = 51. Derived, never typed twice.
+// (10 x (3 + 1)) + (10 x 1) = 50. Derived, never typed twice.
 MODULE_TEST_STRUCTURE.total =
-  MODULE_TEST_STRUCTURE.mandatory
-  + MODULE_TEST_STRUCTURE.technical_modules
+  MODULE_TEST_STRUCTURE.technical_modules
     * (MODULE_TEST_STRUCTURE.technical_objective + MODULE_TEST_STRUCTURE.technical_open)
   + MODULE_TEST_STRUCTURE.non_technical_modules * MODULE_TEST_STRUCTURE.non_technical_open;
 

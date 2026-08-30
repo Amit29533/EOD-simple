@@ -104,8 +104,8 @@ entities. There are no `clients`/commercial tables anywhere — nobody can stumb
 ## Question Bank v1.2 — modules, families and test generation
 
 The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`):
-**348 questions across 20 modules**, organised **module → family → question**, plus a
-mandatory module whose question opens every paper.
+**348 questions across 20 modules**, organised **module → family → question**, and
+listed in paper order: `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02`.
 
 ```
 MODULE                                    FAMILY (where a question is added)
@@ -123,19 +123,43 @@ and belongs to exactly one family inside one module.
 
 | Group | Modules | Served per module |
 | ----- | ------- | ----------------- |
-| **Mandatory** | `M00` | 1 question — **always on every test**, first |
 | **Technical** | `T01`–`T10` | 3 objective + 1 open |
 | **Consulting & Client Skills** | `C01`–`C04` | 1 open |
 | **Professional & Communication** | `P01`–`P04` | 1 open |
 | **Foundation & Integrated Judgment** | `F01`–`F02` | 1 open |
 
-Every generated test contains **51 questions**: 1 mandatory + 30 technical objective
-+ 10 technical open + 10 non-technical open. Questions are picked at **random** from
-each module's families while that structure is held exactly.
+Every generated test contains **exactly 50 questions**: 30 technical objective +
+10 technical open + 10 non-technical open. Questions are picked at **random** from
+each module's families while that structure is held exactly — nothing is pinned, and
+no question is guaranteed to appear. Sections and questions come back in module order.
 
 Browse it under **Admin → Modules & Families**: each module expands to its families,
-and any family opens to the questions a new one would join. The screen also previews
-a freshly generated paper.
+and any family opens to the questions a new one would join, with their tags. The
+screen also previews a freshly generated paper.
+
+### Adding questions
+
+The published bank is **read-only** — it is generated from the source PDF and is never
+written to at runtime. Additions live alongside it in the `bank_questions` table and are
+merged over the published set on read, so the bank grows without the generated file
+drifting from its source. Only these authored rows can be edited or deleted.
+
+- **One at a time** — *Add question*, or *+ Add a question to `<MODULE>`* on any module
+  card. The form follows the answer type: objective questions collect 2–8 options and a
+  single correct answer, open questions collect a rubric and probes. Family suggestions
+  are scoped to the chosen module, and **typing a name that does not exist creates that
+  family** inside the module.
+- **In bulk** — *Import from Excel* accepts an `.xlsx` or `.csv` (first row = header,
+  up to 2000 rows). Every upload is **validated as a dry run first**: the dialog reports
+  what is ready, what was rejected and why, and which rows already exist, before anything
+  is written. Import stays disabled until at least one row is valid. Column headers are
+  matched by alias (`Option A`/`A`/`opt_a`/`choice_a` all work) and a starter template is
+  downloadable from the dialog.
+
+Both paths run the same validation as the API, so a question added by hand and one
+imported from a sheet are held to identical rules: known module, resolvable family,
+a prompt of real length, and a type-appropriate answer key. Duplicate prompts are
+rejected against the whole effective bank.
 
 **Optional pool.** The previous 115-question competency catalogue is no longer part
 of a generated test. Each retired competency becomes a `Legacy - …` family inside its

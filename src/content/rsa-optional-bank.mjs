@@ -104,7 +104,6 @@ export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
       status: 'Active',
       version: '1.1',
       randomizable: true,
-      mandatory: false,
 
       // What marks these as the fallback pool.
       optional: true,

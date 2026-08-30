@@ -6,15 +6,15 @@
  * apportionment (which is what src/core/question-selection.mjs does for the
  * legacy competency-based catalogue):
  *
- *   Mandatory module (M00)   1 question   always served, always first
  *   10 technical  T01-T10    4 each       3 objective + 1 open  = 40
  *   10 non-technical
  *     C01-C04, P01-P04,
  *     F01-F02                1 open each                        = 10
- *                                                        total  = 51
+ *                                                        total  = 50
  *
- * i.e. 30 technical objective + 10 technical open + 10 non-technical open,
- * plus the mandatory question on top.
+ * i.e. 30 technical objective + 10 technical open + 10 non-technical open.
+ * There is no mandatory/common question: every question is drawn by its
+ * module's quota and nothing is pinned.
  *
  * Questions are sampled at random inside each module while the per-module
  * structure above is held exactly. `rng` is injectable so tests are
@@ -24,7 +24,7 @@
  * They are a fallback pool: if a module cannot fill its quota from its
  * primary questions, optional ones are drawn (highest-priority first) to make
  * up the shortfall, and the shortfall is reported. This is what keeps a
- * generated test at a full 51 questions even when a module's bank is thin.
+ * generated test at a full 50 questions even when a module's bank is thin.
  */
 
 import { MODULE_TEST_STRUCTURE } from './constants.mjs';
@@ -46,7 +46,6 @@ export const NON_TECHNICAL_OPEN_PER_MODULE = MODULE_TEST_STRUCTURE.non_technical
  * admin preview and /meta/bootstrap together.
  */
 export const TEST_BLUEPRINT = {
-  mandatory: MODULE_TEST_STRUCTURE.mandatory,
   technical_objective:
     MODULE_TEST_STRUCTURE.technical_modules * MODULE_TEST_STRUCTURE.technical_objective,
   technical_open:
@@ -123,7 +122,7 @@ function orderedModules(modules) {
  *   generateTest({ modules, questions }, { rng })
  *
  * Returns:
- *   questions  - the paper, mandatory first, then module by module in order
+ *   questions  - the paper, module by module in configured order
  *   sections   - per-module record of what was drawn (for the preview UI)
  *   warnings   - human-readable notes when a module could not be filled
  *   counts     - realised structure, comparable against TEST_BLUEPRINT
@@ -140,34 +139,9 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
   const warnings = [];
   let usedOptional = 0;
 
-  // ---- mandatory question, always first ------------------------------
-  // Selection keys off the `mandatory` flag on the question, never off a
-  // module bucket, so the paper is correct however the bank is arranged.
-  const mandatoryPool = questions.filter((q) => q.mandatory === true && isActive(q));
-  const mandatory = mandatoryPool.length ? sample(mandatoryPool, 1, rng) : [];
-  const mandatoryModule = modules.find((m) => m.mandatory === true) || null;
-  if (!mandatory.length) {
-    warnings.push('No mandatory question is configured; the paper starts with the first module.');
-  } else {
-    paper.push(...mandatory);
-    // Described by the same shape as every other section (`group`, not
-    // `family`), and named from the configured module rather than a literal.
-    sections.push({
-      module: mandatoryModule?.key || mandatory[0].module,
-      name: mandatoryModule?.name || 'Mandatory Common Question',
-      group: mandatoryModule?.group || 'mandatory',
-      technical: false, mandatory: true,
-      objective: mandatory.filter(isObjective).length,
-      open: mandatory.filter(isOpen).length,
-      from_optional: 0, short: 0,
-      question_ids: mandatory.map((q) => q.id),
-    });
-  }
-
-  // ---- every other module, in configured order -----------------------
+  // ---- every module, in configured order -----------------------------
   for (const mod of orderedModules(modules)) {
-    if (mod.mandatory === true) continue;
-    const pool = (byModule.get(mod.key) || []).filter((q) => q.mandatory !== true);
+    const pool = byModule.get(mod.key) || [];
     const technical = mod.technical === true;
 
     const wantObjective = technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0;
@@ -193,7 +167,7 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
 
     sections.push({
       module: mod.key, name: mod.name, group: mod.group,
-      technical, mandatory: false,
+      technical,
       objective: objective.picked.length, open: open.picked.length,
       from_optional: objective.fromOptional + open.fromOptional,
       short: objective.short + open.short,
@@ -202,9 +176,8 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
   }
 
   const technicalSections = sections.filter((s) => s.technical);
-  const nonTechnicalSections = sections.filter((s) => !s.technical && !s.mandatory);
+  const nonTechnicalSections = sections.filter((s) => !s.technical);
   const counts = {
-    mandatory: sections.filter((s) => s.mandatory).reduce((n, s) => n + s.open + s.objective, 0),
     technical_objective: technicalSections.reduce((n, s) => n + s.objective, 0),
     technical_open: technicalSections.reduce((n, s) => n + s.open, 0),
     non_technical_open: nonTechnicalSections.reduce((n, s) => n + s.open, 0),
@@ -228,21 +201,13 @@ export function testPlan({ modules = [], questions = [] } = {}) {
     byModule.get(q.module).push(q);
   }
 
-  // The mandatory question is flagged on the question itself and keeps the
-  // module id it was authored under (e.g. F01), so the mandatory *module*
-  // draws from that flag rather than from a module bucket of its own.
-  const mandatoryPool = questions.filter((q) => q.mandatory === true && isActive(q));
-
   const rows = [];
   for (const mod of orderedModules(modules)) {
     const technical = mod.technical === true;
-    const mandatory = mod.mandatory === true;
-    const pool = mandatory
-      ? mandatoryPool
-      : (byModule.get(mod.key) || []).filter((q) => isActive(q) && q.mandatory !== true);
+    const pool = (byModule.get(mod.key) || []).filter(isActive);
 
-    const wantObjective = mandatory ? 0 : technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0;
-    const wantOpen = mandatory ? 1 : technical ? TECHNICAL_OPEN_PER_MODULE : NON_TECHNICAL_OPEN_PER_MODULE;
+    const wantObjective = technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0;
+    const wantOpen = technical ? TECHNICAL_OPEN_PER_MODULE : NON_TECHNICAL_OPEN_PER_MODULE;
 
     const objectivePool = pool.filter((q) => isObjective(q) && !isOptional(q));
     const openPool = pool.filter((q) => isOpen(q) && !isOptional(q));
@@ -250,15 +215,13 @@ export function testPlan({ modules = [], questions = [] } = {}) {
 
     rows.push({
       module: mod.key, name: mod.name, group: mod.group,
-      technical, mandatory,
+      technical,
       required_objective: wantObjective,
       required_open: wantOpen,
-      available_objective: mandatory ? pool.length : objectivePool.length,
-      available_open: mandatory ? pool.length : openPool.length,
+      available_objective: objectivePool.length,
+      available_open: openPool.length,
       available_optional: optionalPool.length,
-      sufficient: mandatory
-        ? pool.length >= 1
-        : objectivePool.length >= wantObjective && openPool.length >= wantOpen,
+      sufficient: objectivePool.length >= wantObjective && openPool.length >= wantOpen,
     });
   }
 

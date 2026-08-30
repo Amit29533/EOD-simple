@@ -33,10 +33,10 @@ before(async () => {
 test('bootstrap publishes the families, modules and paper structure', async () => {
   const res = await call('GET', '/meta/bootstrap');
   assert.equal(res.status, 200);
-  assert.equal(res.body.modules.length, 21);
-  assert.equal(res.body.moduleGroups.length, 5);
-  assert.equal(res.body.families.length, 63);
-  assert.equal(res.body.moduleTestStructure.total, 51);
+  assert.equal(res.body.modules.length, 20);
+  assert.equal(res.body.moduleGroups.length, 4);
+  assert.equal(res.body.families.length, 62);
+  assert.equal(res.body.moduleTestStructure.total, 50);
   assert.equal(res.body.moduleTestStructure.technical_objective, 3);
   assert.equal(res.body.moduleTestStructure.non_technical_open, 1);
 });
@@ -45,15 +45,17 @@ test('module listing reports every module with its counts', async () => {
   const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
   assert.equal(res.status, 200);
   assert.equal(res.body.version, '1.2');
-  assert.equal(res.body.modules.length, 21);
+  assert.equal(res.body.modules.length, 20);
   assert.equal(res.body.bank_total, 348);
-  assert.equal(res.body.blueprint.total, 51);
+  assert.equal(res.body.blueprint.total, 50);
 
-  const mandatory = res.body.modules.filter((m) => m.mandatory);
-  assert.equal(mandatory.length, 1);
-  assert.equal(mandatory[0].key, 'M00');
-
-  for (const m of res.body.modules.filter((x) => !x.mandatory)) {
+  assert.deepEqual(res.body.modules.map((m) => m.key), [
+    'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10',
+    'C01', 'C02', 'C03', 'C04',
+    'P01', 'P02', 'P03', 'P04',
+    'F01', 'F02',
+  ]);
+  for (const m of res.body.modules) {
     assert.ok(m.objective >= 10, `${m.key} has ${m.objective} objective`);
   }
 });
@@ -67,7 +69,7 @@ test('modules are grouped, and each carries its own families', async () => {
     for (const f of m.families) assert.ok(f.id.startsWith(`${m.key}:`), f.id);
   }
   assert.equal(res.body.modules.filter((m) => m.technical).length, 10);
-  assert.equal(res.body.family_total, 63);
+  assert.equal(res.body.family_total, 62);
 });
 
 test('a family endpoint returns just that family\'s questions', async () => {
@@ -101,13 +103,11 @@ test('a previewed paper matches the required structure', async () => {
   const res = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
   assert.equal(res.status, 200);
   assert.deepEqual(res.body.warnings, []);
-  assert.equal(res.body.counts.total, 51);
-  assert.equal(res.body.counts.mandatory, 1);
+  assert.equal(res.body.counts.total, 50);
   assert.equal(res.body.counts.technical_objective, 30);
   assert.equal(res.body.counts.technical_open, 10);
   assert.equal(res.body.counts.non_technical_open, 10);
-  assert.equal(res.body.questions.length, 51);
-  assert.equal(res.body.questions[0].mandatory, true);
+  assert.equal(res.body.questions.length, 50);
   assert.equal(res.body.counts.from_optional, 0);
 });
 
@@ -120,12 +120,18 @@ test('two previews differ in content but never in structure', async () => {
   assert.notEqual(idsA, idsB);
 });
 
-test('the mandatory question is first in every preview', async () => {
-  for (let i = 0; i < 5; i += 1) {
-    const res = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
-    assert.equal(res.body.questions[0].mandatory, true);
-    assert.equal(res.body.questions.filter((q) => q.mandatory).length, 1);
-  }
+test('a preview follows the module order T01-T10, C01-C04, P01-P04, F01-F02', async () => {
+  const res = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
+  assert.deepEqual(res.body.sections.map((s) => s.module), [
+    'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10',
+    'C01', 'C02', 'C03', 'C04',
+    'P01', 'P02', 'P03', 'P04',
+    'F01', 'F02',
+  ]);
+  // The paper itself is emitted in that same order.
+  const order = res.body.sections.map((s) => s.module);
+  const seen = res.body.questions.map((q) => q.module);
+  assert.deepEqual([...new Set(seen)], order);
 });
 
 test('question-bank endpoints are admin-only', async () => {
@@ -172,15 +178,12 @@ test('a module total equals the sum of its families', async () => {
   }
 });
 
-test('the mandatory module reports the question it always serves', async () => {
+test('no module or question is marked mandatory any more', async () => {
   const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
-  const m00 = res.body.modules.find((m) => m.mandatory);
-  assert.equal(m00.objective + m00.open, 1, 'the mandatory module is not empty');
-
-  const family = m00.families[0];
-  const drill = await call('GET', `/admin/question-bank/families/${family.id}`, { token: adminToken });
-  assert.equal(drill.body.questions.length, 1);
-  assert.equal(drill.body.questions[0].mandatory, true);
+  assert.equal(res.body.modules.filter((m) => m.mandatory).length, 0);
+  assert.equal(res.body.blueprint.mandatory, undefined);
+  const preview = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
+  assert.equal(preview.body.questions.filter((q) => q.mandatory).length, 0);
 });
 
 test('?include_optional accepts the flag spellings a URL actually carries', async () => {
@@ -209,6 +212,7 @@ test('the paper-wide blueprint matches the published per-module quotas', async (
   const { blueprint, technical_modules, non_technical_modules } = res.body;
   assert.equal(technical_modules, 10);
   assert.equal(non_technical_modules, 10);
+  assert.equal(blueprint.total, 50);
   assert.equal(blueprint.technical_objective % technical_modules, 0);
   assert.equal(blueprint.technical_objective / technical_modules, 3);
   assert.equal(blueprint.technical_open / technical_modules, 1);

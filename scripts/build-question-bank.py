@@ -23,25 +23,15 @@ import re
 import sys
 from collections import OrderedDict
 
-# The mandatory question - the single "Common Question" in the bank. It is
-# served first on every paper and is the sole content of module M00.
-#
-# The source PDF authors it under F01 / "Consulting & Client Skills", but the
-# product treats it as a standalone module that sits above the other twenty.
-# It is therefore relocated into M00 below, so that the module which serves it
-# is also the module that owns it: M00 reports a real count, its family
-# drills down to a real question, and the modules still partition the bank
-# exactly once. `origin_module` / `origin_family` keep the PDF provenance.
-MANDATORY_ID = 'RSA-F01-002'
-MANDATORY_MODULE = 'M00'
-MANDATORY_FAMILY = 'Common Question'
+# There is NO mandatory/common question. Every question in the bank belongs to
+# one of the twenty modules (T01-T10, C01-C04, P01-P04, F01-F02) and is drawn
+# only by its module's quota. The item the source PDF labels "Common Question"
+# is an ordinary F01 open question.
 
 # Top-level grouping of modules. These are *groups*, not families: "family"
 # is reserved throughout for the per-module question families the PDF names in
 # its own "Question Family" column.
 GROUPS = [
-    ('mandatory',    'Mandatory',                        0,
-     'Always served, on every generated test.'),
     ('technical',    'Technical',                        1,
      'Databricks platform depth: architecture, engineering, governance, performance and AI.'),
     ('consulting',   'Consulting & Client Skills',       2,
@@ -53,7 +43,6 @@ GROUPS = [
 ]
 
 MODULE_TITLES = {
-    'M00': 'Mandatory Common Question',
     'F01': 'Databricks Value & RSA Role',
     'F02': 'Integrated Client Engagement & Validation',
     'T01': 'Databricks Architecture, Lakehouse & Data Intelligence',
@@ -76,12 +65,8 @@ MODULE_TITLES = {
     'P04': 'Technical-to-Business Translation',
 }
 
-GROUP_OF = {'M': 'mandatory', 'T': 'technical', 'C': 'consulting',
+GROUP_OF = {'T': 'technical', 'C': 'consulting',
             'P': 'professional', 'F': 'foundation'}
-
-MODULE_DESCRIPTIONS = {
-    'M00': 'The common question every candidate answers, served first on every test.',
-}
 
 
 def slug(text):
@@ -100,8 +85,8 @@ def js(value):
 
 
 def module_order(key):
-    """Modules ordered M00, then T01-T10, C01-C04, P01-P04, F01-F02."""
-    base = {'M': 0, 'T': 10, 'C': 20, 'P': 30, 'F': 40}[key[0]]
+    """Modules ordered T01-T10, then C01-C04, P01-P04, F01-F02."""
+    base = {'T': 10, 'C': 20, 'P': 30, 'F': 40}[key[0]]
     return base + int(key[1:])
 
 
@@ -116,16 +101,6 @@ def family_role(questions):
 
 def build(bank_path, out_path):
     bank = json.load(open(bank_path, encoding='utf-8'))
-
-    # Relocate the mandatory question into its own module before grouping, so
-    # every later count (module totals, family totals, the flattened FAMILIES
-    # list and the questions array) sees it in exactly one place.
-    for question in bank:
-        if question['id'] == MANDATORY_ID:
-            question['origin_module'] = question['module']
-            question['origin_family'] = question['question_family']
-            question['module'] = MANDATORY_MODULE
-            question['question_family'] = MANDATORY_FAMILY
 
     # ---- group questions: module -> family -> [questions] --------------
     modules = OrderedDict()
@@ -160,15 +135,12 @@ def build(bank_path, out_path):
     w(' * scripts/build-question-bank.py from the extracted source PDF; edit the')
     w(' * generator (or the Admin UI), not this file by hand.')
     w(' *')
-    w(' *   M00       Mandatory     1 question, served first on every test')
-    w(' *                           (authored under F01 in the source PDF and')
-    w(' *                           relocated here; see origin_module)')
     w(' *   T01-T10   Technical     3 objective + 1 open served per module')
     w(' *   C01-C04   Consulting    1 open served per module')
     w(' *   P01-P04   Professional  1 open served per module')
     w(' *   F01-F02   Foundation    1 open served per module')
     w(' *')
-    w(' * Every generated test is 1 + (10 x 4) + (10 x 1) = 51 questions. See')
+    w(' * Every generated test is (10 x 4) + (10 x 1) = 50 questions. See')
     w(' * src/core/test-generation.mjs for the selection logic.')
     w(' *')
     w(' * FAMILIES ARE SCOPED TO A MODULE. A family name is not unique on its own -')
@@ -183,9 +155,6 @@ def build(bank_path, out_path):
     w(' */')
     w('')
     w("export const QUESTION_BANK_VERSION = '1.2';")
-    w('')
-    w('/** The mandatory question served first on every test. */')
-    w(f"export const MANDATORY_QUESTION_ID = '{MANDATORY_ID}';")
     w('')
     w('/** Top-level grouping of modules (not to be confused with question families). */')
     w('export const MODULE_GROUPS = [')
@@ -206,11 +175,8 @@ def build(bank_path, out_path):
         families = modules[key]
         group = GROUP_OF[key[0]]
         technical = 'true' if key[0] == 'T' else 'false'
-        mandatory = 'true' if key == MANDATORY_MODULE else 'false'
         w(f"  {{ key: '{key}', name: {js(MODULE_TITLES[key])}, group: '{group}', order: {module_order(key)},")
-        w(f"    mandatory: {mandatory}, technical: {technical},")
-        if key in MODULE_DESCRIPTIONS:
-            w(f"    description: {js(MODULE_DESCRIPTIONS[key])},")
+        w(f"    technical: {technical},")
         w('    families: [')
         for name, members in families.items():
             # Counts describe what the family actually holds, so a family row
@@ -247,11 +213,6 @@ def build(bank_path, out_path):
                 w(f"    difficulty: {q['difficulty']}, band: {js(q['band'])}, mode: {js(q['mode'])},")
                 w(f"    minutes: {q['minutes']}, status: {js(q['status'])}, version: {js(q['version'])},")
                 w(f"    randomizable: {'true' if q['randomizable'] else 'false'},")
-                w(f"    mandatory: {'true' if q['id'] == MANDATORY_ID else 'false'},")
-                if q.get('origin_module'):
-                    # Where the source PDF authored it, kept for traceability.
-                    w(f"    origin_module: {js(q['origin_module'])},"
-                      f" origin_family: {js(q['origin_family'])},")
                 w(f"    prompt: {js(q['prompt'])},")
                 if q['objective']:
                     w('    options: [')

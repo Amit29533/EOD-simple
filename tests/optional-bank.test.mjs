@@ -21,10 +21,10 @@ test('every legacy question is carried over into the optional pool', () => {
   assert.equal(OPTIONAL_QUESTIONS.length, 115);
 });
 
-test('every optional question is flagged optional and never mandatory', () => {
+test('every optional question is flagged optional and carries a priority', () => {
   for (const q of OPTIONAL_QUESTIONS) {
     assert.equal(q.optional, true, q.id);
-    assert.equal(q.mandatory, false, q.id);
+    assert.equal(q.mandatory, undefined, q.id);
     assert.ok(Number.isFinite(q.optional_priority), q.id);
   }
 });
@@ -70,7 +70,7 @@ test('adding the optional pool does not change a generated test', () => {
     withoutOptional.questions.map((q) => q.id)
   );
   assert.equal(withOptional.counts.from_optional, 0);
-  assert.equal(withOptional.counts.total, 51);
+  assert.equal(withOptional.counts.total, 50);
 });
 
 test('no optional question is ever served while the primary bank suffices', () => {
@@ -96,7 +96,7 @@ test('the optional pool covers a shortfall in the primary bank', () => {
   );
   assert.deepEqual(withFallback.warnings, []);
   assert.equal(withFallback.counts.technical_open, 10);
-  assert.equal(withFallback.counts.total, 51);
+  assert.equal(withFallback.counts.total, 50);
   assert.equal(withFallback.counts.from_optional, 1);
 
   const served = withFallback.questions.find((q) => q.module === 'T06' && q.type === 'open');

@@ -6,7 +6,7 @@ import {
   TECHNICAL_OBJECTIVE_PER_MODULE, TECHNICAL_OPEN_PER_MODULE,
 } from '../src/core/test-generation.mjs';
 import {
-  MODULES, QUESTIONS, MANDATORY_QUESTION_ID, MODULE_GROUPS, FAMILIES, findFamily,
+  MODULES, QUESTIONS, MODULE_GROUPS, FAMILIES, findFamily,
 } from '../src/content/rsa-question-bank.mjs';
 
 /** Deterministic rng so a failing case is reproducible. */
@@ -20,17 +20,16 @@ function seeded(seed = 1) {
 
 const bank = { modules: MODULES, questions: QUESTIONS };
 
-test('published bank has 20 modules plus the mandatory module', () => {
-  assert.equal(MODULES.length, 21);
-  assert.equal(MODULES.filter((m) => m.mandatory).length, 1);
+test('published bank has exactly the 20 modules', () => {
+  assert.equal(MODULES.length, 20);
+  assert.equal(MODULES.filter((m) => m.mandatory).length, 0, 'no mandatory module exists any more');
   assert.equal(MODULES.filter((m) => m.technical).length, 10);
-  assert.equal(MODULES.filter((m) => !m.technical && !m.mandatory).length, 10);
+  assert.equal(MODULES.filter((m) => !m.technical).length, 10);
 });
 
-test('module keys are exactly T01-T10, C01-C04, P01-P04, F01-F02 (+ M00)', () => {
+test('module keys are exactly T01-T10, C01-C04, P01-P04, F01-F02', () => {
   const keys = MODULES.map((m) => m.key).sort();
   const expected = [
-    'M00',
     'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10',
     'C01', 'C02', 'C03', 'C04',
     'P01', 'P02', 'P03', 'P04',
@@ -68,10 +67,20 @@ test('a family name repeated across modules stays independently addressable', ()
   assert.equal(new Set(shared.map((f) => f.id)).size, 10, 'ids are unique');
 });
 
-test('the mandatory module is ordered first', () => {
-  const ordered = [...MODULES].sort((a, b) => a.order - b.order);
-  assert.equal(ordered[0].mandatory, true);
-  assert.equal(ordered[0].key, 'M00');
+test('modules are ordered T01-T10, then C01-C04, P01-P04, F01-F02', () => {
+  const ordered = [...MODULES].sort((a, b) => a.order - b.order).map((m) => m.key);
+  assert.deepEqual(ordered, [
+    'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10',
+    'C01', 'C02', 'C03', 'C04',
+    'P01', 'P02', 'P03', 'P04',
+    'F01', 'F02',
+  ]);
+});
+
+test('a generated paper follows that same module order', () => {
+  const { sections } = generateTest(bank, { rng: seeded(17) });
+  const expected = [...MODULES].sort((a, b) => a.order - b.order).map((m) => m.key);
+  assert.deepEqual(sections.map((s) => s.module), expected);
 });
 
 test('every module has enough questions for its quota', () => {
@@ -85,7 +94,6 @@ test('every module has enough questions for its quota', () => {
 test('a generated test matches the blueprint exactly', () => {
   const { counts, warnings } = generateTest(bank, { rng: seeded(7) });
   assert.deepEqual(warnings, []);
-  assert.equal(counts.mandatory, TEST_BLUEPRINT.mandatory);
   assert.equal(counts.technical_objective, TEST_BLUEPRINT.technical_objective);
   assert.equal(counts.technical_open, TEST_BLUEPRINT.technical_open);
   assert.equal(counts.non_technical_open, TEST_BLUEPRINT.non_technical_open);
@@ -96,7 +104,7 @@ test('30 technical objective + 10 technical open + 10 non-technical open', () =>
   const { questions } = generateTest(bank, { rng: seeded(11) });
   const technical = new Set(MODULES.filter((m) => m.technical).map((m) => m.key));
 
-  const served = questions.filter((q) => q.id !== MANDATORY_QUESTION_ID);
+  const served = questions;
   const techObjective = served.filter((q) => technical.has(q.module) && q.type === 'objective');
   const techOpen = served.filter((q) => technical.has(q.module) && q.type === 'open');
   const nonTechOpen = served.filter((q) => !technical.has(q.module) && q.type === 'open');
@@ -118,20 +126,30 @@ test('each technical module contributes exactly 3 objective + 1 open', () => {
 
 test('each non-technical module contributes exactly 1 open question', () => {
   const { questions } = generateTest(bank, { rng: seeded(31) });
-  for (const mod of MODULES.filter((m) => !m.technical && !m.mandatory)) {
-    const mine = questions.filter((q) => q.module === mod.key && q.id !== MANDATORY_QUESTION_ID);
+  for (const mod of MODULES.filter((m) => !m.technical)) {
+    const mine = questions.filter((q) => q.module === mod.key);
     assert.equal(mine.length, 1, mod.key);
     assert.equal(mine[0].type, 'open', mod.key);
   }
 });
 
-test('the mandatory question is always present and served first', () => {
-  for (const seed of [1, 2, 3, 99, 1234]) {
+test('no question is pinned or always-served: the whole paper varies by seed', () => {
+  // With the common question dropped, nothing is guaranteed to appear. Two
+  // different seeds must be free to differ in their very first item.
+  const firsts = new Set();
+  for (const seed of [1, 2, 3, 99, 1234, 55, 777]) {
     const { questions } = generateTest(bank, { rng: seeded(seed) });
-    assert.equal(questions[0].id, MANDATORY_QUESTION_ID, `seed ${seed}`);
-    assert.equal(questions[0].mandatory, true);
-    assert.equal(questions.filter((q) => q.id === MANDATORY_QUESTION_ID).length, 1);
+    assert.equal(questions.length, TEST_BLUEPRINT.total, `seed ${seed}`);
+    firsts.add(questions[0].id);
   }
+  assert.ok(firsts.size > 1, 'the first question was identical across every seed');
+});
+
+test('nothing in the bank claims to be mandatory', () => {
+  assert.equal(QUESTIONS.filter((q) => q.mandatory === true).length, 0);
+  assert.equal(MODULES.filter((m) => m.mandatory === true).length, 0);
+  const { sections } = generateTest(bank, { rng: seeded(8) });
+  assert.equal(sections.filter((s) => s.mandatory).length, 0);
 });
 
 test('a paper never repeats a question', () => {
@@ -216,7 +234,7 @@ test('every published question is well formed', () => {
 });
 
 test('every module has at least the 10 objective questions the bank promises', () => {
-  for (const mod of MODULES.filter((m) => !m.mandatory)) {
+  for (const mod of MODULES) {
     const objective = QUESTIONS.filter((q) => q.module === mod.key && q.type === 'objective');
     assert.ok(objective.length >= 10, `${mod.key} has only ${objective.length}`);
   }
@@ -267,20 +285,15 @@ test('a family declares the role its questions actually have', () => {
   }
 });
 
-test('the mandatory question lives in the mandatory module', () => {
-  const mandatoryModule = MODULES.find((m) => m.mandatory === true);
-  const question = QUESTIONS.find((q) => q.id === MANDATORY_QUESTION_ID);
-  assert.equal(question.module, mandatoryModule.key);
-  assert.equal(question.mandatory, true);
-  // Exactly one question is flagged mandatory, and it is the only member of
-  // that module — so the module a candidate always sees owns real content.
-  assert.equal(QUESTIONS.filter((q) => q.mandatory === true).length, 1);
-  assert.deepEqual(
-    QUESTIONS.filter((q) => q.module === mandatoryModule.key).map((q) => q.id),
-    [MANDATORY_QUESTION_ID],
-  );
-  // Its provenance in the source PDF is retained.
-  assert.equal(question.origin_module, 'F01');
+test('the retired common question is retained as an ordinary F01 open question', () => {
+  // Dropping the mandatory concept must not lose content: the item the PDF
+  // labelled "Common Question" is still in the bank, now drawn by F01's quota
+  // like any other open question.
+  const question = QUESTIONS.find((q) => q.id === 'RSA-F01-002');
+  assert.ok(question, 'the former common question is missing from the bank');
+  assert.equal(question.module, 'F01');
+  assert.equal(question.type, 'open');
+  assert.equal(question.mandatory, undefined);
 });
 
 test('the modules partition the bank: every question counted exactly once', () => {
@@ -293,13 +306,13 @@ test('the modules partition the bank: every question counted exactly once', () =
 
 test('the blueprint is derived from the per-module quotas, not restated', () => {
   const technical = MODULES.filter((m) => m.technical).length;
-  const nonTechnical = MODULES.filter((m) => !m.technical && !m.mandatory).length;
+  const nonTechnical = MODULES.filter((m) => !m.technical).length;
   assert.equal(TEST_BLUEPRINT.technical_objective, technical * TECHNICAL_OBJECTIVE_PER_MODULE);
   assert.equal(TEST_BLUEPRINT.technical_open, technical * TECHNICAL_OPEN_PER_MODULE);
   assert.equal(TEST_BLUEPRINT.non_technical_open, nonTechnical);
   assert.equal(
     TEST_BLUEPRINT.total,
-    TEST_BLUEPRINT.mandatory + TEST_BLUEPRINT.technical_objective
+    TEST_BLUEPRINT.technical_objective
       + TEST_BLUEPRINT.technical_open + TEST_BLUEPRINT.non_technical_open,
   );
 });

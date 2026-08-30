@@ -1057,12 +1057,9 @@ export async function modulesView(view) {
   // restated, so changing the paper shape updates this copy with it.
   const perTechnicalObjective = Math.round(bp.technical_objective / (bank.technical_modules || 10));
   const perTechnicalOpen = Math.round(bp.technical_open / (bank.technical_modules || 10));
-  const quota = (m) => {
-    if (m.mandatory) return 'Always served, first';
-    if (m.technical) return `${perTechnicalObjective} objective + ${perTechnicalOpen} open`;
-    return '1 open';
-  };
-  const gradedModules = modules.filter((m) => !m.mandatory).length;
+  const quota = (m) => (m.technical
+    ? `${perTechnicalObjective} objective + ${perTechnicalOpen} open`
+    : '1 open');
   const roleChip = (role) => role === 'objective'
     ? '<span class="chip">Objective</span>'
     : role === 'mixed'
@@ -1075,17 +1072,21 @@ export async function modulesView(view) {
         <div class="eyebrow">Assessment design</div>
         <h1>Modules &amp; families</h1>
         <p>Question bank v${esc(bank.version)} — ${bank.bank_total} questions in
-           ${gradedModules} modules, organised into ${bank.family_total} families.
+           ${modules.length} modules, organised into ${bank.family_total} families.
            A new question belongs to exactly one family inside one module.</p>
       </div>
-      <div class="heading-actions"><button class="btn" id="mv-preview">Preview a test</button></div>
+      <div class="heading-actions">
+        <button class="btn secondary" id="mv-import">Import from Excel</button>
+        <button class="btn secondary" id="mv-add">Add question</button>
+        <button class="btn" id="mv-preview">Preview a test</button>
+      </div>
     </div>
 
     <div class="card flat blueprint-strip">
       <span class="info-strip-icon">≡</span>
       <span class="catalogue-strip-copy">
         <b>Every generated test contains ${bp.total} questions.</b>
-        <small>${bp.mandatory} mandatory · ${bp.technical_objective} technical objective ·
+        <small>${bp.technical_objective} technical objective ·
           ${bp.technical_open} technical open · ${bp.non_technical_open} non-technical open.
           Questions are drawn at random from each module's families while this structure is held exactly.</small>
       </span>
@@ -1095,7 +1096,7 @@ export async function modulesView(view) {
     <div class="module-list">
     ${modules.map((m) => {
       const row = planFor.get(m.key);
-      const open = m.mandatory || m.technical;
+      const open = m.technical;
       return `
       <details class="card module-card" ${open ? 'open' : ''} data-module="${esc(m.key)}">
         <summary class="module-summary">
@@ -1121,6 +1122,9 @@ export async function modulesView(view) {
             { label: '', cls: 'actions', render: (f) =>
                 `<button class="btn ghost sm" data-family="${esc(f.id)}">View</button>` },
           ], m.families)}
+          <div class="module-foot">
+            <button class="btn ghost sm" data-add-module="${esc(m.key)}">+ Add a question to ${esc(m.key)}</button>
+          </div>
         </div>
       </details>`;
     }).join('')}
@@ -1134,31 +1138,50 @@ export async function modulesView(view) {
         <span class="chip chip-optional">${bank.optional.total} questions</span></div>
     </div>`;
 
+  // Re-render after a write so the counts, chips and readiness badges reflect
+  // what was just added rather than going stale until the next navigation.
+  const refresh = () => modulesView(view);
+
   view.querySelector('#mv-preview').onclick = async () => {
     const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: {} }));
     if (out) previewModal(out);
   };
+  view.querySelector('#mv-add').onclick = () => addQuestionModal(bank, {}, refresh);
+  view.querySelector('#mv-import').onclick = () => importQuestionsModal(refresh);
   for (const btn of view.querySelectorAll('[data-family]')) {
     btn.onclick = async () => {
       const out = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(btn.dataset.family)}`));
-      if (out) familyModal(out);
+      if (out) familyModal(out, bank, refresh);
+    };
+  }
+  for (const btn of view.querySelectorAll('[data-add-module]')) {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      addQuestionModal(bank, { module: btn.dataset.addModule }, refresh);
     };
   }
 }
 
 /** The questions inside one family — what a new question would join. */
-function familyModal({ family, questions }) {
+function familyModal({ family, questions }, bank, onChanged) {
   const rows = questions.map((q, i) => `
-    <tr>
+    <tr data-qid="${esc(q.id)}">
       <td class="muted">${i + 1}</td>
       <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
-      <td style="max-width:520px">${esc(q.prompt)}
-        ${q.mandatory ? '<span class="chip chip-mandatory">Mandatory</span>' : ''}
+      <td style="max-width:480px">${esc(q.prompt)}
+        ${q.authored ? '<span class="chip">Added here</span>' : ''}
         ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}
-        ${q.needs_option_review ? '<span class="chip chip-optional">Options need review</span>' : ''}</td>
+        ${q.needs_option_review ? '<span class="chip chip-optional">Options need review</span>' : ''}
+        ${(q.tags || []).length
+          ? `<div class="tag-row">${q.tags.slice(0, 6).map((t) => `<span class="chip chip-tag">${esc(t)}</span>`).join('')}</div>`
+          : ''}</td>
+      <td class="actions">${q.authored
+        ? `<button class="btn ghost sm danger" data-del="${esc(q.id)}">Delete</button>`
+        : '<span class="small muted">Published</span>'}</td>
     </tr>`).join('');
 
-  modal({
+  const dialog = modal({
     title: `${family.module} · ${family.name}`,
     wide: true,
     bodyHtml: `
@@ -1167,11 +1190,41 @@ function familyModal({ family, questions }) {
         A question added here joins this family in module ${esc(family.module)} only.</p>
       <div class="preview-scroll">
         <table class="data"><thead><tr>
-          <th>#</th><th>Type</th><th>Question</th>
+          <th>#</th><th>Type</th><th>Question</th><th></th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>`,
-    actions: [{ label: 'Close', kind: 'ghost', close: true }],
+    actions: [
+      { label: 'Close', kind: 'ghost' },
+      ...(bank ? [{
+        label: 'Add to this family',
+        onClick: (close) => {
+          close();
+          addQuestionModal(bank, { module: family.module, familyId: family.id }, onChanged);
+        },
+      }] : []),
+    ],
+    onOpen: (root) => {
+      // Only admin-authored rows are deletable; the published bank is read-only.
+      for (const btn of root.querySelectorAll('[data-del]')) {
+        btn.onclick = async () => {
+          const okToDelete = await confirmModal(
+            'Delete this question?',
+            'It is removed from the bank and will no longer be drawn into generated tests.',
+            'Delete', true,
+          );
+          if (!okToDelete) return;
+          const out = await attempt(
+            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.del)}`, { method: 'DELETE' }),
+            { okMessage: 'Question deleted' },
+          );
+          if (!out) return;
+          btn.closest('tr').remove();
+          if (onChanged) onChanged();
+        };
+      }
+    },
   });
+  return dialog;
 }
 
 /** Show one generated paper, grouped by module. */
@@ -1180,11 +1233,10 @@ function previewModal(result) {
   const rows = result.questions.map((q, i) => `
     <tr>
       <td class="muted">${i + 1}</td>
-      <td><b>${esc(q.mandatory ? 'M00' : q.module)}</b>
+      <td><b>${esc(q.module)}</b>
         <div class="small muted">${esc(q.family || '')}</div></td>
       <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
       <td style="max-width:520px">${esc(q.prompt)}
-        ${q.mandatory ? '<span class="chip chip-mandatory">Mandatory</span>' : ''}
         ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}</td>
     </tr>`).join('');
 
@@ -1192,8 +1244,8 @@ function previewModal(result) {
     title: 'Sample generated test',
     wide: true,
     bodyHtml: `
-      <p class="small muted">${c.total} questions — ${c.mandatory} mandatory,
-        ${c.technical_objective} technical objective, ${c.technical_open} technical open,
+      <p class="small muted">${c.total} questions — ${c.technical_objective} technical objective,
+        ${c.technical_open} technical open,
         ${c.non_technical_open} non-technical open${c.from_optional
           ? `, ${c.from_optional} drawn from the optional pool` : ''}.</p>
       ${result.warnings.length
@@ -1207,4 +1259,403 @@ function previewModal(result) {
       </div>`,
     actions: [{ label: 'Close', kind: 'ghost', close: true }],
   });
+}
+
+/* ------------------------- question authoring ------------------------- */
+
+/** Option rows an objective question is built from. Four is the house style. */
+const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+/**
+ * Add one question to a module.
+ *
+ * The form is type-aware: an objective question collects options and a single
+ * correct answer, an open question collects a rubric and probes. Swapping the
+ * type swaps the lower half of the form rather than showing both and hoping
+ * the author fills in the right one.
+ */
+function addQuestionModal(bank, { module: presetModule, familyId: presetFamily } = {}, onSaved) {
+  const modules = [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const familiesFor = (key) => (modules.find((m) => m.key === key)?.families || []).filter((f) => !f.legacy);
+
+  const moduleOptions = modules.map((m) =>
+    `<option value="${esc(m.key)}" ${m.key === presetModule ? 'selected' : ''}>${esc(m.key)} — ${esc(m.name)}</option>`).join('');
+
+  const optionRow = (letter, i) => `
+    <div class="opt-row" data-opt="${esc(letter)}">
+      <label class="opt-correct" title="Mark as the correct answer">
+        <input type="radio" name="aq-correct" value="${esc(letter.toLowerCase())}" ${i === 0 ? '' : ''}/>
+        <span class="opt-letter">${esc(letter)}</span>
+      </label>
+      <input type="text" class="opt-text" data-letter="${esc(letter)}" placeholder="Option ${esc(letter)}"/>
+      <button type="button" class="btn ghost sm opt-del" aria-label="Remove option ${esc(letter)}">✕</button>
+    </div>`;
+
+  const body = `
+    <p class="modal-intro">A question belongs to exactly one family inside one module.
+      An unknown family name creates a new family in that module.</p>
+    <form id="aq-form" novalidate>
+      <div class="form-2col">
+        <label class="f"><span class="lbl">Module <span class="req">*</span></span>
+          <select id="aq-module"><option value="">— select —</option>${moduleOptions}</select>
+          <div class="field-err" id="aq-err-module" role="alert" hidden></div></label>
+        <label class="f"><span class="lbl">Type <span class="req">*</span></span>
+          <select id="aq-type">
+            <option value="objective">Objective (multiple choice)</option>
+            <option value="open">Open (assessor-scored)</option>
+          </select></label>
+      </div>
+
+      <label class="f"><span class="lbl">Family <span class="req">*</span></span>
+        <input type="text" id="aq-family" list="aq-family-list" placeholder="Pick an existing family or type a new name"/>
+        <datalist id="aq-family-list"></datalist>
+        <div class="help" id="aq-family-hint">Select a module first.</div>
+        <div class="field-err" id="aq-err-family" role="alert" hidden></div></label>
+
+      <label class="f"><span class="lbl">Question <span class="req">*</span></span>
+        <textarea id="aq-prompt" rows="3" placeholder="What the candidate is asked."></textarea>
+        <div class="field-err" id="aq-err-prompt" role="alert" hidden></div></label>
+
+      <div id="aq-objective">
+        <div class="lbl" style="margin-bottom:7px">Options — select the correct one <span class="req">*</span></div>
+        <div id="aq-options">${OPTION_LETTERS.slice(0, 4).map(optionRow).join('')}</div>
+        <button type="button" class="btn ghost sm" id="aq-add-opt" style="margin:2px 0 15px">+ Add option</button>
+        <div class="field-err" id="aq-err-options" role="alert" hidden></div>
+        <label class="f"><span class="lbl">Why that answer is right</span>
+          <textarea id="aq-rationale" rows="2" placeholder="Shown to the reviewer, never to the candidate."></textarea></label>
+      </div>
+
+      <div id="aq-open" hidden>
+        <label class="f"><span class="lbl">Rubric — expected evidence <span class="req">*</span></span>
+          <textarea id="aq-rubric" rows="3" placeholder="What a strong answer must contain."></textarea>
+          <div class="field-err" id="aq-err-rubric" role="alert" hidden></div></label>
+        <label class="f"><span class="lbl">Follow-up probes</span>
+          <input type="text" id="aq-probes" placeholder="Separate with a semicolon"/></label>
+      </div>
+
+      <div class="form-3col">
+        <label class="f"><span class="lbl">Difficulty</span>
+          <select id="aq-difficulty">
+            ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${n === 4 ? 'selected' : ''}>${n}</option>`).join('')}
+          </select></label>
+        <label class="f"><span class="lbl">Band</span>
+          <select id="aq-band">
+            <option>Foundation</option><option selected>Intermediate</option><option>Advanced</option>
+          </select></label>
+        <label class="f"><span class="lbl">Minutes</span>
+          <input type="number" id="aq-minutes" min="1" max="120" value="2"/></label>
+      </div>
+
+      <label class="f"><span class="lbl">Tags</span>
+        <input type="text" id="aq-tags" placeholder="Separate with a comma"/>
+        <div class="help">Used for reporting and to seed the gap tag.</div></label>
+    </form>`;
+
+  modal({
+    title: 'Add a question',
+    wide: true,
+    bodyHtml: body,
+    actions: [
+      { label: 'Cancel', kind: 'ghost' },
+      {
+        label: 'Add question',
+        onClick: async (close, btn) => {
+          const el = (id) => document.getElementById(id);
+          const clearErrors = () => document.querySelectorAll('#aq-form .field-err')
+            .forEach((e) => { e.hidden = true; e.textContent = ''; });
+          const showError = (name, msg) => {
+            const box = el(`aq-err-${name}`);
+            if (box) { box.textContent = msg; box.hidden = false; }
+          };
+          clearErrors();
+
+          const type = el('aq-type').value;
+          const payload = {
+            module: el('aq-module').value,
+            family: el('aq-family').value.trim(),
+            type,
+            prompt: el('aq-prompt').value.trim(),
+            difficulty: Number(el('aq-difficulty').value),
+            band: el('aq-band').value,
+            minutes: Number(el('aq-minutes').value),
+            tags: el('aq-tags').value,
+          };
+          if (type === 'objective') {
+            const rows = [...document.querySelectorAll('#aq-options .opt-row')];
+            payload.options = rows
+              .map((r) => ({
+                id: r.dataset.opt.toLowerCase(),
+                label: r.querySelector('.opt-text').value.trim(),
+              }))
+              .filter((o) => o.label);
+            const picked = document.querySelector('#aq-options input[name="aq-correct"]:checked');
+            payload.correct_option_ids = picked ? [picked.value] : [];
+            payload.rationale = el('aq-rationale').value.trim();
+          } else {
+            payload.rubric = el('aq-rubric').value.trim();
+            payload.probes = el('aq-probes').value;
+          }
+
+          btn.disabled = true;
+          try {
+            const out = await api('/admin/question-bank/questions', { method: 'POST', body: payload });
+            toast(`Added ${out.question.id} to ${out.question.module}.`, 'success');
+            close();
+            if (onSaved) onSaved(out.question);
+          } catch (err) {
+            btn.disabled = false;
+            // Field-level errors land against their input; anything else is a toast.
+            const list = err.body?.errors || [];
+            if (!list.length) { toast(err.message, 'error'); return; }
+            // Order matters: "An open question needs a rubric" mentions both a
+            // question and a rubric, and belongs against the rubric.
+            const target = (msg) => /rubric/i.test(msg) ? 'rubric'
+              : /option|correct answer|correct/i.test(msg) ? 'options'
+                : /module/i.test(msg) ? 'module'
+                  : /famil/i.test(msg) ? 'family'
+                    : /prompt/i.test(msg) ? 'prompt' : null;
+            const orphans = [];
+            for (const msg of list) {
+              const name = target(msg);
+              const box = name && el(`aq-err-${name}`);
+              // An error routed into a collapsed section would be invisible;
+              // surface those as a toast instead of silently swallowing them.
+              // Start from the parent: the box itself is always `hidden` until shown.
+              if (box && !box.parentElement?.closest('[hidden]')) showError(name, msg);
+              else orphans.push(msg);
+            }
+            if (orphans.length) toast(orphans.join(' '), 'error');
+          }
+        },
+      },
+    ],
+    onOpen: (root) => {
+      const el = (id) => root.querySelector(`#${id}`);
+      const syncFamilies = () => {
+        const key = el('aq-module').value;
+        const fams = key ? familiesFor(key) : [];
+        el('aq-family-list').innerHTML = fams.map((f) => `<option value="${esc(f.name)}"></option>`).join('');
+        el('aq-family-hint').textContent = key
+          ? `${fams.length} existing ${fams.length === 1 ? 'family' : 'families'} in ${key}. A new name creates a new family.`
+          : 'Select a module first.';
+        if (presetFamily) {
+          const match = fams.find((f) => f.id === presetFamily);
+          if (match) { el('aq-family').value = match.name; presetFamily = null; }
+        }
+      };
+      const syncType = () => {
+        const objective = el('aq-type').value === 'objective';
+        el('aq-objective').hidden = !objective;
+        el('aq-open').hidden = objective;
+        el('aq-minutes').value = objective ? '2' : '5';
+      };
+      const renumber = () => {
+        [...root.querySelectorAll('#aq-options .opt-row')].forEach((row, i) => {
+          const letter = OPTION_LETTERS[i];
+          row.dataset.opt = letter;
+          row.querySelector('.opt-letter').textContent = letter;
+          const radio = row.querySelector('input[type=radio]');
+          radio.value = letter.toLowerCase();
+          const text = row.querySelector('.opt-text');
+          text.dataset.letter = letter;
+          text.placeholder = `Option ${letter}`;
+          row.querySelector('.opt-del').setAttribute('aria-label', `Remove option ${letter}`);
+        });
+        const rows = root.querySelectorAll('#aq-options .opt-row').length;
+        el('aq-add-opt').hidden = rows >= OPTION_LETTERS.length;
+        root.querySelectorAll('#aq-options .opt-del').forEach((b) => { b.disabled = rows <= 2; });
+      };
+      root.querySelector('#aq-options').addEventListener('click', (e) => {
+        const del = e.target.closest('.opt-del');
+        if (!del) return;
+        if (root.querySelectorAll('#aq-options .opt-row').length <= 2) return;
+        del.closest('.opt-row').remove();
+        renumber();
+      });
+      el('aq-add-opt').onclick = () => {
+        const i = root.querySelectorAll('#aq-options .opt-row').length;
+        if (i >= OPTION_LETTERS.length) return;
+        root.querySelector('#aq-options').insertAdjacentHTML('beforeend', optionRow(OPTION_LETTERS[i], i));
+        renumber();
+      };
+      el('aq-module').onchange = syncFamilies;
+      el('aq-type').onchange = syncType;
+      syncFamilies();
+      syncType();
+      renumber();
+    },
+  });
+}
+
+/**
+ * Bulk import from a spreadsheet.
+ *
+ * Every upload is validated server-side as a dry run first, so the admin sees
+ * the per-row outcome and can only commit once something was actually
+ * accepted. Nothing is written until they press Import.
+ */
+function importQuestionsModal(onImported) {
+  let checked = null;      // last dry-run report
+  let payload = null;      // { file_base64 | csv, filename }
+
+  const body = `
+    <p class="modal-intro">Upload an .xlsx or .csv. The first row must be a header.
+      The file is checked before anything is written.</p>
+    <div class="import-drop" id="iq-drop">
+      <input type="file" id="iq-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
+      <div class="import-drop-copy">
+        <b id="iq-name">Choose a file or drop it here</b>
+        <small>.xlsx or .csv · up to 2000 rows</small>
+      </div>
+      <button type="button" class="btn secondary sm" id="iq-browse">Browse</button>
+    </div>
+    <p class="small muted" style="margin:11px 0 0">
+      Not sure about the columns? <a href="#" id="iq-template">Download the template</a>.
+    </p>
+    <div id="iq-report"></div>`;
+
+  const m = modal({
+    title: 'Import questions',
+    wide: true,
+    bodyHtml: body,
+    actions: [
+      { label: 'Cancel', kind: 'ghost' },
+      {
+        label: 'Import',
+        onClick: async (close, btn) => {
+          if (!checked || !checked.accepted) {
+            toast('Choose a file with at least one valid row first.', 'error');
+            return;
+          }
+          btn.disabled = true;
+          const out = await attempt(
+            () => api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: false } }),
+          );
+          btn.disabled = false;
+          if (!out) return;
+          toast(`Imported ${out.imported} ${out.imported === 1 ? 'question' : 'questions'}.`, 'success');
+          close();
+          if (onImported) onImported(out);
+        },
+      },
+    ],
+    onOpen: (root) => {
+      const file = root.querySelector('#iq-file');
+      const drop = root.querySelector('#iq-drop');
+      const name = root.querySelector('#iq-name');
+      const report = root.querySelector('#iq-report');
+      const importBtn = [...root.querySelectorAll('.m-foot .btn')].pop();
+      importBtn.disabled = true;
+
+      const renderReport = (r) => {
+        const problems = [...r.errors.map((e) => ({ ...e, kind: 'Rejected' })),
+          ...r.duplicate_rows.map((d) => ({ ...d, kind: 'Duplicate', errors: ['Already in the bank.'] }))]
+          .sort((a, b) => a.line - b.line);
+
+        report.innerHTML = `
+          <div class="import-summary">
+            ${badge(`${r.accepted} ready`, r.accepted ? 'green' : 'grey')}
+            ${r.rejected ? badge(`${r.rejected} rejected`, 'red') : ''}
+            ${r.duplicates ? badge(`${r.duplicates} duplicate`, 'amber') : ''}
+            <span class="small muted">of ${r.total} data ${r.total === 1 ? 'row' : 'rows'}</span>
+          </div>
+          ${r.preview.length ? `
+            <div class="preview-scroll" style="max-height:26vh;margin-top:12px">
+              <table class="data"><thead><tr>
+                <th>Row</th><th>Module</th><th>Family</th><th>Type</th><th>Question</th>
+              </tr></thead><tbody>${r.preview.map((p) => `
+                <tr><td class="muted">${p.line}</td><td><b>${esc(p.module)}</b></td>
+                  <td class="small">${esc(p.family)}</td>
+                  <td><span class="chip">${esc(p.type === 'objective' ? 'Objective' : 'Open')}</span></td>
+                  <td style="max-width:420px">${esc(p.prompt)}</td></tr>`).join('')}
+              </tbody></table>
+            </div>
+            ${r.accepted > r.preview.length
+              ? `<p class="small muted">…and ${r.accepted - r.preview.length} more ready to import.</p>` : ''}` : ''}
+          ${problems.length ? `
+            <div class="preview-scroll" style="max-height:24vh;margin-top:12px">
+              <table class="data"><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>
+                ${problems.map((p) => `<tr>
+                  <td class="muted">${p.line}</td>
+                  <td><b>${esc(p.kind)}</b> — ${esc((p.errors || []).join(' '))}
+                    ${p.prompt ? `<div class="small muted">${esc(String(p.prompt).slice(0, 120))}</div>` : ''}</td>
+                </tr>`).join('')}
+              </tbody></table>
+            </div>` : ''}
+          ${!r.accepted ? '<p class="small muted">Nothing can be imported from this file yet.</p>' : ''}`;
+        importBtn.disabled = !r.accepted;
+      };
+
+      const check = async (f) => {
+        checked = null;
+        payload = null;
+        importBtn.disabled = true;
+        name.textContent = f.name;
+        report.innerHTML = '<p class="small muted">Checking…</p>';
+
+        const isCsv = /\.csv$/i.test(f.name) || f.type === 'text/csv';
+        try {
+          payload = isCsv
+            ? { csv: await f.text(), filename: f.name }
+            : { file_base64: await fileToBase64(f), filename: f.name };
+        } catch {
+          report.innerHTML = '<p class="small muted">That file could not be read.</p>';
+          return;
+        }
+
+        try {
+          const out = await api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: true } });
+          checked = out;
+          renderReport(out);
+        } catch (err) {
+          checked = null;
+          report.innerHTML = `<div class="import-summary">${badge('Cannot read this file', 'red')}</div>
+            <p class="small muted">${esc(err.message)}</p>`;
+        }
+      };
+
+      root.querySelector('#iq-browse').onclick = () => file.click();
+      drop.onclick = (e) => { if (!e.target.closest('button')) file.click(); };
+      file.onchange = () => { if (file.files[0]) check(file.files[0]); };
+      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+      drop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        drop.classList.remove('over');
+        const f = e.dataTransfer?.files?.[0];
+        if (f) check(f);
+      });
+      root.querySelector('#iq-template').onclick = async (e) => {
+        e.preventDefault();
+        const tpl = await attempt(() => api('/admin/question-bank/import-template'));
+        if (tpl) downloadText(tpl.filename, tpl.csv, tpl.content_type);
+      };
+    },
+  });
+  return m;
+}
+
+/** Read a File as bare base64 (no data-URI prefix), for JSON upload. */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('read failed'));
+    reader.onload = () => {
+      const out = String(reader.result || '');
+      resolve(out.slice(out.indexOf(',') + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Save text to the user's machine without a server round-trip. */
+function downloadText(filename, text, type = 'text/csv') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
