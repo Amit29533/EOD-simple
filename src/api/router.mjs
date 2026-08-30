@@ -1,4 +1,14 @@
 import { notFound, forbidden, unauthorized } from './helpers.mjs';
+import { authHandlers } from './handlers/auth.mjs';
+import { adminHandlers } from './handlers/admin.mjs';
+import { assessorHandlers } from './handlers/assessor.mjs';
+import { candidateHandlers } from './handlers/candidate.mjs';
+import { metaHandlers } from './handlers/meta.mjs';
+
+/** Route tables, kept in handler modules and registered here in order. */
+const HANDLER_MODULES = [
+  authHandlers, adminHandlers, assessorHandlers, candidateHandlers, metaHandlers,
+];
 
 /**
  * Tiny router: route(method, pattern, roles, handler).
@@ -10,12 +20,7 @@ export function registerRoutes() {
   const route = (method, pattern, roles, handler) =>
     routes.push({ method, pattern, roles, handler, ...compile(pattern) });
 
-  const build = (handlers) => handlers(route);
-  buildAuth(route);
-  buildAdmin(route);
-  buildAssessor(route);
-  buildCandidate(route);
-  buildMeta(route);
+  for (const register of HANDLER_MODULES) register(route);
   return routes;
 }
 
@@ -40,15 +45,3 @@ export async function dispatch(routes, ctx) {
   }
   return notFound();
 }
-
-// ---- route tables (kept in handler modules, registered here) ----
-import { authHandlers } from './handlers/auth.mjs';
-import { adminHandlers } from './handlers/admin.mjs';
-import { assessorHandlers } from './handlers/assessor.mjs';
-import { candidateHandlers } from './handlers/candidate.mjs';
-import { metaHandlers } from './handlers/meta.mjs';
-const buildAuth = (r) => authHandlers(r);
-const buildAdmin = (r) => adminHandlers(r);
-const buildAssessor = (r) => assessorHandlers(r);
-const buildCandidate = (r) => candidateHandlers(r);
-const buildMeta = (r) => metaHandlers(r);

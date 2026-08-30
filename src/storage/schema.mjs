@@ -10,6 +10,9 @@ export const TABLES = {
   roles:        { json: [] },
   competencies: { json: [] },
   questions:    { json: ['options', 'correct_option_ids'] },
+  // Admin-authored v1.2 questions. The published bank in src/content is
+  // generated and read-only, so additions live here and are merged over it.
+  bank_questions: { json: ['options', 'correct_option_ids', 'probes', 'tags'] },
   frameworks:   { json: ['config'] },
   assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state'] },
   responses:    { json: ['answer'] },

@@ -116,19 +116,4 @@ export function initRipples(root = document) {
   root.querySelectorAll('.btn').forEach(ripple);
 }
 
-/**
- * Observe an element and add 'in-view' class when visible.
- */
-export function observeVisibility(el, cls = 'in-view') {
-  if (reduceMotion() || !('IntersectionObserver' in window)) {
-    el.classList.add(cls);
-    return;
-  }
-  const observer = new IntersectionObserver(([entry]) => {
-    if (entry.isIntersecting) {
-      el.classList.add(cls);
-      observer.disconnect();
-    }
-  }, { threshold: 0.15 });
-  observer.observe(el);
-}
+
