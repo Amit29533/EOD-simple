@@ -17,6 +17,7 @@ const ROUTES = {
     ['#/assessments/:id/report', admin.reportView], ['#/assessments/:id/integrity', admin.integrityView],
     ['#/roles', admin.rolesView],
     ['#/roles/:id', admin.roleDetailView], ['#/questions', admin.questionsView],
+    ['#/modules', admin.modulesView],
     ['#/users', admin.usersView], ['#/audit', admin.auditView],
   ],
   assessor: [
@@ -50,6 +51,7 @@ const NAV_ICONS = {
   assessments: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h8l3 3V20H7z"></path><path d="M15 3.8V7h3M10 11h5M10 14.5h5M10 18h3"></path></svg>',
   roles: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"></circle><path d="m12 7.5 1.4 3.1 3.2.4-2.4 2.2.7 3.2-2.9-1.7-2.9 1.7.7-3.2-2.4-2.2 3.2-.4z"></path></svg>',
   questions: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v15H7.5A2.5 2.5 0 0 0 5 20.5z"></path><path d="M5 5.5v15M9 7h7M9 10.5h7"></path></svg>',
+  modules: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="10.4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="16.8" width="17" height="3.2" rx="1.2"></rect></svg>',
   users: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5.5 20c.5-4 2.5-6 6.5-6s6 2 6.5 6"></path></svg>',
   audit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"></path></svg>',
   workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 17 5-5 3 3 7-8"></path><path d="M15 7h4v4"></path></svg>',
@@ -58,7 +60,8 @@ const NAV_ICONS = {
 };
 const NAV = {
   admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'],
-          ['#/roles', 'Roles & Frameworks'], ['#/questions', 'Question Bank'], ['#/users', 'Users & Access'], ['#/audit', 'Audit Log']],
+          ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Modules & Families'], ['#/questions', 'Question Bank'],
+          ['#/users', 'Users & Access'], ['#/audit', 'Audit Log']],
   assessor: [['#/workspace', 'My Assessments']],
   candidate: [['#/journey', 'My Journey']],
   validator: [['#/home', 'Home']],
@@ -78,8 +81,17 @@ function renderShell() {
   const u = state.user;
   const nav = NAV[u.role] || [];
   const hash = routeHash().split('/').slice(0, 2).join('/');
+  // Group by destination rather than by index, so adding a nav item never
+  // silently slides entries into the wrong section.
+  const GROUPS = {
+    Workspace: ['#/dashboard', '#/candidates', '#/assessments'],
+    Configure: ['#/roles', '#/modules', '#/questions'],
+    Governance: ['#/users', '#/audit'],
+  };
   const navGroups = u.role === 'admin'
-    ? [['Workspace', nav.slice(0, 3)], ['Configure', nav.slice(3, 6)], ['Governance', nav.slice(6)]]
+    ? Object.entries(GROUPS)
+        .map(([label, hrefs]) => [label, nav.filter(([h]) => hrefs.includes(h))])
+        .filter(([, items]) => items.length)
     : [['Workspace', nav]];
   const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'Anthroprime ECOD';
 

@@ -10,6 +10,9 @@ import { buildSnapshot, roleBank } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
 import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
+import { QUESTION_FAMILIES, MODULES, QUESTIONS, QUESTION_BANK_VERSION } from '../../content/rsa-question-bank.mjs';
+import { OPTIONAL_QUESTIONS, optionalSummary } from '../../content/rsa-optional-bank.mjs';
+import { generateTest, testPlan, TEST_BLUEPRINT } from '../../core/test-generation.mjs';
 
 const A = ['admin'];
 
@@ -487,6 +490,60 @@ export function adminHandlers(route) {
       max_questions: MAX_ASSESSMENT_QUESTIONS,
       catalogue,
       ...allocationPreview(bank.questions, bank.competencies, previewLimit),
+    });
+  });
+
+  // ------------------------------------------------ question bank v1.2
+  // The finalized, module-structured bank: families, modules and the fixed
+  // 51-question paper shape. Read-only published content, so it is served
+  // straight from src/content rather than from the store.
+  route('GET', '/admin/question-bank/modules', A, async ({ query }) => {
+    // `bool` deliberately does not treat the string '1' as true (form posts
+    // send 'on'/'true'), but a query string naturally carries ?flag=1.
+    const includeOptional = bool(query.include_optional) || query.include_optional === '1';
+    const pool = includeOptional ? [...QUESTIONS, ...OPTIONAL_QUESTIONS] : QUESTIONS;
+    const counts = new Map();
+    for (const q of pool) {
+      const row = counts.get(q.module) || { objective: 0, open: 0, optional: 0 };
+      if (q.optional) row.optional += 1;
+      else if (q.type === 'open') row.open += 1;
+      else row.objective += 1;
+      counts.set(q.module, row);
+    }
+    return ok({
+      version: QUESTION_BANK_VERSION,
+      blueprint: TEST_BLUEPRINT,
+      families: QUESTION_FAMILIES,
+      modules: MODULES.map((m) => ({
+        ...m,
+        ...(counts.get(m.key) || { objective: 0, open: 0, optional: 0 }),
+      })),
+      bank_total: QUESTIONS.length,
+      optional: optionalSummary(),
+    });
+  });
+
+  // What a generated paper would look like, and whether every module can meet
+  // its quota — the module-based equivalent of /roles/:id/question-plan.
+  route('GET', '/admin/question-bank/plan', A, async () =>
+    ok(testPlan({ modules: MODULES, questions: [...QUESTIONS, ...OPTIONAL_QUESTIONS] })));
+
+  // Draw a sample paper so an admin can inspect the structure before relying
+  // on it. Never persisted — allocation builds its own paper.
+  route('POST', '/admin/question-bank/preview', A, async () => {
+    const result = generateTest({
+      modules: MODULES,
+      questions: [...QUESTIONS, ...OPTIONAL_QUESTIONS],
+    });
+    return ok({
+      counts: result.counts,
+      blueprint: result.blueprint,
+      warnings: result.warnings,
+      sections: result.sections,
+      questions: result.questions.map((q) => ({
+        id: q.id, module: q.module, family: q.family, type: q.type,
+        prompt: q.prompt, mandatory: q.mandatory === true, optional: q.optional === true,
+      })),
     });
   });
 

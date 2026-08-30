@@ -58,6 +58,23 @@ export const DEFAULT_FRAMEWORK_CONFIG = {
 /** Maximum number of questions an allocation may cap an assessment at. */
 export const MAX_ASSESSMENT_QUESTIONS = 50;
 
+/**
+ * Module-structured test generation (Question Bank v1.2).
+ *
+ * A generated paper is assembled from fixed per-module quotas rather than by
+ * competency-weight apportionment. See src/core/test-generation.mjs for the
+ * selection logic and src/content/rsa-question-bank.mjs for the bank.
+ */
+export const MODULE_TEST_STRUCTURE = {
+  mandatory: 1,             // the common question, always served first
+  technical_modules: 10,    // T01-T10
+  technical_objective: 3,   // per technical module
+  technical_open: 1,        // per technical module
+  non_technical_modules: 10, // C01-C04, P01-P04, F01-F02
+  non_technical_open: 1,    // per non-technical module
+  total: 51,                // 1 + (10 x 4) + (10 x 1)
+};
+
 export const SESSION_TTL_HOURS = 12;
 export const DEFAULT_PORT = 3000;
 

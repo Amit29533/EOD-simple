@@ -1,0 +1,132 @@
+/**
+ * The legacy RSA catalogue, re-shaped as the OPTIONAL question pool.
+ *
+ * Before the finalized Question Bank v1.2 (src/content/rsa-question-bank.mjs)
+ * the platform served a 115-question bank organised by *competency*. Those
+ * questions are no longer part of a generated test: v1.2 is the authoritative
+ * bank and its FAMILY -> MODULE structure drives selection.
+ *
+ * They are not discarded, though. Each one is mapped onto the closest v1.2
+ * module, tagged `optional: true`, and kept as a **fallback pool**: the
+ * generator ignores optional questions while a module can satisfy its quota
+ * from the v1.2 bank, and only draws on them when a module would otherwise
+ * come up short (see src/core/test-generation.mjs). That keeps a generated
+ * paper at its full length even if an admin deactivates or deletes a chunk of
+ * the primary bank.
+ *
+ * Deriving the pool from the legacy catalogue - rather than copying 115
+ * records - means an edit to the legacy content stays reflected here, and the
+ * mapping below is the single place that records where each retired
+ * competency now belongs.
+ */
+
+import { RSA_QUESTIONS, RSA_COMPETENCIES, RSA_ORAL_SET } from './rsa-catalogue.mjs';
+
+/**
+ * Retired competency -> the v1.2 module that now covers it.
+ * Chosen by subject overlap, so a fallback question is always at least
+ * on-topic for the module it stands in for.
+ */
+export const LEGACY_COMPETENCY_TO_MODULE = {
+  'lakehouse-architecture': 'T01', // Databricks Architecture, Lakehouse & Data Intelligence
+  'data-engineering':       'T02', // Data Ingestion, Streaming & Change Processing
+  'governance-security':    'T06', // Unity Catalog, Security & Data Governance
+  'ml-genai':               'T10', // GenAI, RAG & Agent Operations
+  'performance-cost':       'T05', // Delta Lake, Performance, Compute & Cost Optimization
+  'devops-production':      'T08', // Migration, Troubleshooting & Production Operations
+  'customer-advisory':      'C03', // Objection Handling & Consultative Influence
+};
+
+/** Retired competency -> the question family the module belongs to. */
+const MODULE_FAMILY = {
+  T01: 'technical', T02: 'technical', T05: 'technical',
+  T06: 'technical', T08: 'technical', T10: 'technical',
+  C03: 'consulting',
+};
+
+const COMPETENCY_NAME = Object.fromEntries(
+  RSA_COMPETENCIES.map((c) => [c.key, c.name])
+);
+
+/** Legacy storage types map onto the two v1.2 answer modes. */
+const isOpenType = (type) => type === 'text';
+
+/**
+ * Priority decides which optional question is preferred when several could
+ * cover the same shortfall. Spoken customer-advisory items rank highest (they
+ * were the curated set), then open scenarios, then everything else.
+ */
+function priorityOf(question) {
+  if (question.question_set === RSA_ORAL_SET) return 3;
+  if (isOpenType(question.type)) return 2;
+  return 1;
+}
+
+let sequence = 0;
+const nextId = (module) => {
+  sequence += 1;
+  return `RSA-${module}-OPT-${String(sequence).padStart(3, '0')}`;
+};
+
+/**
+ * The optional pool, in the shape the generator and the storage layer expect
+ * (identical to a v1.2 question, plus the `optional` flags).
+ */
+export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
+  .filter((q) => LEGACY_COMPETENCY_TO_MODULE[q.competency])
+  .map((q) => {
+    const module = LEGACY_COMPETENCY_TO_MODULE[q.competency];
+    const open = isOpenType(q.type);
+    return {
+      id: nextId(module),
+      module,
+      family: COMPETENCY_NAME[q.competency] || q.competency,
+      type: open ? 'open' : 'objective',
+      source_type: 'Legacy catalogue',
+      difficulty: q.difficulty === 'advanced' ? 5 : q.difficulty === 'foundation' ? 2 : 3,
+      band: q.difficulty === 'advanced' ? 'Advanced' : 'Intermediate',
+      mode: q.audio_required === true ? 'Live assessor' : 'Online assessment',
+      minutes: open ? 5 : 2,
+      status: 'Active',
+      version: '1.1',
+      randomizable: true,
+      mandatory: false,
+
+      // What marks these as the fallback pool.
+      optional: true,
+      optional_priority: priorityOf(q),
+      legacy_competency: q.competency,
+
+      prompt: q.prompt,
+      ...(open
+        ? { probes: [], rubric: q.rubric || '' }
+        : {
+            options: (q.options || []).map((o) => ({ id: o.id, label: o.label })),
+            correct_option_ids: q.correct_option_ids || [],
+            rationale: '',
+            needs_option_review: false,
+          }),
+      red_flags: '',
+      gap_tag: `${COMPETENCY_NAME[q.competency] || q.competency} - legacy`,
+      enrichment: '',
+      help_text: q.help_text || '',
+      question_set: q.question_set || '',
+      audio_required: q.audio_required === true,
+    };
+  });
+
+/** Per-module counts, for the admin UI. */
+export function optionalSummary() {
+  const byModule = {};
+  for (const q of OPTIONAL_QUESTIONS) {
+    const row = byModule[q.module] || (byModule[q.module] = {
+      module: q.module, family: MODULE_FAMILY[q.module] || 'technical', objective: 0, open: 0,
+    });
+    if (q.type === 'open') row.open += 1;
+    else row.objective += 1;
+  }
+  return {
+    total: OPTIONAL_QUESTIONS.length,
+    modules: Object.values(byModule).sort((a, b) => a.module.localeCompare(b.module)),
+  };
+}

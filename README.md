@@ -101,6 +101,36 @@ Deliberately deferred to the next phases (architecture already supports them): E
 module, Independent Validation module, candidate-facing enrichment plan, client/commercial
 entities. There are no `clients`/commercial tables anywhere — nobody can stumble into them.
 
+## Question Bank v1.2 — families, modules and test generation
+
+The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`):
+**348 questions across 20 modules**, grouped into families, plus a mandatory module
+whose question opens every paper.
+
+| Family | Modules | Served per module |
+| ------ | ------- | ----------------- |
+| **Mandatory** | `M00` | 1 question — **always on every test**, first |
+| **Technical** | `T01`–`T10` | 3 objective + 1 open |
+| **Consulting & Client Skills** | `C01`–`C04` | 1 open |
+| **Professional & Communication** | `P01`–`P04` | 1 open |
+| **Foundation & Integrated Judgment** | `F01`–`F02` | 1 open |
+
+Every generated test contains **51 questions**:
+
+- 1 mandatory
+- 30 technical objective (10 modules × 3)
+- 10 technical non-objective (10 modules × 1)
+- 10 non-technical non-objective (10 modules × 1)
+
+Questions are picked at **random** from each module's bank while that structure is
+held exactly. Browse it under **Admin → Modules & Families**, which also previews a
+freshly generated paper.
+
+**Optional pool.** The previous 115-question competency catalogue is no longer part
+of a generated test. It is re-tagged into the same module shape and kept as a
+**fallback**: never served while a module can fill its quota, drawn only to cover a
+shortfall so a paper always reaches full length.
+
 ## Compartmentalization matrix
 
 | Capability                              | Admin | Assessor            | Candidate | Validator / Trainer |

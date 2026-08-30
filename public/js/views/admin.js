@@ -1030,3 +1030,132 @@ function debounce(fn, ms) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
+
+/* ============================ Question Bank v1.2 ============================ */
+/**
+ * Family -> module view of the finalized question bank, plus the fixed shape
+ * of a generated paper. Read-only published content: the modules, their
+ * families and the per-module quotas come from the API, so this view never
+ * drifts from src/core/test-generation.mjs.
+ */
+export async function modulesView(view) {
+  view.innerHTML = loading();
+  const [bank, plan] = await Promise.all([
+    api('/admin/question-bank/modules?include_optional=1'),
+    attempt(() => api('/admin/question-bank/plan')),
+  ]);
+
+  const bp = bank.blueprint;
+  const families = bank.families;
+  const byFamily = new Map(families.map((f) => [f.key, []]));
+  for (const m of [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+    if (!byFamily.has(m.family)) byFamily.set(m.family, []);
+    byFamily.get(m.family).push(m);
+  }
+  const planFor = new Map((plan?.modules || []).map((r) => [r.module, r]));
+
+  const quota = (m) => {
+    if (m.mandatory) return '<span class="chip chip-mandatory">Always served</span>';
+    if (m.technical) return '<span class="chip">3 objective + 1 open</span>';
+    return '<span class="chip">1 open</span>';
+  };
+
+  view.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="eyebrow">Assessment design</div>
+        <h1>Modules &amp; families</h1>
+        <p>The finalized question bank v${esc(bank.version)} — ${bank.bank_total} questions across
+           ${bank.modules.length - 1} modules, grouped into ${families.length - 1} families.</p>
+      </div>
+      <div class="heading-actions"><button class="btn" id="mv-preview">Preview a test</button></div>
+    </div>
+
+    <div class="card flat blueprint-strip">
+      <span class="info-strip-icon">≡</span>
+      <span class="catalogue-strip-copy">
+        <b>Every generated test contains ${bp.total} questions.</b>
+        <small>${bp.mandatory} mandatory · ${bp.technical_objective} technical objective ·
+          ${bp.technical_open} technical open · ${bp.non_technical_open} non-technical open.
+          Questions are drawn at random from each module's bank while this structure is held exactly.</small>
+      </span>
+      ${plan && plan.ready
+        ? badge('All modules ready', 'green')
+        : badge('Some modules are short', 'amber')}
+    </div>
+
+    ${families.map((f) => {
+      const mods = byFamily.get(f.key) || [];
+      if (!mods.length) return '';
+      return `
+      <div class="card module-family">
+        <div class="panel-head">
+          <div>
+            <h2>${esc(f.name)}</h2>
+            <p class="small muted">${esc(f.description)}</p>
+          </div>
+          <span class="chip">${mods.length} module${mods.length === 1 ? '' : 's'}</span>
+        </div>
+        ${dataTable([
+          { label: 'Module', render: (m) => `<b>${esc(m.key)}</b> — ${esc(m.name)}` },
+          { label: 'Served per test', render: quota },
+          { label: 'Objective', render: (m) => esc(m.objective) },
+          { label: 'Open', render: (m) => esc(m.open) },
+          { label: 'Optional', render: (m) => m.optional
+              ? `<span class="chip chip-optional">${esc(m.optional)}</span>` : '—' },
+          { label: 'Status', render: (m) => {
+              const row = planFor.get(m.key);
+              if (!row) return '';
+              return row.sufficient ? badge('Ready', 'green') : badge('Short', 'amber');
+            } },
+        ], mods)}
+      </div>`;
+    }).join('')}
+
+    <div class="card flat">
+      <div class="panel-head"><div><h2>Optional pool</h2>
+        <p class="small muted">The retired catalogue, kept as a fallback. These questions are never
+        served while a module can fill its quota from the bank above — they are only drawn to cover a
+        shortfall.</p></div>
+        <span class="chip chip-optional">${bank.optional.total} questions</span></div>
+    </div>`;
+
+  view.querySelector('#mv-preview').onclick = async () => {
+    const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: {} }));
+    if (out) previewModal(out);
+  };
+}
+
+/** Show one generated paper, grouped by module. */
+function previewModal(result) {
+  const c = result.counts;
+  const rows = result.questions.map((q, i) => `
+    <tr>
+      <td class="muted">${i + 1}</td>
+      <td><b>${esc(q.mandatory ? 'M00' : q.module)}</b></td>
+      <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
+      <td style="max-width:520px">${esc(q.prompt)}
+        ${q.mandatory ? '<span class="chip chip-mandatory">Mandatory</span>' : ''}
+        ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}</td>
+    </tr>`).join('');
+
+  modal({
+    title: 'Sample generated test',
+    wide: true,
+    bodyHtml: `
+      <p class="small muted">${c.total} questions — ${c.mandatory} mandatory,
+        ${c.technical_objective} technical objective, ${c.technical_open} technical open,
+        ${c.non_technical_open} non-technical open${c.from_optional
+          ? `, ${c.from_optional} drawn from the optional pool` : ''}.</p>
+      ${result.warnings.length
+        ? `<div class="card flat"><b>Warnings</b><ul class="small">${
+            result.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>`
+        : ''}
+      <div class="preview-scroll">
+        <table class="data"><thead><tr>
+          <th>#</th><th>Module</th><th>Type</th><th>Question</th>
+        </tr></thead><tbody>${rows}</tbody></table>
+      </div>`,
+    actions: [{ label: 'Close', kind: 'ghost', close: true }],
+  });
+}

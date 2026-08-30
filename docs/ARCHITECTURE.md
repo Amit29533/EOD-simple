@@ -56,6 +56,43 @@ than the configured 50. Sync semantics live in `src/api/catalogue-service.mjs` a
 mirror `npm run seed`: match the track by key, insert only prompts that are absent,
 never touch existing records or snapshots.
 
+## 2c. Question Bank v1.2 — family → module → question
+
+The finalized bank (`src/content/rsa-question-bank.mjs`, 348 questions) is organised
+**FAMILY → MODULE → QUESTION** and drives a *fixed-shape* paper, rather than the
+weight-proportional apportionment described in 2b:
+
+| Family | Modules | Served per module |
+| ------ | ------- | ----------------- |
+| Mandatory | `M00` | 1 question, **always**, pinned first |
+| Technical | `T01`–`T10` | 3 objective + 1 open |
+| Consulting & Client Skills | `C01`–`C04` | 1 open |
+| Professional & Communication | `P01`–`P04` | 1 open |
+| Foundation & Integrated Judgment | `F01`–`F02` | 1 open |
+
+Every generated test is therefore **51 questions**: 1 mandatory + 30 technical
+objective + 10 technical open + 10 non-technical open. Selection lives in
+`src/core/test-generation.mjs` (pure, `rng` injectable): questions are sampled at
+random inside each module while the structure above is held exactly.
+
+**Optional pool.** The retired 115-question competency catalogue is re-shaped by
+`src/content/rsa-optional-bank.mjs`, mapped onto the closest v1.2 module and tagged
+`optional: true`. Optional questions are **never** drawn while a module can satisfy
+its quota from the primary bank; they are only used to cover a shortfall (highest
+`optional_priority` first), which keeps a paper at full length even if an admin
+deactivates part of the bank. Shortfalls that cannot be covered are reported as
+warnings rather than silently under-filling.
+
+Admin endpoints: `GET /admin/question-bank/modules` (families, modules, counts),
+`GET /admin/question-bank/plan` (per-module readiness) and
+`POST /admin/question-bank/preview` (draw a sample paper). The **Modules & Families**
+admin screen renders all three.
+
+The bank is extracted from the source PDF by `scripts/extract-question-bank.py`. The
+exporter clips long MCQ options inside fixed-height table cells, so the correct
+answer is restored from the Expected Evidence column and any item still missing a
+distractor is flagged `needs_option_review` for an admin to complete.
+
 ## 3. Everything domain-specific is data
 Roles, competencies (weights, target levels, enrichment hints), the question bank and the
 scoring framework (readiness bands, level thresholds, gap severity) are stored records
