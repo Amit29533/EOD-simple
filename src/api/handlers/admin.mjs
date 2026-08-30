@@ -613,7 +613,7 @@ export function adminHandlers(route) {
     });
   });
 
-  // ------------------------------------------------ question bank v1.2
+  // ------------------------------------------------ question bank
   // The module-structured bank: modules, families and the fixed 50-question
   // paper shape.
   //

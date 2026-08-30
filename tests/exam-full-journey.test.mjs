@@ -7,6 +7,7 @@ import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG, MAX_AUDIO_B64 } from '../src/core/constants.mjs';
+import { sortedQuestions } from '../src/api/quiz-session.mjs';
 
 /**
  * Full-fledged exam lifecycle over the real HTTP surface (in-process app):
@@ -98,12 +99,55 @@ async function makeWorld() {
   return world;
 }
 
+/**
+ * The paper exactly as the candidate will meet it: shuffled, with the position
+ * each question was stamped with at allocation. Tests walk this instead of
+ * assuming an order — a paper now mixes objective and open questions rather
+ * than serving the whole spoken set first.
+ */
+async function servedPaper(w, allocId) {
+  const a = await w.store.get('assessments', allocId);
+  return sortedQuestions(a.snapshot_json);
+}
+
+/** A well-formed answer for whatever question is served, chosen by its type. */
+function answerFor(q) {
+  if (q.type === 'mcq_single') return q.correct_option_ids[0];
+  if (q.type === 'mcq_multi') return [...q.correct_option_ids];
+  if (q.type === 'scale') return 4;
+  return 'A considered answer.';
+}
+
+/** The malformed shape the API must reject for each answer type. */
+function malformedFor(q) {
+  if (q.type === 'mcq_single') return 'zz';
+  if (q.type === 'mcq_multi') return ['a', 'zz'];
+  if (q.type === 'scale') return 9;
+  return null; // an open answer is free text: there is no malformed shape
+}
+
 async function candidateWalkBasics(w, aid) {
   const tok = w.tokens.cand ||= await w.login('candidate.one', 'c1-pass-x');
   const first = await w.call('GET', `/candidate/assessments/${aid}`, { token: tok });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   return { tok, first };
 }
+
+test('A0 · the allocated paper mixes MCQ and open instead of blocking them', async () => {
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const paper = await servedPaper(w, alloc.id);
+
+  assert.equal(paper.length, 6, 'the whole bank is served');
+  assert.deepEqual(paper.map((q, i) => q.position), [1, 2, 3, 4, 5, 6], 'positions are stamped in order');
+  assert.equal(paper[0].pin_first, true, 'the pinned common question still opens the paper');
+
+  // Three open and three non-open questions: the three open ones must not
+  // arrive as one block, which is what the old "spoken set first" rule did.
+  const types = paper.map((q) => (q.type === 'text' ? 'O' : 'X')).join('');
+  const longestOpen = Math.max(...types.split('X').filter(Boolean).map((run) => run.length));
+  assert.ok(longestOpen < 3, `all three open questions arrived together: ${types}`);
+});
 
 /* ============================== A. state machine + audio ============================== */
 
@@ -137,6 +181,7 @@ test('A2 · answer validation rejects malformed answers without advancing the cu
   const w = await makeWorld();
   const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
   const { tok } = await candidateWalkBasics(w, alloc.id);
+  const paper = await servedPaper(w, alloc.id);
   const next = (answer) => w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer } });
   const idx = async () => (await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.exam.index;
 
@@ -151,17 +196,18 @@ test('A2 · answer validation rejects malformed answers without advancing the cu
   assert.equal((await next(oversized)).status, 422, 'oversized audio payload rejected');
   assert.equal((await next({ text: 42, transcript: '' })).status, 422, 'non-string text rejected');
 
-  // walk to the mcq/scale questions with blanks and probe each malformed shape
-  await next(null); // leave q1 (spoken) blank for now
-  await next(null); // q2 (spoken) blank
-  const singleProbe = await next('zz');
-  assert.equal(singleProbe.status, 422, 'unknown mcq_single option rejected');
-  await next('b'); // q3 correct
-  const multiProbe = await next(['a', 'zz']);
-  assert.equal(multiProbe.status, 422, 'unknown mcq_multi option rejected');
-  await next(['b']); // q4 wrong-on-purpose (0 of 4)
-  assert.equal((await next(9)).status, 422, 'scale value out of range rejected');
-  assert.equal(await idx(), 4, 'failed validations never advance the cursor');
+  // walk the rest of the shuffled paper, probing the malformed shape for
+  // whichever answer type each position happens to hold
+  await next(null); // leave the pinned spoken question blank for now
+  for (let i = 1; i < paper.length; i += 1) {
+    const bad = malformedFor(paper[i]);
+    if (bad !== null) {
+      assert.equal((await next(bad)).status, 422, `malformed ${paper[i].type} answer rejected`);
+      assert.equal(await idx(), i, 'failed validations never advance the cursor');
+    }
+    await next(answerFor(paper[i]));
+  }
+  assert.equal(await idx(), paper.length, 'the whole paper was walked');
 });
 
 test('A3 · the answer phase cannot be re-entered to reset the two-minute timer', async () => {
@@ -272,13 +318,20 @@ test('B1 · full walk, submit, score and finalize produce the exact weighted rep
   const a1 = w.tokens.a1 ||= await w.login('assessor.one', 'a1-pass-x');
   assert.equal((await w.call('GET', `/assessor/assessments/${alloc.id}`, { token: a1 })).status, 409);
 
+  // Answer by question id, not by position: the paper is shuffled, so the
+  // order a candidate meets these six in varies between allocations.
+  const served = await servedPaper(w, alloc.id);
+  const intended = {
+    [w.ids.pin]: { text: '', transcript: 'spoken one', audio_b64: B64, audio_mime: 'audio/webm', source: 'audio' },
+    [w.ids.oral2]: 'Second spoken answer, typed.',
+    [w.ids.single]: 'b',      // mcq_single correct -> 4/4
+    [w.ids.multi]: ['b'],     // mcq_multi wrong-on-purpose -> 0/4
+    [w.ids.scale]: 4,         // scale 4 -> 3.2/4
+    [w.ids.open]: 'Standard open answer.',
+  };
   await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
-  await next({ text: '', transcript: 'spoken one', audio_b64: B64, audio_mime: 'audio/webm', source: 'audio' });
-  await next('Second spoken answer, typed.');
-  await next('b');            // q3 mcq_single correct -> 4/4
-  await next(['b']);          // q4 mcq_multi wrong-on-purpose -> 0/4
-  await next(4);              // q5 scale 4 -> 3.2/4
-  const done = await next('Standard open answer.');
+  let done;
+  for (const q of served) done = await next(intended[q.id]);
   assert.equal(done.body.complete, true);
   assert.equal(done.body.index, 6);
 
@@ -499,11 +552,13 @@ test('E1 · countdown clamps at zero and a tampered cursor cannot crash the exam
   assert.equal((await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.exam.remaining_ms, 0);
 
   // resume mid-exam after a "refresh"
+  const paper = await servedPaper(w, alloc.id);
   await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: { text: 'one', transcript: '' } } });
   const resumed = await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok });
   assert.equal(resumed.body.exam.index, 1);
-  assert.equal(resumed.body.current_question.id, w.ids.oral2);
-  assert.equal(resumed.body.exam.phase, 'review', 'open questions resume in review');
+  assert.equal(resumed.body.current_question.id, paper[1].id, 'the second position of the shuffled paper resumes');
+  assert.equal(resumed.body.exam.phase, paper[1].type === 'text' ? 'review' : 'answer',
+    'open questions resume in review, objective ones straight in answer');
 
   // tamper the cursor far past the end: no crash, coherent completion
   a = await w.store.get('assessments', alloc.id);
@@ -639,11 +694,19 @@ test('F3 · a typed-only open answer is kept but flagged, and lands in the integ
   assert.ok(auditRows.some((e) => e.action === 'exam_spoken_answer_missing'), 'and so does the audit log');
 
   // an answer with a transcript but no stored clip satisfies the contract:
-  // browsers disagree about which of the two they can produce.
+  // browsers disagree about which of the two they can produce. The paper is
+  // shuffled, so walk on to the next open question rather than assuming it is
+  // simply the second one served.
+  const paper = await servedPaper(w, alloc.id);
+  const openAt = paper.findIndex((q, i) => i > 0 && q.type === 'text');
+  assert.ok(openAt > 0, 'the bank serves more than one open question');
+  for (let i = 1; i < openAt; i += 1) {
+    await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: answerFor(paper[i]) } });
+  }
   await w.call('POST', `/candidate/assessments/${alloc.id}/next`, {
     token: tok, body: { answer: { text: '', transcript: 'spoken, but the clip was dropped', source: 'audio' } },
   });
-  const second = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.oral2);
+  const second = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === paper[openAt].id);
   assert.equal(second.answer.audio_missing, undefined, 'a transcript alone counts as spoken');
 });
 

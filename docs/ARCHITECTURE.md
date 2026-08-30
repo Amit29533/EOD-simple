@@ -42,7 +42,21 @@ exactly `min(X, bank)` questions; no competency drawn beyond its stock; and ever
 competency represented while X allows (so nothing silently scores 0%). Within each
 competency, a capped allocation samples questions randomly so repeated candidates do
 not always see the same items. The selected IDs are frozen in the immutable snapshot,
-which makes each sitting auditable. `GET /admin/roles/:id/question-plan?limit=X`
+which makes each sitting auditable.
+
+**Order of a served paper.** `arrange()` puts the `pin_first` question first and
+**interleaves** everything after it by answer type (`core/paper-order.mjs`), then
+stamps each row with the `position` it will be asked at. A bare Fisher-Yates left
+runs of up to 10 same-type questions on a 110-question paper; the interleave spreads
+the minority group evenly instead — the smaller group never repeats and the larger
+group's longest run is `ceil(major / (minor + 1))` (measured 10 → 3 here, with no two
+recorded answers ever adjacent). The stamp is what makes that order survive storage:
+`sortedQuestions`
+(`api/quiz-session.mjs`) re-reads the snapshot on every request and sorts by position,
+so the candidate's cursor, the assessor's list and the scorer cannot disagree about
+which question is "next". Snapshots allocated before positions existed carry none and
+keep the legacy grouping — re-ordering a paper someone is halfway through would move
+questions out from under their cursor. `GET /admin/roles/:id/question-plan?limit=X`
 runs the same quota code so the admin UI previews the split that allocation will use.
 
 The effective ceiling is always `min(cap, active bank size)`: a 21-question bank can
@@ -56,11 +70,12 @@ than the configured 50. Sync semantics live in `src/api/catalogue-service.mjs` a
 mirror `npm run seed`: match the track by key, insert only prompts that are absent,
 never touch existing records or snapshots.
 
-## 2c. Question Bank v1.2 — module → family → question
+## 2c. Question Bank v1.3 — module → family → question
 
-The finalized bank (`src/content/rsa-question-bank.mjs`, 348 questions) is organised
-**MODULE → FAMILY → QUESTION** and drives a *fixed-shape* paper, rather than the
-weight-proportional apportionment described in 2b:
+The finalized bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
+`Question bank 1.3.xlsx_4343.pdf`) is organised **MODULE → FAMILY → QUESTION** and
+drives a *fixed-shape* paper, rather than the weight-proportional apportionment
+described in 2b:
 
 | Group | Modules | Served per module |
 | ------ | ------- | ----------------- |
@@ -78,8 +93,14 @@ prompt is guaranteed to appear on a paper.
 
 Modules are ordered `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02` — a single
 `order` field on the module (`module_order()` in the build script: `T`=10+n, `C`=20+n,
-`P`=30+n, `F`=40+n) that the API, the admin view and a generated paper's sections all
-sort by, so the bank and the paper read in the same sequence.
+`P`=30+n, `F`=40+n) that the API, the admin view and a generated paper's *sections* all
+sort by. The **paper itself is then interleaved** by answer type: quotas are filled
+module by module and the finished list is passed through `interleave()`
+(`core/paper-order.mjs`) with the same injectable `rng`, so a candidate meets
+objective and open questions evenly spread rather than 40 MCQs followed by 10 recorded
+answers. On a 50-question paper (30 objective / 20 open) the longest same-type run is
+**2** and no two open questions are ever adjacent — a plain shuffle measured 4–7.
+`sections` keeps module order, which is what the admin preview reports.
 
 The paper shape is stated **once**, as per-module quotas in
 `MODULE_TEST_STRUCTURE` (`src/core/constants.mjs`); `TEST_BLUEPRINT` derives the
@@ -114,7 +135,7 @@ later value one column left.
 
 **Optional pool.** The retired 115-question competency catalogue is re-shaped by
 `src/content/rsa-optional-bank.mjs`: each retired competency becomes a `Legacy - …`
-family inside its closest v1.2 module, tagged `optional: true`, so it appears in the
+family inside its closest current module, tagged `optional: true`, so it appears in the
 same module → family tree without competing with the curated families. Optional questions are **never** drawn while a module can satisfy
 its quota from the primary bank; they are only used to cover a shortfall (highest
 `optional_priority` first), which keeps a paper at full length even if an admin
@@ -156,7 +177,9 @@ the module tree can never advertise a question the generator will skip;
 deactivated rows are reported as a separate `inactive` count instead. The
 `/modules` tree and `/plan` readiness are asserted to agree module-by-module.
 
-The **Modules & Families** admin screen renders all of them. Uploads arrive as base64
+The **Question Bank** admin screen (`#/modules`) renders all of them, and carries the
+role-based *served question set* panel below the tree — the standalone Question Bank
+screen was merged into it, and `#/questions` now redirects there. Uploads arrive as base64
 inside JSON because the dev server parses JSON only and caps a request at 2 MB; imports
 are additionally bounded at 2000 rows to keep request time and memory predictable. The
 UI always calls `import` with `dry_run: true` first and only enables the commit once the

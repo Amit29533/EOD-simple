@@ -29,13 +29,13 @@ test('every optional question is flagged optional and carries a priority', () =>
   }
 });
 
-test('optional questions map onto real v1.2 modules', () => {
+test('optional questions map onto real published modules', () => {
   const keys = new Set(MODULES.map((m) => m.key));
   for (const q of OPTIONAL_QUESTIONS) assert.ok(keys.has(q.module), `${q.id} -> ${q.module}`);
   for (const target of Object.values(LEGACY_COMPETENCY_TO_MODULE)) assert.ok(keys.has(target), target);
 });
 
-test('optional ids are unique and do not collide with the v1.2 bank', () => {
+test('optional ids are unique and do not collide with the published bank', () => {
   const primary = new Set(QUESTIONS.map((q) => q.id));
   const seen = new Set();
   for (const q of OPTIONAL_QUESTIONS) {
@@ -45,7 +45,7 @@ test('optional ids are unique and do not collide with the v1.2 bank', () => {
   }
 });
 
-test('optional questions are shaped like v1.2 questions', () => {
+test('optional questions are shaped like published questions', () => {
   for (const q of OPTIONAL_QUESTIONS) {
     assert.ok(['objective', 'open'].includes(q.type), q.id);
     assert.ok(q.prompt && q.prompt.length > 10, q.id);
@@ -84,7 +84,7 @@ test('no optional question is ever served while the primary bank suffices', () =
 
 test('the optional pool covers a shortfall in the primary bank', () => {
   // Strip T06's open questions entirely: the module can no longer field its
-  // one open question from the v1.2 bank and must fall back.
+  // one open question from the published bank and must fall back.
   const thinned = QUESTIONS.filter((q) => !(q.module === 'T06' && q.type === 'open'));
 
   const withoutFallback = generateTest({ modules: MODULES, questions: thinned }, { rng: seeded(8) });
@@ -143,7 +143,7 @@ test('every optional question belongs to a module-scoped legacy family', () => {
   }
 });
 
-test('legacy families never collide with the curated v1.2 families', () => {
+test('legacy families never collide with the curated published families', () => {
   const curated = new Set(FAMILIES.map((f) => f.id));
   for (const f of OPTIONAL_FAMILIES) {
     assert.ok(!curated.has(f.id), `legacy family ${f.id} shadows a curated one`);

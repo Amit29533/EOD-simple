@@ -14,7 +14,7 @@
  *     downstream needs to know where a question came from.
  */
 
-import { MODULES, QUESTIONS, FAMILIES } from '../content/rsa-question-bank.mjs';
+import { MODULES, QUESTIONS, FAMILIES, QUESTION_BANK_VERSION } from '../content/rsa-question-bank.mjs';
 import { slug } from '../core/question-intake.mjs';
 import { isActive } from '../core/test-generation.mjs';
 
@@ -34,7 +34,9 @@ export function hydrate(row) {
     minutes: Number(row.minutes ?? (type === 'open' ? 5 : 2)),
     status: row.active === false ? 'Inactive' : 'Active',
     active: row.active !== false,
-    version: '1.2',
+    // Authored rows carry the version of the published bank they were added
+    // against, so the tree never shows a mixture of version labels.
+    version: QUESTION_BANK_VERSION,
     randomizable: row.randomizable !== false,
     prompt: row.prompt,
     tags: Array.isArray(row.tags) ? row.tags : [],

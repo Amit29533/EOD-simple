@@ -1,7 +1,7 @@
 /**
  * Module-based test generation - pure selection logic (no I/O, unit-tested).
  *
- * The finalized Question Bank v1.2 is organised MODULE -> FAMILY -> QUESTION.
+ * The finalized Question Bank is organised MODULE -> FAMILY -> QUESTION.
  * A generated test is assembled to a fixed structure rather than by weight
  * apportionment (which is what src/core/question-selection.mjs does for the
  * legacy competency-based catalogue):
@@ -17,8 +17,11 @@
  * module's quota and nothing is pinned.
  *
  * Questions are sampled at random inside each module while the per-module
- * structure above is held exactly. `rng` is injectable so tests are
- * deterministic; production passes Math.random.
+ * structure above is held exactly, and the finished paper is then INTERLEAVED
+ * so open questions are spread evenly through the objective ones instead of
+ * arriving in blocks: never two open questions back to back, at most two
+ * objective ones together. `rng` is injectable so tests are deterministic;
+ * production passes Math.random.
  *
  * Questions flagged `optional: true` are never drawn by the normal quota.
  * They are a fallback pool: if a module cannot fill its quota from its
@@ -28,6 +31,7 @@
  */
 
 import { MODULE_TEST_STRUCTURE } from './constants.mjs';
+import { shuffle, interleave } from './paper-order.mjs';
 
 // Per-module quotas, re-exported from the single source of truth in
 // constants.mjs so the quotas the generator enforces are literally the same
@@ -66,19 +70,11 @@ const isOptional = (q) => q?.optional === true;
 export const isActive = (q) => q?.active !== false && q?.status !== 'Retired' && q?.status !== 'Inactive';
 
 /**
- * Fisher-Yates over a copy, then take `count`. A caller-supplied rng keeps
- * selection deterministic under test. Guards against an rng returning values
- * outside [0, 1) so a bad injection cannot produce an out-of-range index.
+ * Draw by shuffling, then taking `count`. A caller-supplied rng keeps selection
+ * deterministic under test (see `shuffle` in core/paper-order.mjs).
  */
 function sample(items, count, rng) {
-  const shuffled = [...items];
-  for (let i = shuffled.length - 1; i > 0; i -= 1) {
-    const raw = Number(rng());
-    const value = Number.isFinite(raw) ? Math.max(0, Math.min(1 - Number.EPSILON, raw)) : 0;
-    const j = Math.floor(value * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled.slice(0, Math.max(0, count));
+  return shuffle(items, rng).slice(0, Math.max(0, count));
 }
 
 /**
@@ -127,10 +123,16 @@ function orderedModules(modules) {
  *   generateTest({ modules, questions }, { rng })
  *
  * Returns:
- *   questions  - the paper, module by module in configured order
- *   sections   - per-module record of what was drawn (for the preview UI)
+ *   questions  - the paper, ordered so objective and open items interleave
+ *   sections   - per-module record of what was drawn, in configured order
  *   warnings   - human-readable notes when a module could not be filled
  *   counts     - realised structure, comparable against TEST_BLUEPRINT
+ *
+ * Questions are drawn module by module (that is what holds the structure
+ * exact), then the whole paper is ordered: a candidate meets MCQs and open
+ * questions mixed rather than 40 objective items followed by 10 recorded
+ * answers. `sections` keeps the module order, so the admin preview can still
+ * show which module each draw came from.
  */
 export function generateTest({ modules = [], questions = [] } = {}, { rng = Math.random } = {}) {
   const byModule = new Map();
@@ -139,7 +141,7 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
     byModule.get(q.module).push(q);
   }
 
-  const paper = [];
+  const assembled = [];
   const sections = [];
   const warnings = [];
   let usedOptional = 0;
@@ -156,7 +158,7 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
     const open = draw(pool, isOpen, wantOpen, rng);
 
     const drawn = [...objective.picked, ...open.picked];
-    paper.push(...drawn);
+    assembled.push(...drawn);
     usedOptional += objective.fromOptional + open.fromOptional;
 
     if (objective.short) {
@@ -179,6 +181,13 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
       question_ids: drawn.map((q) => q.id),
     });
   }
+
+  // Order the paper once the quotas are met, so the structure above is never
+  // disturbed by what the candidate sees. Open questions are spread evenly
+  // through the objective ones: never two recorded answers back to back, and at
+  // most two MCQs together (see core/paper-order.mjs). A plain shuffle would
+  // still hand out runs of five or six of a kind.
+  const paper = interleave(assembled, isOpen, rng);
 
   const technicalSections = sections.filter((s) => s.technical);
   const nonTechnicalSections = sections.filter((s) => !s.technical);

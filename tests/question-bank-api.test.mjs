@@ -6,8 +6,10 @@ import fs from 'node:fs';
 import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
+import { QUESTION_BANK_VERSION } from '../src/content/rsa-question-bank.mjs';
+import { maxRunLength, maxRunOf } from '../src/core/paper-order.mjs';
 
-/** The module-structured Question Bank v1.2 endpoints, over the real app. */
+/** The module-structured Question Bank endpoints, over the real app. */
 
 let app, store, adminToken, candidateToken;
 const call = (method, p, { token, body, query } = {}) =>
@@ -44,7 +46,9 @@ test('bootstrap publishes the families, modules and paper structure', async () =
 test('module listing reports every module with its counts', async () => {
   const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
   assert.equal(res.status, 200);
-  assert.equal(res.body.version, '1.2');
+  // Compared against the published bank's own version so re-extracting a new
+  // source PDF never has to touch this file.
+  assert.equal(res.body.version, QUESTION_BANK_VERSION);
   assert.equal(res.body.modules.length, 20);
   assert.equal(res.body.bank_total, 348);
   assert.equal(res.body.blueprint.total, 50);
@@ -120,7 +124,7 @@ test('two previews differ in content but never in structure', async () => {
   assert.notEqual(idsA, idsB);
 });
 
-test('a preview follows the module order T01-T10, C01-C04, P01-P04, F01-F02', async () => {
+test('sections follow the module order T01-T10, C01-C04, P01-P04, F01-F02 while the paper is shuffled', async () => {
   const res = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
   assert.deepEqual(res.body.sections.map((s) => s.module), [
     'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10',
@@ -128,10 +132,23 @@ test('a preview follows the module order T01-T10, C01-C04, P01-P04, F01-F02', as
     'P01', 'P02', 'P03', 'P04',
     'F01', 'F02',
   ]);
-  // The paper itself is emitted in that same order.
-  const order = res.body.sections.map((s) => s.module);
-  const seen = res.body.questions.map((q) => q.module);
-  assert.deepEqual([...new Set(seen)], order);
+  // The paper itself is NOT emitted in module order any more: it is shuffled so
+  // objective and open questions interleave instead of arriving in blocks.
+  const types = res.body.questions.map((q) => q.type);
+  assert.equal(types.filter((t) => t === 'open').length, 20);
+  assert.ok(types.indexOf('open') < types.lastIndexOf('objective'),
+    'every open question still sat behind every objective one');
+  const runs = types.filter((t, i) => t === 'open' && (i === 0 || types[i - 1] !== 'open')).length;
+  assert.ok(runs > 1, `open questions arrived as one block (${types.join(',')})`);
+  // The guarantee the shuffle exists for: never two open questions in a row,
+  // and at most two objective ones together (30 objective over 21 gaps).
+  assert.equal(maxRunOf(types, 'open'), 1, `two open questions in a row (${types.join('')})`);
+  assert.equal(maxRunLength(types), 2, `a block of MCQs survived (${types.join('')})`);
+  // Shuffling reorders the paper; it never changes what was drawn.
+  assert.deepEqual(
+    res.body.questions.map((q) => q.id).sort(),
+    res.body.sections.flatMap((s) => s.question_ids).sort(),
+  );
 });
 
 test('question-bank endpoints are admin-only', async () => {

@@ -8,6 +8,7 @@ import {
 import {
   MODULES, QUESTIONS, MODULE_GROUPS, FAMILIES, findFamily,
 } from '../src/content/rsa-question-bank.mjs';
+import { maxRunLength, maxRunOf } from '../src/core/paper-order.mjs';
 
 /** Deterministic rng so a failing case is reproducible. */
 function seeded(seed = 1) {
@@ -150,6 +151,24 @@ test('nothing in the bank claims to be mandatory', () => {
   assert.equal(MODULES.filter((m) => m.mandatory === true).length, 0);
   const { sections } = generateTest(bank, { rng: seeded(8) });
   assert.equal(sections.filter((s) => s.mandatory).length, 0);
+});
+
+test('open questions never sit back to back, and MCQs at most two in a row', () => {
+  // The requirement behind the shuffle: a candidate must not meet a block of
+  // recorded answers or a block of MCQs. 30 objective / 20 open spreads to
+  // ceil(30 / 21) = 2 objective at most, and never two opens together.
+  for (const seed of [1, 5, 42, 99, 4242, 777]) {
+    const { questions } = generateTest(bank, { rng: seeded(seed) });
+    const types = questions.map((q) => q.type);
+    assert.equal(types.length, TEST_BLUEPRINT.total, `seed ${seed}`);
+    assert.equal(maxRunOf(types, 'open'), 1, `two open questions in a row (seed ${seed})`);
+    assert.equal(maxRunLength(types), 2, `a block of MCQs survived the mix (seed ${seed})`);
+  }
+});
+
+test('the mix is random, only its spacing is fixed', () => {
+  const order = (seed) => generateTest(bank, { rng: seeded(seed) }).questions.map((q) => q.id).join(',');
+  assert.notEqual(order(1), order(2), 'different seeds produce different papers');
 });
 
 test('a paper never repeats a question', () => {

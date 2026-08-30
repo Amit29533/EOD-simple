@@ -16,7 +16,11 @@ const ROUTES = {
     ['#/candidates/:id', admin.candidateDetailView], ['#/assessments', admin.assessmentsView],
     ['#/assessments/:id/report', admin.reportView], ['#/assessments/:id/integrity', admin.integrityView],
     ['#/roles', admin.rolesView],
-    ['#/roles/:id', admin.roleDetailView], ['#/questions', admin.questionsView],
+    ['#/roles/:id', admin.roleDetailView],
+    // The standalone Question Bank screen was merged into Modules. Keep the old
+    // link working (and carry its ?role= filter across) so bookmarks and any
+    // cached shell do not land on a dead route.
+    ['#/questions', redirectToModules],
     ['#/modules', admin.modulesView],
     ['#/users', admin.usersView], ['#/audit', admin.auditView],
   ],
@@ -31,6 +35,12 @@ const ROUTES = {
   trainer: [['#/home', placeholderView('Enrichment Studio')]],
 };
 const DEFAULT_ROUTE = { admin: '#/dashboard', assessor: '#/workspace', candidate: '#/journey', validator: '#/home', trainer: '#/home' };
+
+/** #/questions -> #/modules, query string intact. */
+function redirectToModules() {
+  const query = location.hash.split('?')[1] || '';
+  location.hash = query ? `#/modules?${query}` : '#/modules';
+}
 
 function placeholderView(moduleName) {
   const fn = (view) => {
@@ -50,7 +60,6 @@ const NAV_ICONS = {
   candidates: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><path d="M3.8 19c.4-3.1 2.1-4.7 5.2-4.7s4.8 1.6 5.2 4.7"></path><path d="M16 5.4a3 3 0 0 1 0 5.7M17 14.6c2.1.5 3.3 2 3.5 4.4"></path></svg>',
   assessments: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.8h8l3 3V20H7z"></path><path d="M15 3.8V7h3M10 11h5M10 14.5h5M10 18h3"></path></svg>',
   roles: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5"></circle><path d="m12 7.5 1.4 3.1 3.2.4-2.4 2.2.7 3.2-2.9-1.7-2.9 1.7.7-3.2-2.4-2.2 3.2-.4z"></path></svg>',
-  questions: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v15H7.5A2.5 2.5 0 0 0 5 20.5z"></path><path d="M5 5.5v15M9 7h7M9 10.5h7"></path></svg>',
   modules: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="10.4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="16.8" width="17" height="3.2" rx="1.2"></rect></svg>',
   users: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5.5 20c.5-4 2.5-6 6.5-6s6 2 6.5 6"></path></svg>',
   audit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"></path></svg>',
@@ -60,7 +69,7 @@ const NAV_ICONS = {
 };
 const NAV = {
   admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'],
-          ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Modules & Families'], ['#/questions', 'Question Bank'],
+          ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Question Bank'],
           ['#/users', 'Users & Access'], ['#/audit', 'Audit Log']],
   assessor: [['#/workspace', 'My Assessments']],
   candidate: [['#/journey', 'My Journey']],
@@ -85,7 +94,7 @@ function renderShell() {
   // silently slides entries into the wrong section.
   const GROUPS = {
     Workspace: ['#/dashboard', '#/candidates', '#/assessments'],
-    Configure: ['#/roles', '#/modules', '#/questions'],
+    Configure: ['#/roles', '#/modules'],
     Governance: ['#/users', '#/audit'],
   };
   const navGroups = u.role === 'admin'

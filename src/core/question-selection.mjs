@@ -14,12 +14,15 @@
  *    (so no competency silently scores 0%);
  *  - the allocator can sample a different set on each capped allocation while
  *    keeping the weighted split stable;
- *  - questions come back in their configured display order after sampling, so
- *    the candidate experience remains tidy;
+ *  - questions come back arranged as a paper: the pinned question first, then
+ *    the rest interleaved so objective and open items alternate, each stamped
+ *    with the position it is served at;
  *  - once sampled, the snapshot makes the chosen set auditable and immutable.
  */
 
 import { RSA_ORAL_IN_CAP, RSA_ORAL_SET } from './constants.mjs';
+import { interleave } from './paper-order.mjs';
+import { isOpenQuestion } from './spoken-answer.mjs';
 
 /** Stable per-competency grouping, ordered by the competency configuration. */
 function groupByCompetency(questions, competencies) {
@@ -118,8 +121,11 @@ function sample(items, count, rng) {
  * deterministic and weighted, while the questions within each competency are
  * shuffled so repeated allocations do not always serve the same first items.
  * `rng` is injectable for tests; production allocations use Math.random.
- * Returns a new array: pinned oral item first, remaining oral-set items next,
- * then the rest in configured display order.
+ * Returns a new array of copies: the pinned question first, then every other
+ * served question ordered so objective and open items interleave, each row
+ * stamped with the `position` it will be served at. Pass `{ shuffle: false }`
+ * to keep the legacy grouping (pinned, spoken set, then display order) when the
+ * caller only counts the selection.
  */
 function isPinFirst(q) { return q?.pin_first === true; }
 function isOralSet(q) { return q?.question_set === RSA_ORAL_SET; }
@@ -207,14 +213,40 @@ function uniqueBy(questions) {
   return out;
 }
 
-function arrange(selected) {
+/**
+ * Order the paper that will actually be served.
+ *
+ * A `pin_first` question still opens it — the common warm-up an assessor
+ * expects to see first. Everything after the pin is INTERLEAVED: open questions
+ * are spread evenly through the objective ones, so no two recorded answers are
+ * ever back to back and the objective runs stay as short as the mix allows (see
+ * core/paper-order.mjs). The previous rule served the whole spoken set next and
+ * the rest in display order, which handed a candidate a block of recorded
+ * answers followed by a block of MCQs.
+ *
+ * `shuffle: false` keeps the old grouping for callers that only count the
+ * selection (the allocation preview) rather than arrange it.
+ *
+ * Every returned row carries `position` — its place in this paper — because
+ * the order has to survive a round trip through storage: the candidate's
+ * cursor, the assessor's review list and the scorer all re-read the snapshot
+ * and must land on the same question (see sortedQuestions in quiz-session.mjs).
+ * Rows are copied so a caller's bank is never mutated.
+ */
+function arrange(selected, { shuffle = true, rng = Math.random } = {}) {
   const uniq = uniqueBy(selected);
   const pins = uniq.filter(isPinFirst);
-  const oral = uniq.filter((q) => isOralSet(q) && !isPinFirst(q))
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const rest = uniq.filter((q) => !isOralSet(q) && !isPinFirst(q))
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  return [...pins, ...oral, ...rest];
+  const others = uniq.filter((q) => !isPinFirst(q));
+
+  let body;
+  if (shuffle) {
+    body = interleave(others, isOpenQuestion, rng);
+  } else {
+    const oral = others.filter(isOralSet).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const rest = others.filter((q) => !isOralSet(q)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    body = [...oral, ...rest];
+  }
+  return [...pins, ...body].map((q, i) => ({ ...q, position: i + 1 }));
 }
 
 function pickWeighted(pool, competencies, count, randomize, rng) {
@@ -235,7 +267,7 @@ export function dedupeQuestions(questions = []) {
   return uniqueBy(questions);
 }
 
-export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random } = {}) {
+export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random, shuffle = true } = {}) {
   const pool = uniqueBy(questions);
   const requested = Number(limit);
   const fullBank = !Number.isFinite(requested) || requested <= 0 || requested >= pool.length;
@@ -274,7 +306,7 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
   const rest = fullBank
     ? restSource
     : pickWeighted(restSource, competencies, n - reserved.length, randomize, rng);
-  return arrange([...reserved, ...rest]);
+  return arrange([...reserved, ...rest], { shuffle, rng });
 }
 
 /**
@@ -283,7 +315,8 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
  */
 export function allocationPreview(questions = [], competencies = [], limit = null) {
   const safe = uniqueBy(questions);
-  const selected = selectQuestions(safe, competencies, limit);
+  // Counts only — no need to spend randomness arranging a paper that is never served.
+  const selected = selectQuestions(safe, competencies, limit, { shuffle: false });
   const byComp = new Map();
   for (const q of selected) byComp.set(q.competency_id, (byComp.get(q.competency_id) || 0) + 1);
   const points = selected.reduce((s, q) => s + Number(q.points ?? 1), 0);
