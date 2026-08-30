@@ -2,7 +2,7 @@ import {
   PIPELINE_STAGES, ASSESSMENT_STATUSES, QUESTION_TYPES, USER_ROLES, DIFFICULTIES,
   MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE,
 } from '../../core/constants.mjs';
-import { QUESTION_FAMILIES, MODULES } from '../../content/rsa-question-bank.mjs';
+import { MODULE_GROUPS, MODULES, FAMILIES } from '../../content/rsa-question-bank.mjs';
 import { ok } from '../helpers.mjs';
 
 export function metaHandlers(route) {
@@ -16,9 +16,10 @@ export function metaHandlers(route) {
     userRoles: USER_ROLES,
     difficulties: DIFFICULTIES,
     maxAssessmentQuestions: MAX_ASSESSMENT_QUESTIONS,
-    // Question Bank v1.2: family -> module structure and the fixed paper shape.
-    questionFamilies: QUESTION_FAMILIES,
+    // Question Bank v1.2: module -> family structure and the fixed paper shape.
+    moduleGroups: MODULE_GROUPS,
     modules: MODULES,
+    families: FAMILIES,
     moduleTestStructure: MODULE_TEST_STRUCTURE,
   }));
 }

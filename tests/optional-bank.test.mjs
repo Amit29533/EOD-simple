@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { OPTIONAL_QUESTIONS, optionalSummary, LEGACY_COMPETENCY_TO_MODULE } from '../src/content/rsa-optional-bank.mjs';
+import {
+  OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary, LEGACY_COMPETENCY_TO_MODULE,
+} from '../src/content/rsa-optional-bank.mjs';
 import { RSA_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
-import { MODULES, QUESTIONS } from '../src/content/rsa-question-bank.mjs';
+import { MODULES, QUESTIONS, FAMILIES } from '../src/content/rsa-question-bank.mjs';
 import { generateTest, testPlan } from '../src/core/test-generation.mjs';
 
 function seeded(seed = 1) {
@@ -131,4 +133,34 @@ test('the summary accounts for every optional question', () => {
   assert.equal(summary.total, OPTIONAL_QUESTIONS.length);
   const counted = summary.modules.reduce((n, m) => n + m.objective + m.open, 0);
   assert.equal(counted, OPTIONAL_QUESTIONS.length);
+});
+
+test('every optional question belongs to a module-scoped legacy family', () => {
+  for (const q of OPTIONAL_QUESTIONS) {
+    assert.ok(q.family_id, `${q.id} has no family_id`);
+    assert.ok(q.family_id.startsWith(`${q.module}:`), `${q.id} -> ${q.family_id}`);
+    assert.match(q.family, /^Legacy - /, q.id);
+  }
+});
+
+test('legacy families never collide with the curated v1.2 families', () => {
+  const curated = new Set(FAMILIES.map((f) => f.id));
+  for (const f of OPTIONAL_FAMILIES) {
+    assert.ok(!curated.has(f.id), `legacy family ${f.id} shadows a curated one`);
+  }
+});
+
+test('every legacy family accounts for its questions', () => {
+  assert.equal(OPTIONAL_FAMILIES.length, 7);
+  const counted = OPTIONAL_FAMILIES.reduce((n, f) => n + f.objective + f.open, 0);
+  assert.equal(counted, OPTIONAL_QUESTIONS.length);
+  for (const f of OPTIONAL_FAMILIES) {
+    const rows = OPTIONAL_QUESTIONS.filter((q) => q.family_id === f.id);
+    assert.equal(rows.length, f.objective + f.open, f.id);
+    assert.ok(MODULES.some((m) => m.key === f.module), `${f.id} unknown module`);
+  }
+});
+
+test('the summary reports the legacy family count', () => {
+  assert.equal(optionalSummary().families, OPTIONAL_FAMILIES.length);
 });

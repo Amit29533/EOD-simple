@@ -37,8 +37,8 @@ export const LEGACY_COMPETENCY_TO_MODULE = {
   'customer-advisory':      'C03', // Objection Handling & Consultative Influence
 };
 
-/** Retired competency -> the question family the module belongs to. */
-const MODULE_FAMILY = {
+/** Target module -> the top-level group it sits in. */
+const MODULE_GROUP = {
   T01: 'technical', T02: 'technical', T05: 'technical',
   T06: 'technical', T08: 'technical', T10: 'technical',
   C03: 'consulting',
@@ -47,6 +47,17 @@ const MODULE_FAMILY = {
 const COMPETENCY_NAME = Object.fromEntries(
   RSA_COMPETENCIES.map((c) => [c.key, c.name])
 );
+
+/**
+ * Retired questions keep their own identity rather than being forced into one
+ * of the v1.2 families: each retired competency becomes a "Legacy - <name>"
+ * family inside its target module. That way the optional pool is visible in
+ * the same MODULE -> FAMILY tree without diluting the curated families a new
+ * question should be added to.
+ */
+const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const familyNameFor = (competency) => `Legacy - ${COMPETENCY_NAME[competency] || competency}`;
+const familyIdFor = (module, competency) => `${module}:legacy-${slug(competency)}`;
 
 /** Legacy storage types map onto the two v1.2 answer modes. */
 const isOpenType = (type) => type === 'text';
@@ -80,7 +91,8 @@ export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
     return {
       id: nextId(module),
       module,
-      family: COMPETENCY_NAME[q.competency] || q.competency,
+      family_id: familyIdFor(module, q.competency),
+      family: familyNameFor(q.competency),
       type: open ? 'open' : 'objective',
       source_type: 'Legacy catalogue',
       difficulty: q.difficulty === 'advanced' ? 5 : q.difficulty === 'foundation' ? 2 : 3,
@@ -115,18 +127,44 @@ export const OPTIONAL_QUESTIONS = RSA_QUESTIONS
     };
   });
 
+/**
+ * The legacy families this pool contributes, so the Admin UI can show them in
+ * the MODULE -> FAMILY tree alongside the curated v1.2 families.
+ */
+export const OPTIONAL_FAMILIES = [...new Map(
+  OPTIONAL_QUESTIONS.map((q) => [q.family_id, {
+    id: q.family_id,
+    key: q.family_id.split(':')[1],
+    name: q.family,
+    module: q.module,
+    group: MODULE_GROUP[q.module] || 'technical',
+    role: 'mixed',
+    legacy: true,
+    objective: 0,
+    open: 0,
+  }])
+).values()].map((family) => {
+  const rows = OPTIONAL_QUESTIONS.filter((q) => q.family_id === family.id);
+  return {
+    ...family,
+    objective: rows.filter((q) => q.type === 'objective').length,
+    open: rows.filter((q) => q.type === 'open').length,
+  };
+}).sort((a, b) => a.id.localeCompare(b.id));
+
 /** Per-module counts, for the admin UI. */
 export function optionalSummary() {
   const byModule = {};
   for (const q of OPTIONAL_QUESTIONS) {
     const row = byModule[q.module] || (byModule[q.module] = {
-      module: q.module, family: MODULE_FAMILY[q.module] || 'technical', objective: 0, open: 0,
+      module: q.module, group: MODULE_GROUP[q.module] || 'technical', objective: 0, open: 0,
     });
     if (q.type === 'open') row.open += 1;
     else row.objective += 1;
   }
   return {
     total: OPTIONAL_QUESTIONS.length,
+    families: OPTIONAL_FAMILIES.length,
     modules: Object.values(byModule).sort((a, b) => a.module.localeCompare(b.module)),
   };
 }

@@ -101,35 +101,54 @@ Deliberately deferred to the next phases (architecture already supports them): E
 module, Independent Validation module, candidate-facing enrichment plan, client/commercial
 entities. There are no `clients`/commercial tables anywhere — nobody can stumble into them.
 
-## Question Bank v1.2 — families, modules and test generation
+## Question Bank v1.2 — modules, families and test generation
 
 The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`):
-**348 questions across 20 modules**, grouped into families, plus a mandatory module
-whose question opens every paper.
+**348 questions across 20 modules**, organised **module → family → question**, plus a
+mandatory module whose question opens every paper.
 
-| Family | Modules | Served per module |
-| ------ | ------- | ----------------- |
+```
+MODULE                                    FAMILY (where a question is added)
+T05  Delta Lake, Performance & Cost   ├─ T05:advanced-technical-judgment   10 objective
+                                      ├─ T05:delta-lake-physical-design    13 open
+                                      ├─ T05:spark-performance-internals   13 open
+                                      └─ … 5 more
+```
+
+Families are **scoped to their module**. The same family name recurs elsewhere —
+*Advanced Technical Judgment* exists in all ten technical modules — so each is
+addressed by the compound id `<MODULE>:<family-slug>`. That is what makes
+"add this question to that family" unambiguous: a question carries a `family_id`
+and belongs to exactly one family inside one module.
+
+| Group | Modules | Served per module |
+| ----- | ------- | ----------------- |
 | **Mandatory** | `M00` | 1 question — **always on every test**, first |
 | **Technical** | `T01`–`T10` | 3 objective + 1 open |
 | **Consulting & Client Skills** | `C01`–`C04` | 1 open |
 | **Professional & Communication** | `P01`–`P04` | 1 open |
 | **Foundation & Integrated Judgment** | `F01`–`F02` | 1 open |
 
-Every generated test contains **51 questions**:
+Every generated test contains **51 questions**: 1 mandatory + 30 technical objective
++ 10 technical open + 10 non-technical open. Questions are picked at **random** from
+each module's families while that structure is held exactly.
 
-- 1 mandatory
-- 30 technical objective (10 modules × 3)
-- 10 technical non-objective (10 modules × 1)
-- 10 non-technical non-objective (10 modules × 1)
-
-Questions are picked at **random** from each module's bank while that structure is
-held exactly. Browse it under **Admin → Modules & Families**, which also previews a
-freshly generated paper.
+Browse it under **Admin → Modules & Families**: each module expands to its families,
+and any family opens to the questions a new one would join. The screen also previews
+a freshly generated paper.
 
 **Optional pool.** The previous 115-question competency catalogue is no longer part
-of a generated test. It is re-tagged into the same module shape and kept as a
-**fallback**: never served while a module can fill its quota, drawn only to cover a
-shortfall so a paper always reaches full length.
+of a generated test. Each retired competency becomes a `Legacy - …` family inside its
+closest module, so it stays visible in the same tree without diluting the curated
+families. Optional questions are **never** served while a family can fill its
+module's quota — they are drawn only to cover a shortfall.
+
+The bank is regenerated from the source PDF with:
+
+```bash
+python3 scripts/extract-question-bank.py "Question bank 1.2.pdf" bank.json
+python3 scripts/build-question-bank.py    bank.json src/content/rsa-question-bank.mjs
+```
 
 ## Compartmentalization matrix
 

@@ -34,7 +34,8 @@ test('bootstrap publishes the families, modules and paper structure', async () =
   const res = await call('GET', '/meta/bootstrap');
   assert.equal(res.status, 200);
   assert.equal(res.body.modules.length, 21);
-  assert.equal(res.body.questionFamilies.length, 5);
+  assert.equal(res.body.moduleGroups.length, 5);
+  assert.equal(res.body.families.length, 63);
   assert.equal(res.body.moduleTestStructure.total, 51);
   assert.equal(res.body.moduleTestStructure.technical_objective, 3);
   assert.equal(res.body.moduleTestStructure.non_technical_open, 1);
@@ -57,11 +58,27 @@ test('module listing reports every module with its counts', async () => {
   }
 });
 
-test('modules are grouped under declared families', async () => {
+test('modules are grouped, and each carries its own families', async () => {
   const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
-  const families = new Set(res.body.families.map((f) => f.key));
-  for (const m of res.body.modules) assert.ok(families.has(m.family), `${m.key}`);
+  const groups = new Set(res.body.groups.map((g) => g.key));
+  for (const m of res.body.modules) {
+    assert.ok(groups.has(m.group), `${m.key} -> ${m.group}`);
+    assert.ok(Array.isArray(m.families) && m.families.length >= 1, `${m.key} families`);
+    for (const f of m.families) assert.ok(f.id.startsWith(`${m.key}:`), f.id);
+  }
   assert.equal(res.body.modules.filter((m) => m.technical).length, 10);
+  assert.equal(res.body.family_total, 63);
+});
+
+test('a family endpoint returns just that family\'s questions', async () => {
+  const res = await call('GET', '/admin/question-bank/families/T05:cost-finops', { token: adminToken });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.family.module, 'T05');
+  assert.equal(res.body.family.name, 'Cost & FinOps');
+  assert.ok(res.body.questions.length >= 1);
+
+  const missing = await call('GET', '/admin/question-bank/families/T05:nope', { token: adminToken });
+  assert.equal(missing.status, 404);
 });
 
 test('the optional pool is reported separately from the primary bank', async () => {
@@ -116,6 +133,7 @@ test('question-bank endpoints are admin-only', async () => {
     ['GET', '/admin/question-bank/modules'],
     ['GET', '/admin/question-bank/plan'],
     ['POST', '/admin/question-bank/preview'],
+    ['GET', '/admin/question-bank/families/T05:cost-finops'],
   ]) {
     assert.equal((await call(method, p)).status, 401, `${p} anonymous`);
     assert.equal((await call(method, p, { token: candidateToken })).status, 403, `${p} candidate`);

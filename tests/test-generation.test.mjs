@@ -5,7 +5,9 @@ import {
   generateTest, testPlan, TEST_BLUEPRINT,
   TECHNICAL_OBJECTIVE_PER_MODULE, TECHNICAL_OPEN_PER_MODULE,
 } from '../src/core/test-generation.mjs';
-import { MODULES, QUESTIONS, MANDATORY_QUESTION_ID, QUESTION_FAMILIES } from '../src/content/rsa-question-bank.mjs';
+import {
+  MODULES, QUESTIONS, MANDATORY_QUESTION_ID, MODULE_GROUPS, FAMILIES, findFamily,
+} from '../src/content/rsa-question-bank.mjs';
 
 /** Deterministic rng so a failing case is reproducible. */
 function seeded(seed = 1) {
@@ -37,9 +39,33 @@ test('module keys are exactly T01-T10, C01-C04, P01-P04, F01-F02 (+ M00)', () =>
   assert.deepEqual(keys, expected);
 });
 
-test('every module belongs to a declared family', () => {
-  const families = new Set(QUESTION_FAMILIES.map((f) => f.key));
-  for (const m of MODULES) assert.ok(families.has(m.family), `${m.key} -> ${m.family}`);
+test('every module belongs to a declared group', () => {
+  const groups = new Set(MODULE_GROUPS.map((g) => g.key));
+  for (const m of MODULES) assert.ok(groups.has(m.group), `${m.key} -> ${m.group}`);
+});
+
+test('every module owns at least one family, scoped to itself', () => {
+  for (const m of MODULES) {
+    assert.ok(m.families.length >= 1, `${m.key} has no families`);
+    for (const f of m.families) {
+      assert.equal(f.id, `${m.key}:${f.key}`, 'family id is module-scoped');
+      assert.ok(['objective', 'open', 'mixed'].includes(f.role), `${f.id} role`);
+    }
+  }
+});
+
+test('every question resolves to a family that exists in its own module', () => {
+  for (const q of QUESTIONS) {
+    const family = findFamily(q.family_id);
+    assert.ok(family, `${q.id} -> unknown family ${q.family_id}`);
+    assert.equal(family.module, q.module, `${q.id} family belongs to another module`);
+  }
+});
+
+test('a family name repeated across modules stays independently addressable', () => {
+  const shared = FAMILIES.filter((f) => f.key === 'advanced-technical-judgment');
+  assert.equal(shared.length, 10, 'one per technical module');
+  assert.equal(new Set(shared.map((f) => f.id)).size, 10, 'ids are unique');
 });
 
 test('the mandatory module is ordered first', () => {

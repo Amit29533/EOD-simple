@@ -10,8 +10,10 @@ import { buildSnapshot, roleBank } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
 import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
-import { QUESTION_FAMILIES, MODULES, QUESTIONS, QUESTION_BANK_VERSION } from '../../content/rsa-question-bank.mjs';
-import { OPTIONAL_QUESTIONS, optionalSummary } from '../../content/rsa-optional-bank.mjs';
+import {
+  MODULE_GROUPS, MODULES, QUESTIONS, FAMILIES, findFamily, QUESTION_BANK_VERSION,
+} from '../../content/rsa-question-bank.mjs';
+import { OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary } from '../../content/rsa-optional-bank.mjs';
 import { generateTest, testPlan, TEST_BLUEPRINT } from '../../core/test-generation.mjs';
 
 const A = ['admin'];
@@ -502,24 +504,71 @@ export function adminHandlers(route) {
     // send 'on'/'true'), but a query string naturally carries ?flag=1.
     const includeOptional = bool(query.include_optional) || query.include_optional === '1';
     const pool = includeOptional ? [...QUESTIONS, ...OPTIONAL_QUESTIONS] : QUESTIONS;
-    const counts = new Map();
-    for (const q of pool) {
-      const row = counts.get(q.module) || { objective: 0, open: 0, optional: 0 };
+
+    const blank = () => ({ objective: 0, open: 0, optional: 0 });
+    const tally = (row, q) => {
       if (q.optional) row.optional += 1;
       else if (q.type === 'open') row.open += 1;
       else row.objective += 1;
-      counts.set(q.module, row);
+    };
+
+    // Counts are kept per module AND per family, so the UI can show a module's
+    // total alongside the breakdown of the families inside it.
+    const byModule = new Map();
+    const byFamily = new Map();
+    for (const q of pool) {
+      const mod = byModule.get(q.module) || blank();
+      tally(mod, q);
+      byModule.set(q.module, mod);
+
+      const fid = q.family_id || `${q.module}:${q.family || 'unassigned'}`;
+      const fam = byFamily.get(fid) || blank();
+      tally(fam, q);
+      byFamily.set(fid, fam);
     }
+
     return ok({
       version: QUESTION_BANK_VERSION,
       blueprint: TEST_BLUEPRINT,
-      families: QUESTION_FAMILIES,
-      modules: MODULES.map((m) => ({
-        ...m,
-        ...(counts.get(m.key) || { objective: 0, open: 0, optional: 0 }),
-      })),
+      groups: MODULE_GROUPS,
+      modules: MODULES.map((m) => {
+        const own = m.families.map((f) => ({ ...f, ...(byFamily.get(f.id) || blank()) }));
+        // Legacy families are appended after the curated ones so the tree shows
+        // where retired questions live without implying they are the default
+        // place to add a new question.
+        // A legacy family's members are all optional, so `objective`/`open`
+        // describe what it *holds* while `optional` carries the same total —
+        // otherwise the row would read 0/0 and look empty.
+        const legacy = includeOptional
+          ? OPTIONAL_FAMILIES.filter((f) => f.module === m.key).map((f) => ({
+              ...f,
+              optional: (byFamily.get(f.id) || blank()).optional,
+            }))
+          : [];
+        return { ...m, ...(byModule.get(m.key) || blank()), families: [...own, ...legacy] };
+      }),
       bank_total: QUESTIONS.length,
+      family_total: FAMILIES.length,
       optional: optionalSummary(),
+    });
+  });
+
+  // One family's questions, so an admin can review a family before adding to
+  // it. Families are addressed by their compound `<MODULE>:<slug>` id.
+  route('GET', '/admin/question-bank/families/:id', A, async ({ params }) => {
+    const family = findFamily(params.id)
+      || OPTIONAL_FAMILIES.find((f) => f.id === params.id)
+      || null;
+    if (!family) return notFound('Family not found.');
+    const rows = [...QUESTIONS, ...OPTIONAL_QUESTIONS].filter((q) => q.family_id === family.id);
+    return ok({
+      family,
+      questions: rows.map((q) => ({
+        id: q.id, type: q.type, prompt: q.prompt,
+        difficulty: q.difficulty, band: q.band, minutes: q.minutes,
+        mandatory: q.mandatory === true, optional: q.optional === true,
+        needs_option_review: q.needs_option_review === true,
+      })),
     });
   });
 
@@ -541,7 +590,7 @@ export function adminHandlers(route) {
       warnings: result.warnings,
       sections: result.sections,
       questions: result.questions.map((q) => ({
-        id: q.id, module: q.module, family: q.family, type: q.type,
+        id: q.id, module: q.module, family_id: q.family_id, family: q.family, type: q.type,
         prompt: q.prompt, mandatory: q.mandatory === true, optional: q.optional === true,
       })),
     });

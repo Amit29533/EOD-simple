@@ -1033,10 +1033,13 @@ function debounce(fn, ms) {
 
 /* ============================ Question Bank v1.2 ============================ */
 /**
- * Family -> module view of the finalized question bank, plus the fixed shape
- * of a generated paper. Read-only published content: the modules, their
- * families and the per-module quotas come from the API, so this view never
- * drifts from src/core/test-generation.mjs.
+ * MODULE -> FAMILY view of the finalized question bank, plus the fixed shape of
+ * a generated paper.
+ *
+ * Modules are the top level; each expands to the families inside it. A family
+ * is the unit a new question is added to, and because a family name repeats
+ * across modules ("Advanced Technical Judgment" is in all ten technical ones)
+ * every family is addressed by its module-scoped id, `<MODULE>:<slug>`.
  */
 export async function modulesView(view) {
   view.innerHTML = loading();
@@ -1046,27 +1049,29 @@ export async function modulesView(view) {
   ]);
 
   const bp = bank.blueprint;
-  const families = bank.families;
-  const byFamily = new Map(families.map((f) => [f.key, []]));
-  for (const m of [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
-    if (!byFamily.has(m.family)) byFamily.set(m.family, []);
-    byFamily.get(m.family).push(m);
-  }
+  const groupName = Object.fromEntries(bank.groups.map((g) => [g.key, g.name]));
   const planFor = new Map((plan?.modules || []).map((r) => [r.module, r]));
+  const modules = [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
   const quota = (m) => {
-    if (m.mandatory) return '<span class="chip chip-mandatory">Always served</span>';
-    if (m.technical) return '<span class="chip">3 objective + 1 open</span>';
-    return '<span class="chip">1 open</span>';
+    if (m.mandatory) return 'Always served, first';
+    if (m.technical) return '3 objective + 1 open';
+    return '1 open';
   };
+  const roleChip = (role) => role === 'objective'
+    ? '<span class="chip">Objective</span>'
+    : role === 'mixed'
+      ? '<span class="chip">Mixed</span>'
+      : '<span class="chip">Open</span>';
 
   view.innerHTML = `
     <div class="page-heading">
       <div>
         <div class="eyebrow">Assessment design</div>
         <h1>Modules &amp; families</h1>
-        <p>The finalized question bank v${esc(bank.version)} — ${bank.bank_total} questions across
-           ${bank.modules.length - 1} modules, grouped into ${families.length - 1} families.</p>
+        <p>Question bank v${esc(bank.version)} — ${bank.bank_total} questions in
+           ${modules.length - 1} modules, organised into ${bank.family_total} families.
+           A new question belongs to exactly one family inside one module.</p>
       </div>
       <div class="heading-actions"><button class="btn" id="mv-preview">Preview a test</button></div>
     </div>
@@ -1077,45 +1082,49 @@ export async function modulesView(view) {
         <b>Every generated test contains ${bp.total} questions.</b>
         <small>${bp.mandatory} mandatory · ${bp.technical_objective} technical objective ·
           ${bp.technical_open} technical open · ${bp.non_technical_open} non-technical open.
-          Questions are drawn at random from each module's bank while this structure is held exactly.</small>
+          Questions are drawn at random from each module's families while this structure is held exactly.</small>
       </span>
-      ${plan && plan.ready
-        ? badge('All modules ready', 'green')
-        : badge('Some modules are short', 'amber')}
+      ${plan && plan.ready ? badge('All modules ready', 'green') : badge('Some modules are short', 'amber')}
     </div>
 
-    ${families.map((f) => {
-      const mods = byFamily.get(f.key) || [];
-      if (!mods.length) return '';
+    <div class="module-list">
+    ${modules.map((m) => {
+      const row = planFor.get(m.key);
+      const open = m.mandatory || m.technical;
       return `
-      <div class="card module-family">
-        <div class="panel-head">
-          <div>
-            <h2>${esc(f.name)}</h2>
-            <p class="small muted">${esc(f.description)}</p>
-          </div>
-          <span class="chip">${mods.length} module${mods.length === 1 ? '' : 's'}</span>
+      <details class="card module-card" ${open ? 'open' : ''} data-module="${esc(m.key)}">
+        <summary class="module-summary">
+          <span class="module-key">${esc(m.key)}</span>
+          <span class="module-title">
+            <b>${esc(m.name)}</b>
+            <small>${esc(groupName[m.group] || m.group)} · serves ${esc(quota(m))}</small>
+          </span>
+          <span class="module-metrics">
+            <span class="chip">${m.objective} objective</span>
+            <span class="chip">${m.open} open</span>
+            ${m.optional ? `<span class="chip chip-optional">${m.optional} optional</span>` : ''}
+            ${row ? (row.sufficient ? badge('Ready', 'green') : badge('Short', 'amber')) : ''}
+          </span>
+        </summary>
+        <div class="family-table">
+          ${dataTable([
+            { label: 'Family', render: (f) => `<b>${esc(f.name)}</b><div class="small muted mono">${esc(f.id)}</div>` },
+            { label: 'Holds', render: (f) => roleChip(f.role) },
+            { label: 'Objective', render: (f) => esc(f.objective) },
+            { label: 'Open', render: (f) => esc(f.open) },
+            { label: 'Optional', render: (f) => f.optional ? `<span class="chip chip-optional">${esc(f.optional)}</span>` : '—' },
+            { label: '', cls: 'actions', render: (f) =>
+                `<button class="btn ghost sm" data-family="${esc(f.id)}">View</button>` },
+          ], m.families)}
         </div>
-        ${dataTable([
-          { label: 'Module', render: (m) => `<b>${esc(m.key)}</b> — ${esc(m.name)}` },
-          { label: 'Served per test', render: quota },
-          { label: 'Objective', render: (m) => esc(m.objective) },
-          { label: 'Open', render: (m) => esc(m.open) },
-          { label: 'Optional', render: (m) => m.optional
-              ? `<span class="chip chip-optional">${esc(m.optional)}</span>` : '—' },
-          { label: 'Status', render: (m) => {
-              const row = planFor.get(m.key);
-              if (!row) return '';
-              return row.sufficient ? badge('Ready', 'green') : badge('Short', 'amber');
-            } },
-        ], mods)}
-      </div>`;
+      </details>`;
     }).join('')}
+    </div>
 
     <div class="card flat">
       <div class="panel-head"><div><h2>Optional pool</h2>
-        <p class="small muted">The retired catalogue, kept as a fallback. These questions are never
-        served while a module can fill its quota from the bank above — they are only drawn to cover a
+        <p class="small muted">The retired catalogue, mapped onto these modules and kept as a
+        fallback. Never served while a family can fill its module's quota — only drawn to cover a
         shortfall.</p></div>
         <span class="chip chip-optional">${bank.optional.total} questions</span></div>
     </div>`;
@@ -1124,6 +1133,40 @@ export async function modulesView(view) {
     const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: {} }));
     if (out) previewModal(out);
   };
+  for (const btn of view.querySelectorAll('[data-family]')) {
+    btn.onclick = async () => {
+      const out = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(btn.dataset.family)}`));
+      if (out) familyModal(out);
+    };
+  }
+}
+
+/** The questions inside one family — what a new question would join. */
+function familyModal({ family, questions }) {
+  const rows = questions.map((q, i) => `
+    <tr>
+      <td class="muted">${i + 1}</td>
+      <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
+      <td style="max-width:520px">${esc(q.prompt)}
+        ${q.mandatory ? '<span class="chip chip-mandatory">Mandatory</span>' : ''}
+        ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}
+        ${q.needs_option_review ? '<span class="chip chip-optional">Options need review</span>' : ''}</td>
+    </tr>`).join('');
+
+  modal({
+    title: `${family.module} · ${family.name}`,
+    wide: true,
+    bodyHtml: `
+      <p class="small muted">Family <span class="mono">${esc(family.id)}</span> —
+        ${family.objective} objective, ${family.open} open.
+        A question added here joins this family in module ${esc(family.module)} only.</p>
+      <div class="preview-scroll">
+        <table class="data"><thead><tr>
+          <th>#</th><th>Type</th><th>Question</th>
+        </tr></thead><tbody>${rows}</tbody></table>
+      </div>`,
+    actions: [{ label: 'Close', kind: 'ghost', close: true }],
+  });
 }
 
 /** Show one generated paper, grouped by module. */
@@ -1132,7 +1175,8 @@ function previewModal(result) {
   const rows = result.questions.map((q, i) => `
     <tr>
       <td class="muted">${i + 1}</td>
-      <td><b>${esc(q.mandatory ? 'M00' : q.module)}</b></td>
+      <td><b>${esc(q.mandatory ? 'M00' : q.module)}</b>
+        <div class="small muted">${esc(q.family || '')}</div></td>
       <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
       <td style="max-width:520px">${esc(q.prompt)}
         ${q.mandatory ? '<span class="chip chip-mandatory">Mandatory</span>' : ''}
@@ -1153,7 +1197,7 @@ function previewModal(result) {
         : ''}
       <div class="preview-scroll">
         <table class="data"><thead><tr>
-          <th>#</th><th>Module</th><th>Type</th><th>Question</th>
+          <th>#</th><th>Module / family</th><th>Type</th><th>Question</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>`,
     actions: [{ label: 'Close', kind: 'ghost', close: true }],

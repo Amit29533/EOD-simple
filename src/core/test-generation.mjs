@@ -167,7 +167,7 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
     }
 
     sections.push({
-      module: mod.key, name: mod.name, family: mod.family,
+      module: mod.key, name: mod.name, group: mod.group,
       technical, mandatory: false,
       objective: objective.picked.length, open: open.picked.length,
       from_optional: objective.fromOptional + open.fromOptional,
@@ -224,7 +224,7 @@ export function testPlan({ modules = [], questions = [] } = {}) {
     const optionalPool = pool.filter(isOptional);
 
     rows.push({
-      module: mod.key, name: mod.name, family: mod.family,
+      module: mod.key, name: mod.name, group: mod.group,
       technical, mandatory,
       required_objective: wantObjective,
       required_open: wantOpen,

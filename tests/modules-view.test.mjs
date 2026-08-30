@@ -32,15 +32,23 @@ function teardown(dom) {
   for (const k of ['window', 'document', 'location', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'HashChangeEvent', 'fetch']) delete globalThis[k];
 }
 
-const FAMILIES = [
+const GROUPS = [
   { key: 'mandatory', name: 'Mandatory', order: 0, description: 'Always served.' },
   { key: 'technical', name: 'Technical', order: 1, description: 'Platform depth.' },
   { key: 'consulting', name: 'Consulting & Client Skills', order: 2, description: 'Discovery.' },
 ];
 const MODULES = [
-  { key: 'M00', name: 'Mandatory Common Question', family: 'mandatory', order: 0, mandatory: true, technical: false, objective: 0, open: 0, optional: 0 },
-  { key: 'T01', name: 'Databricks Architecture', family: 'technical', order: 11, mandatory: false, technical: true, objective: 10, open: 9, optional: 15 },
-  { key: 'C01', name: 'Discovery & Requirement Structuring', family: 'consulting', order: 21, mandatory: false, technical: false, objective: 10, open: 4, optional: 0 },
+  { key: 'M00', name: 'Mandatory Common Question', group: 'mandatory', order: 0, mandatory: true, technical: false, objective: 0, open: 1, optional: 0,
+    families: [{ id: 'M00:common-question', key: 'common-question', name: 'Common Question', role: 'open', objective: 0, open: 1, optional: 0 }] },
+  { key: 'T01', name: 'Databricks Architecture', group: 'technical', order: 11, mandatory: false, technical: true, objective: 10, open: 9, optional: 15,
+    families: [
+      { id: 'T01:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment', role: 'objective', objective: 10, open: 0, optional: 0 },
+      { id: 'T01:modern-databricks-architecture', key: 'modern-databricks-architecture', name: 'Modern Databricks Architecture', role: 'open', objective: 0, open: 3, optional: 15 },
+    ] },
+  { key: 'C01', name: 'Discovery & Requirement Structuring', group: 'consulting', order: 21, mandatory: false, technical: false, objective: 10, open: 4, optional: 0,
+    families: [
+      { id: 'C01:advanced-consulting-judgment', key: 'advanced-consulting-judgment', name: 'Advanced Consulting Judgment', role: 'objective', objective: 10, open: 0, optional: 0 },
+    ] },
 ];
 const BLUEPRINT = { mandatory: 1, technical_objective: 30, technical_open: 10, non_technical_open: 10, total: 51 };
 
@@ -50,14 +58,23 @@ function stubFetch({ ready = true } = {}) {
     if (url.includes('/auth/me')) return json({ user: { id: 'u1', name: 'Admin', role: 'admin', email: '' }, candidate: null });
     if (url.includes('/question-bank/modules')) {
       return json({
-        version: '1.2', blueprint: BLUEPRINT, families: FAMILIES, modules: MODULES,
-        bank_total: 348, optional: { total: 115, modules: [] },
+        version: '1.2', blueprint: BLUEPRINT, groups: GROUPS, modules: MODULES,
+        bank_total: 348, family_total: 63, optional: { total: 115, modules: [] },
       });
     }
     if (url.includes('/question-bank/plan')) {
       return json({
         blueprint: BLUEPRINT, bank_total: 348, optional_total: 115, ready,
         modules: MODULES.map((m) => ({ module: m.key, sufficient: ready })),
+      });
+    }
+    if (url.includes('/question-bank/families/')) {
+      return json({
+        family: { id: 'T01:advanced-technical-judgment', key: 'advanced-technical-judgment',
+          name: 'Advanced Technical Judgment', module: 'T01', role: 'objective', objective: 10, open: 0 },
+        questions: [
+          { id: 'RSA-T01-011', type: 'objective', prompt: 'A judgment question in this family?', mandatory: false, optional: false, needs_option_review: false },
+        ],
       });
     }
     if (url.includes('/question-bank/preview') && (opts.method || 'GET') === 'POST') {
@@ -67,8 +84,8 @@ function stubFetch({ ready = true } = {}) {
         warnings: [],
         sections: [],
         questions: [
-          { id: 'RSA-F01-002', module: 'F01', family: 'x', type: 'open', prompt: 'The mandatory common question?', mandatory: true, optional: false },
-          { id: 'RSA-T01-011', module: 'T01', family: 'y', type: 'objective', prompt: 'A technical objective question?', mandatory: false, optional: false },
+          { id: 'RSA-F01-002', module: 'F01', family_id: 'F01:customer-solutioning', family: 'Customer Solutioning', type: 'open', prompt: 'The mandatory common question?', mandatory: true, optional: false },
+          { id: 'RSA-T01-011', module: 'T01', family_id: 'T01:advanced-technical-judgment', family: 'Advanced Technical Judgment', type: 'objective', prompt: 'A technical objective question?', mandatory: false, optional: false },
         ],
       });
     }
@@ -91,14 +108,55 @@ async function renderModules(overrides) {
   return view;
 }
 
-test('modules view groups every module under its family', { skip: SKIP }, async () => {
+test('modules view lists modules at the top level', { skip: SKIP }, async () => {
   const dom = setupDom();
   try {
     const view = await renderModules();
-    const families = [...view.querySelectorAll('.module-family')];
-    assert.equal(families.length, 3, 'one card per family that has modules');
-    const headings = families.map((f) => f.querySelector('h2').textContent);
-    assert.deepEqual(headings, ['Mandatory', 'Technical', 'Consulting & Client Skills']);
+    const cards = [...view.querySelectorAll('.module-card')];
+    assert.equal(cards.length, 3, 'one card per module');
+    assert.deepEqual(cards.map((c) => c.dataset.module), ['M00', 'T01', 'C01']);
+    assert.deepEqual(
+      cards.map((c) => c.querySelector('.module-key').textContent),
+      ['M00', 'T01', 'C01'],
+    );
+  } finally { teardown(dom); }
+});
+
+test('each module expands to the families inside it', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    const view = await renderModules();
+    const t01 = view.querySelector('[data-module="T01"]');
+    const rows = [...t01.querySelectorAll('.family-table tbody tr')];
+    assert.equal(rows.length, 2, 'T01 shows both of its families');
+    const text = t01.textContent.replace(/\s+/g, ' ');
+    assert.match(text, /Advanced Technical Judgment/);
+    assert.match(text, /Modern Databricks Architecture/);
+  } finally { teardown(dom); }
+});
+
+test('families are shown with their module-scoped id', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    const view = await renderModules();
+    const ids = [...view.querySelectorAll('.family-table .mono')].map((n) => n.textContent);
+    assert.ok(ids.includes('T01:advanced-technical-judgment'), ids.join(','));
+    assert.ok(ids.every((id) => id.includes(':')), 'every family id is module-scoped');
+  } finally { teardown(dom); }
+});
+
+test('opening a family lists the questions a new one would join', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    const view = await renderModules();
+    view.querySelector('[data-family="T01:advanced-technical-judgment"]').click();
+    await flush(60);
+    const dialog = document.querySelector('#modal-root .modal');
+    assert.ok(dialog, 'family dialog opened');
+    const text = dialog.textContent.replace(/\s+/g, ' ');
+    assert.match(text, /T01 . Advanced Technical Judgment/);
+    assert.match(text, /joins this family in module T01 only/);
+    assert.match(text, /A judgment question in this family\?/);
   } finally { teardown(dom); }
 });
 
@@ -121,8 +179,7 @@ test('each module shows what it contributes to a paper', { skip: SKIP }, async (
     const view = await renderModules();
     const text = view.textContent.replace(/\s+/g, ' ');
     assert.match(text, /3 objective \+ 1 open/, 'technical quota shown');
-    assert.match(text, /Always served/, 'mandatory module marked');
-    assert.ok(view.querySelector('.chip-mandatory'), 'mandatory chip present');
+    assert.match(text, /Always served, first/, 'mandatory module marked');
   } finally { teardown(dom); }
 });
 
@@ -132,7 +189,7 @@ test('the optional pool is surfaced but marked as fallback', { skip: SKIP }, asy
     const view = await renderModules();
     const text = view.textContent.replace(/\s+/g, ' ');
     assert.match(text, /115 questions/);
-    assert.match(text, /never served while a module can fill its quota/);
+    assert.match(text, /Never served while a family can fill its module's quota/);
     assert.ok(view.querySelector('.chip-optional'), 'optional chip present');
   } finally { teardown(dom); }
 });
