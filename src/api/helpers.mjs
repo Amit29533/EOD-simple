@@ -10,7 +10,14 @@ export const tooMany = (error) => ({ status: 429, body: { error } });
 
 export const str = (v, max = 500) => String(v ?? '').trim().slice(0, max);
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
-export const bool = (v) => v === true || v === 'true' || v === 1 || v === 'on';
+/**
+ * Truthiness for values arriving over HTTP. Covers JSON booleans, HTML form
+ * posts ('on'), and query-string flags ('1'/'yes'), which is what a URL like
+ * ?include_optional=1 naturally sends. Anything else — including '0',
+ * 'false' and '' — is false.
+ */
+export const bool = (v) => v === true || v === 1
+  || (typeof v === 'string' && ['true', 'on', '1', 'yes'].includes(v.trim().toLowerCase()));
 /** Requires fields present and non-empty; returns list of missing names. */
 export const missing = (body, fields) => fields.filter((f) => body?.[f] === undefined || body?.[f] === null || body?.[f] === '');
 

@@ -24,8 +24,17 @@ import sys
 from collections import OrderedDict
 
 # The mandatory question - the single "Common Question" in the bank. It is
-# served first on every paper and lives in its own synthetic module, M00.
+# served first on every paper and is the sole content of module M00.
+#
+# The source PDF authors it under F01 / "Consulting & Client Skills", but the
+# product treats it as a standalone module that sits above the other twenty.
+# It is therefore relocated into M00 below, so that the module which serves it
+# is also the module that owns it: M00 reports a real count, its family
+# drills down to a real question, and the modules still partition the bank
+# exactly once. `origin_module` / `origin_family` keep the PDF provenance.
 MANDATORY_ID = 'RSA-F01-002'
+MANDATORY_MODULE = 'M00'
+MANDATORY_FAMILY = 'Common Question'
 
 # Top-level grouping of modules. These are *groups*, not families: "family"
 # is reserved throughout for the per-module question families the PDF names in
@@ -44,6 +53,7 @@ GROUPS = [
 ]
 
 MODULE_TITLES = {
+    'M00': 'Mandatory Common Question',
     'F01': 'Databricks Value & RSA Role',
     'F02': 'Integrated Client Engagement & Validation',
     'T01': 'Databricks Architecture, Lakehouse & Data Intelligence',
@@ -66,7 +76,12 @@ MODULE_TITLES = {
     'P04': 'Technical-to-Business Translation',
 }
 
-GROUP_OF = {'T': 'technical', 'C': 'consulting', 'P': 'professional', 'F': 'foundation'}
+GROUP_OF = {'M': 'mandatory', 'T': 'technical', 'C': 'consulting',
+            'P': 'professional', 'F': 'foundation'}
+
+MODULE_DESCRIPTIONS = {
+    'M00': 'The common question every candidate answers, served first on every test.',
+}
 
 
 def slug(text):
@@ -86,7 +101,7 @@ def js(value):
 
 def module_order(key):
     """Modules ordered M00, then T01-T10, C01-C04, P01-P04, F01-F02."""
-    base = {'T': 10, 'C': 20, 'P': 30, 'F': 40}[key[0]]
+    base = {'M': 0, 'T': 10, 'C': 20, 'P': 30, 'F': 40}[key[0]]
     return base + int(key[1:])
 
 
@@ -101,6 +116,16 @@ def family_role(questions):
 
 def build(bank_path, out_path):
     bank = json.load(open(bank_path, encoding='utf-8'))
+
+    # Relocate the mandatory question into its own module before grouping, so
+    # every later count (module totals, family totals, the flattened FAMILIES
+    # list and the questions array) sees it in exactly one place.
+    for question in bank:
+        if question['id'] == MANDATORY_ID:
+            question['origin_module'] = question['module']
+            question['origin_family'] = question['question_family']
+            question['module'] = MANDATORY_MODULE
+            question['question_family'] = MANDATORY_FAMILY
 
     # ---- group questions: module -> family -> [questions] --------------
     modules = OrderedDict()
@@ -136,6 +161,8 @@ def build(bank_path, out_path):
     w(' * generator (or the Admin UI), not this file by hand.')
     w(' *')
     w(' *   M00       Mandatory     1 question, served first on every test')
+    w(' *                           (authored under F01 in the source PDF and')
+    w(' *                           relocated here; see origin_module)')
     w(' *   T01-T10   Technical     3 objective + 1 open served per module')
     w(' *   C01-C04   Consulting    1 open served per module')
     w(' *   P01-P04   Professional  1 open served per module')
@@ -175,26 +202,23 @@ def build(bank_path, out_path):
     w(" * 'objective', 'open', or 'mixed'.")
     w(' */')
     w('export const MODULES = [')
-    w("  { key: 'M00', name: 'Mandatory Common Question', group: 'mandatory', order: 0,")
-    w('    mandatory: true, technical: false,')
-    w("    description: 'The common question every candidate answers, served first on every test.',")
-    w('    families: [')
-    w("      { id: 'M00:common-question', key: 'common-question', name: 'Common Question',")
-    w("        role: 'open', objective: 0, open: 1 },")
-    w('    ] },')
     for key in sorted(modules, key=module_order):
         families = modules[key]
         group = GROUP_OF[key[0]]
-        technical = 'true ' if key[0] == 'T' else 'false'
+        technical = 'true' if key[0] == 'T' else 'false'
+        mandatory = 'true' if key == MANDATORY_MODULE else 'false'
         w(f"  {{ key: '{key}', name: {js(MODULE_TITLES[key])}, group: '{group}', order: {module_order(key)},")
-        w(f"    mandatory: false, technical: {technical},")
+        w(f"    mandatory: {mandatory}, technical: {technical},")
+        if key in MODULE_DESCRIPTIONS:
+            w(f"    description: {js(MODULE_DESCRIPTIONS[key])},")
         w('    families: [')
         for name, members in families.items():
-            served = [q for q in members if q['id'] != MANDATORY_ID]
-            objective = sum(1 for q in served if q['objective'])
+            # Counts describe what the family actually holds, so a family row
+            # and its drill-down can never disagree.
+            objective = sum(1 for q in members if q['objective'])
             w(f"      {{ id: '{key}:{slug(name)}', key: '{slug(name)}', name: {js(name)},")
-            w(f"        role: '{family_role(served) if served else 'open'}',"
-              f" objective: {objective}, open: {len(served) - objective} }},")
+            w(f"        role: '{family_role(members)}',"
+              f" objective: {objective}, open: {len(members) - objective} }},")
         w('    ] },')
     w('];')
     w('')
@@ -207,8 +231,8 @@ def build(bank_path, out_path):
         total = sum(len(v) for v in families.values())
         w(f'  // ==================================================================')
         w(f'  // {key} - {flat(MODULE_TITLES[key])}')
-        w(f'  // {total} questions across {len(families)} famil'
-          f'{"y" if len(families) == 1 else "ies"}')
+        w(f'  // {total} question{"" if total == 1 else "s"}'
+          f' across {len(families)} famil{"y" if len(families) == 1 else "ies"}')
         w(f'  // ==================================================================')
         for name, members in families.items():
             objective = sum(1 for q in members if q['objective'])
@@ -224,6 +248,10 @@ def build(bank_path, out_path):
                 w(f"    minutes: {q['minutes']}, status: {js(q['status'])}, version: {js(q['version'])},")
                 w(f"    randomizable: {'true' if q['randomizable'] else 'false'},")
                 w(f"    mandatory: {'true' if q['id'] == MANDATORY_ID else 'false'},")
+                if q.get('origin_module'):
+                    # Where the source PDF authored it, kept for traceability.
+                    w(f"    origin_module: {js(q['origin_module'])},"
+                      f" origin_family: {js(q['origin_family'])},")
                 w(f"    prompt: {js(q['prompt'])},")
                 if q['objective']:
                     w('    options: [')

@@ -60,17 +60,11 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
   }));
 }
 
-/** Auto-score every auto-scorable response of an assessment (called at submit). */
-export async function autoScoreResponses(store, assessment) {
-  const responses = await store.list('responses', { assessment_id: assessment.id });
-  const byQid = new Map(responses.map((r) => [r.question_id, r]));
-  for (const q of sortedQuestions(assessment.snapshot_json)) {
-    if (!isAutoQuestion(q)) continue;
-    const r = byQid.get(q.id);
-    if (!r) continue;
-    await store.update('responses', r.id, { auto_score: autoScore(q, r.answer) ?? 0 });
-  }
-}
+// NOTE: auto-scoring is NOT performed here. The submit handler
+// (POST /candidate/assessments/:id/submit) scores each answer as it persists
+// it, and finalizeScoring below re-scores from the snapshot at finalize time.
+// A third copy of that logic used to live here, unused, documented as "called
+// at submit" — which it never was.
 
 /** Move a candidate's pipeline stage forward, never backwards. */
 export async function advanceStage(store, candidateId, targetStage) {

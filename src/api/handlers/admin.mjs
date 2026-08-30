@@ -3,7 +3,7 @@ import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, 
 import { publicUser } from '../projections.mjs';
 import {
   USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG,
-  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS,
+  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE,
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { buildSnapshot, roleBank } from '../assessment-service.mjs';
@@ -500,9 +500,7 @@ export function adminHandlers(route) {
   // 51-question paper shape. Read-only published content, so it is served
   // straight from src/content rather than from the store.
   route('GET', '/admin/question-bank/modules', A, async ({ query }) => {
-    // `bool` deliberately does not treat the string '1' as true (form posts
-    // send 'on'/'true'), but a query string naturally carries ?flag=1.
-    const includeOptional = bool(query.include_optional) || query.include_optional === '1';
+    const includeOptional = bool(query.include_optional);
     const pool = includeOptional ? [...QUESTIONS, ...OPTIONAL_QUESTIONS] : QUESTIONS;
 
     const blank = () => ({ objective: 0, open: 0, optional: 0 });
@@ -530,6 +528,10 @@ export function adminHandlers(route) {
     return ok({
       version: QUESTION_BANK_VERSION,
       blueprint: TEST_BLUEPRINT,
+      // How many modules the paper-wide blueprint totals are spread across,
+      // so a client can show the per-module quota without hardcoding it.
+      technical_modules: MODULE_TEST_STRUCTURE.technical_modules,
+      non_technical_modules: MODULE_TEST_STRUCTURE.non_technical_modules,
       groups: MODULE_GROUPS,
       modules: MODULES.map((m) => {
         const own = m.families.map((f) => ({ ...f, ...(byFamily.get(f.id) || blank()) }));

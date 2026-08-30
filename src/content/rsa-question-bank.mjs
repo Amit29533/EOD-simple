@@ -6,6 +6,8 @@
  * generator (or the Admin UI), not this file by hand.
  *
  *   M00       Mandatory     1 question, served first on every test
+ *                           (authored under F01 in the source PDF and
+ *                           relocated here; see origin_module)
  *   T01-T10   Technical     3 objective + 1 open served per module
  *   C01-C04   Consulting    1 open served per module
  *   P01-P04   Professional  1 open served per module
@@ -58,7 +60,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 1 },
     ] },
   { key: 'T01', name: 'Databricks Architecture, Lakehouse & Data Intelligence', group: 'technical', order: 11,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T01:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -72,7 +74,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 3 },
     ] },
   { key: 'T02', name: 'Data Ingestion, Streaming & Change Processing', group: 'technical', order: 12,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T02:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -80,7 +82,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 9 },
     ] },
   { key: 'T03', name: 'Lakeflow Pipelines, Jobs & Data Quality', group: 'technical', order: 13,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T03:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -90,7 +92,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 2 },
     ] },
   { key: 'T04', name: 'SQL, PySpark & Data Engineering', group: 'technical', order: 14,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T04:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -100,7 +102,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 2 },
     ] },
   { key: 'T05', name: 'Delta Lake, Performance, Compute & Cost Optimization', group: 'technical', order: 15,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T05:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -120,7 +122,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 13 },
     ] },
   { key: 'T06', name: 'Unity Catalog, Security & Data Governance', group: 'technical', order: 16,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T06:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -132,7 +134,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 3 },
     ] },
   { key: 'T07', name: 'APIs, Integration & Serving', group: 'technical', order: 17,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T07:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -146,7 +148,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 4 },
     ] },
   { key: 'T08', name: 'Migration, Troubleshooting & Production Operations', group: 'technical', order: 18,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T08:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -156,7 +158,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 5 },
     ] },
   { key: 'T09', name: 'AI/BI, Semantic Layer & Genie', group: 'technical', order: 19,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T09:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -166,7 +168,7 @@ export const MODULES = [
         role: 'open', objective: 0, open: 1 },
     ] },
   { key: 'T10', name: 'GenAI, RAG & Agent Operations', group: 'technical', order: 20,
-    mandatory: false, technical: true ,
+    mandatory: false, technical: true,
     families: [
       { id: 'T10:advanced-technical-judgment', key: 'advanced-technical-judgment', name: 'Advanced Technical Judgment',
         role: 'objective', objective: 10, open: 0 },
@@ -265,6 +267,27 @@ export const MODULES = [
 
 /** Every question, ordered by module and then by family. */
 export const QUESTIONS = [
+  // ==================================================================
+  // M00 - Mandatory Common Question
+  // 1 question across 1 family
+  // ==================================================================
+  // -- M00 / Common Question (0 objective / 1 open)
+  {
+    id: 'RSA-F01-002', module: 'M00',
+    family_id: 'M00:common-question', family: 'Common Question',
+    type: 'open', source_type: 'Common Question',
+    difficulty: 4, band: 'Intermediate', mode: 'Either',
+    minutes: 4, status: 'Active', version: '1.2',
+    randomizable: true,
+    mandatory: true,
+    origin_module: 'F01', origin_family: 'Consulting & Client Skills',
+    prompt: 'In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?',
+    probes: ['What would you clarify with the stakeholder first?', 'How would you explain the Consulting & Client Skills recommendation and trade-offs?', 'What evidence or next step would build confidence? What would you clarify with the stakeholder first?', 'How'],
+    rubric: 'Clear stakeholder-aware reasoning on Consulting & Client Skills, with discovery, explicit trade-offs, credible evidence and a practical next step. Clear stakeholder-aware reasoning on Consulting & Client',
+    red_flags: 'Feature-dumps, uses unexplained jargon, skips discovery, hides trade-offs or cannot define evidence and next steps for Consulting & Client Skills. Feature-dumps, uses unexplained jargon, skips',
+    gap_tag: 'Consulting & Client Skills — F01 Consulting & Client Skills — F01',
+    enrichment: 'Complete Databricks Value & RSA Role and a targeted common question exercise focused on Consulting & Client Skills.',
+  },
   // ==================================================================
   // T01 - Databricks Architecture, Lakehouse & Data Intelligence
   // 19 questions across 5 families
@@ -6295,7 +6318,7 @@ export const QUESTIONS = [
   },
   // ==================================================================
   // F01 - Databricks Value & RSA Role
-  // 14 questions across 3 families
+  // 13 questions across 3 families
   // ==================================================================
   // -- F01 / Advanced Integrated Judgment (11 objective / 0 open)
   {
@@ -6524,22 +6547,7 @@ export const QUESTIONS = [
     gap_tag: 'Lakehouse change advanced decision — F01 Architecture & Dynamic Design — T01',
     enrichment: 'stakeholder-facing recommendations. Use Map a fragmented enterprise estate to a value- led target architecture; create stakeholder-specific explanations; complete role-boundary and trade-off exercises to practise assumptions, alternatives, failure conditions, validation evidence and stakeholder-facing recommendations.',
   },
-  // -- F01 / Consulting & Client Skills (0 objective / 2 open)
-  {
-    id: 'RSA-F01-002', module: 'F01',
-    family_id: 'F01:consulting-client-skills', family: 'Consulting & Client Skills',
-    type: 'open', source_type: 'Common Question',
-    difficulty: 4, band: 'Intermediate', mode: 'Either',
-    minutes: 4, status: 'Active', version: '1.2',
-    randomizable: true,
-    mandatory: true,
-    prompt: 'In simple terms, what problem does Databricks solve for an enterprise, and what is the role of an RSA in helping the client solve that problem?',
-    probes: ['What would you clarify with the stakeholder first?', 'How would you explain the Consulting & Client Skills recommendation and trade-offs?', 'What evidence or next step would build confidence? What would you clarify with the stakeholder first?', 'How'],
-    rubric: 'Clear stakeholder-aware reasoning on Consulting & Client Skills, with discovery, explicit trade-offs, credible evidence and a practical next step. Clear stakeholder-aware reasoning on Consulting & Client',
-    red_flags: 'Feature-dumps, uses unexplained jargon, skips discovery, hides trade-offs or cannot define evidence and next steps for Consulting & Client Skills. Feature-dumps, uses unexplained jargon, skips',
-    gap_tag: 'Consulting & Client Skills — F01 Consulting & Client Skills — F01',
-    enrichment: 'Complete Databricks Value & RSA Role and a targeted common question exercise focused on Consulting & Client Skills.',
-  },
+  // -- F01 / Consulting & Client Skills (0 objective / 1 open)
   {
     id: 'RSA-F01-003', module: 'F01',
     family_id: 'F01:consulting-client-skills', family: 'Consulting & Client Skills',

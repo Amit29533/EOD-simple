@@ -75,6 +75,20 @@ objective + 10 technical open + 10 non-technical open. Selection lives in
 `src/core/test-generation.mjs` (pure, `rng` injectable): questions are sampled at
 random inside each module while the structure above is held exactly.
 
+The paper shape is stated **once**, as per-module quotas in
+`MODULE_TEST_STRUCTURE` (`src/core/constants.mjs`); `TEST_BLUEPRINT` derives the
+paper-wide totals from it. Watch the units — `technical_objective` is *3 per
+module* in the former and *30 per paper* in the latter.
+
+**The mandatory question belongs to `M00`.** The source PDF authors it under
+`F01`, but the module that serves it is also the module that owns it, so the
+build relocates it (keeping `origin_module`/`origin_family` for provenance).
+Otherwise `M00` would advertise a family it holds no questions for — the module
+would render as empty in Admin while still appearing on every paper, and `F01`
+would report one fewer open question than it actually has. The generator still
+keys off the `mandatory` flag on the question, never off the module id, so the
+pinning survives any future re-grouping.
+
 **Optional pool.** The retired 115-question competency catalogue is re-shaped by
 `src/content/rsa-optional-bank.mjs`: each retired competency becomes a `Legacy - …`
 family inside its closest v1.2 module, tagged `optional: true`, so it appears in the

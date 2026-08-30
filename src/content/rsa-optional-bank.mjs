@@ -4,7 +4,7 @@
  * Before the finalized Question Bank v1.2 (src/content/rsa-question-bank.mjs)
  * the platform served a 115-question bank organised by *competency*. Those
  * questions are no longer part of a generated test: v1.2 is the authoritative
- * bank and its FAMILY -> MODULE structure drives selection.
+ * bank and its MODULE -> FAMILY structure drives selection.
  *
  * They are not discarded, though. Each one is mapped onto the closest v1.2
  * module, tagged `optional: true`, and kept as a **fallback pool**: the
@@ -21,6 +21,7 @@
  */
 
 import { RSA_QUESTIONS, RSA_COMPETENCIES, RSA_ORAL_SET } from './rsa-catalogue.mjs';
+import { MODULES } from './rsa-question-bank.mjs';
 
 /**
  * Retired competency -> the v1.2 module that now covers it.
@@ -37,12 +38,13 @@ export const LEGACY_COMPETENCY_TO_MODULE = {
   'customer-advisory':      'C03', // Objection Handling & Consultative Influence
 };
 
-/** Target module -> the top-level group it sits in. */
-const MODULE_GROUP = {
-  T01: 'technical', T02: 'technical', T05: 'technical',
-  T06: 'technical', T08: 'technical', T10: 'technical',
-  C03: 'consulting',
-};
+/**
+ * Target module -> the top-level group it sits in, read from the published
+ * bank rather than restated here: a hand-kept copy would silently disagree
+ * with MODULES the moment a module were regrouped.
+ */
+const groupOf = (moduleKey) =>
+  MODULES.find((m) => m.key === moduleKey)?.group || 'technical';
 
 const COMPETENCY_NAME = Object.fromEntries(
   RSA_COMPETENCIES.map((c) => [c.key, c.name])
@@ -137,7 +139,7 @@ export const OPTIONAL_FAMILIES = [...new Map(
     key: q.family_id.split(':')[1],
     name: q.family,
     module: q.module,
-    group: MODULE_GROUP[q.module] || 'technical',
+    group: groupOf(q.module),
     role: 'mixed',
     legacy: true,
     objective: 0,
@@ -157,7 +159,7 @@ export function optionalSummary() {
   const byModule = {};
   for (const q of OPTIONAL_QUESTIONS) {
     const row = byModule[q.module] || (byModule[q.module] = {
-      module: q.module, group: MODULE_GROUP[q.module] || 'technical', objective: 0, open: 0,
+      module: q.module, group: groupOf(q.module), objective: 0, open: 0,
     });
     if (q.type === 'open') row.open += 1;
     else row.objective += 1;

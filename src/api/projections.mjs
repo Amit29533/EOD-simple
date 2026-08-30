@@ -19,9 +19,6 @@ export const candidateForAssessor = (c) => c && ({
   years_experience: c.years_experience ?? null, target_role_id: c.target_role_id || null,
 });
 
-/** Full candidate (admin only). */
-export const candidateForAdmin = (c) => c && ({ ...c });
-
 import { RSA_ORAL_SET } from '../core/constants.mjs';
 
 /**

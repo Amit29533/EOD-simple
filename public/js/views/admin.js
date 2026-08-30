@@ -1053,11 +1053,16 @@ export async function modulesView(view) {
   const planFor = new Map((plan?.modules || []).map((r) => [r.module, r]));
   const modules = [...bank.modules].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
+  // Per-module quota, derived from the published blueprint rather than
+  // restated, so changing the paper shape updates this copy with it.
+  const perTechnicalObjective = Math.round(bp.technical_objective / (bank.technical_modules || 10));
+  const perTechnicalOpen = Math.round(bp.technical_open / (bank.technical_modules || 10));
   const quota = (m) => {
     if (m.mandatory) return 'Always served, first';
-    if (m.technical) return '3 objective + 1 open';
+    if (m.technical) return `${perTechnicalObjective} objective + ${perTechnicalOpen} open`;
     return '1 open';
   };
+  const gradedModules = modules.filter((m) => !m.mandatory).length;
   const roleChip = (role) => role === 'objective'
     ? '<span class="chip">Objective</span>'
     : role === 'mixed'
@@ -1070,7 +1075,7 @@ export async function modulesView(view) {
         <div class="eyebrow">Assessment design</div>
         <h1>Modules &amp; families</h1>
         <p>Question bank v${esc(bank.version)} — ${bank.bank_total} questions in
-           ${modules.length - 1} modules, organised into ${bank.family_total} families.
+           ${gradedModules} modules, organised into ${bank.family_total} families.
            A new question belongs to exactly one family inside one module.</p>
       </div>
       <div class="heading-actions"><button class="btn" id="mv-preview">Preview a test</button></div>

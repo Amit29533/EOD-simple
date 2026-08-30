@@ -139,3 +139,78 @@ test('question-bank endpoints are admin-only', async () => {
     assert.equal((await call(method, p, { token: candidateToken })).status, 403, `${p} candidate`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression tests: the API's own numbers must agree with each other.
+//
+// The module tree and the family drill-down are separate code paths over the
+// same bank, and they used to disagree — M00 advertised a family holding one
+// open question while the drill-down for that family returned nothing.
+// ---------------------------------------------------------------------------
+
+test('every family row agrees with its own drill-down', async () => {
+  const list = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  for (const m of list.body.modules) {
+    for (const f of m.families) {
+      const res = await call('GET', `/admin/question-bank/families/${f.id}`, { token: adminToken });
+      assert.equal(res.status, 200, f.id);
+      const rows = res.body.questions;
+      assert.equal(rows.length, f.objective + f.open, `${f.id} count`);
+      assert.equal(rows.filter((q) => q.type === 'objective').length, f.objective, `${f.id} objective`);
+      assert.equal(rows.filter((q) => q.type === 'open').length, f.open, `${f.id} open`);
+    }
+  }
+});
+
+test('a module total equals the sum of its families', async () => {
+  const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  for (const m of res.body.modules) {
+    const objective = m.families.reduce((n, f) => n + f.objective, 0);
+    const open = m.families.reduce((n, f) => n + f.open, 0);
+    assert.equal(objective, m.objective, `${m.key} objective`);
+    assert.equal(open, m.open, `${m.key} open`);
+  }
+});
+
+test('the mandatory module reports the question it always serves', async () => {
+  const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const m00 = res.body.modules.find((m) => m.mandatory);
+  assert.equal(m00.objective + m00.open, 1, 'the mandatory module is not empty');
+
+  const family = m00.families[0];
+  const drill = await call('GET', `/admin/question-bank/families/${family.id}`, { token: adminToken });
+  assert.equal(drill.body.questions.length, 1);
+  assert.equal(drill.body.questions[0].mandatory, true);
+});
+
+test('?include_optional accepts the flag spellings a URL actually carries', async () => {
+  const base = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const withOptional = base.body.modules.reduce((n, m) => n + (m.optional || 0), 0);
+  assert.equal(withOptional, 0, 'optional questions leaked into the default view');
+
+  for (const flag of ['1', 'true', 'yes', 'on']) {
+    const res = await call('GET', '/admin/question-bank/modules', {
+      token: adminToken, query: { include_optional: flag },
+    });
+    const total = res.body.modules.reduce((n, m) => n + (m.optional || 0), 0);
+    assert.equal(total, 115, `include_optional=${flag}`);
+  }
+  for (const flag of ['0', 'false', '']) {
+    const res = await call('GET', '/admin/question-bank/modules', {
+      token: adminToken, query: { include_optional: flag },
+    });
+    const total = res.body.modules.reduce((n, m) => n + (m.optional || 0), 0);
+    assert.equal(total, 0, `include_optional=${flag}`);
+  }
+});
+
+test('the paper-wide blueprint matches the published per-module quotas', async () => {
+  const res = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const { blueprint, technical_modules, non_technical_modules } = res.body;
+  assert.equal(technical_modules, 10);
+  assert.equal(non_technical_modules, 10);
+  assert.equal(blueprint.technical_objective % technical_modules, 0);
+  assert.equal(blueprint.technical_objective / technical_modules, 3);
+  assert.equal(blueprint.technical_open / technical_modules, 1);
+  assert.equal(blueprint.non_technical_open / non_technical_modules, 1);
+});

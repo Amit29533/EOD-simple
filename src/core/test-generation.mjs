@@ -1,7 +1,7 @@
 /**
  * Module-based test generation - pure selection logic (no I/O, unit-tested).
  *
- * The finalized Question Bank v1.2 is organised FAMILY -> MODULE -> QUESTION.
+ * The finalized Question Bank v1.2 is organised MODULE -> FAMILY -> QUESTION.
  * A generated test is assembled to a fixed structure rather than by weight
  * apportionment (which is what src/core/question-selection.mjs does for the
  * legacy competency-based catalogue):
@@ -27,17 +27,33 @@
  * generated test at a full 51 questions even when a module's bank is thin.
  */
 
-export const TECHNICAL_OBJECTIVE_PER_MODULE = 3;
-export const TECHNICAL_OPEN_PER_MODULE = 1;
-export const NON_TECHNICAL_OPEN_PER_MODULE = 1;
+import { MODULE_TEST_STRUCTURE } from './constants.mjs';
 
-/** Structure of a complete paper, for display and validation. */
+// Per-module quotas, re-exported from the single source of truth in
+// constants.mjs so the quotas the generator enforces are literally the same
+// numbers the API publishes.
+export const TECHNICAL_OBJECTIVE_PER_MODULE = MODULE_TEST_STRUCTURE.technical_objective;
+export const TECHNICAL_OPEN_PER_MODULE = MODULE_TEST_STRUCTURE.technical_open;
+export const NON_TECHNICAL_OPEN_PER_MODULE = MODULE_TEST_STRUCTURE.non_technical_open;
+
+/**
+ * Structure of a complete paper, for display and validation.
+ *
+ * Paper-wide TOTALS, derived from the per-module quotas — note the same key
+ * means something different in each: `technical_objective` is 3 per module in
+ * MODULE_TEST_STRUCTURE and 30 across the paper here. Deriving it means
+ * changing a quota in one place updates the generator, the blueprint, the
+ * admin preview and /meta/bootstrap together.
+ */
 export const TEST_BLUEPRINT = {
-  mandatory: 1,
-  technical_objective: 30,
-  technical_open: 10,
-  non_technical_open: 10,
-  total: 51,
+  mandatory: MODULE_TEST_STRUCTURE.mandatory,
+  technical_objective:
+    MODULE_TEST_STRUCTURE.technical_modules * MODULE_TEST_STRUCTURE.technical_objective,
+  technical_open:
+    MODULE_TEST_STRUCTURE.technical_modules * MODULE_TEST_STRUCTURE.technical_open,
+  non_technical_open:
+    MODULE_TEST_STRUCTURE.non_technical_modules * MODULE_TEST_STRUCTURE.non_technical_open,
+  total: MODULE_TEST_STRUCTURE.total,
 };
 
 const isObjective = (q) => q?.type === 'objective';
@@ -125,16 +141,25 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
   let usedOptional = 0;
 
   // ---- mandatory question, always first ------------------------------
+  // Selection keys off the `mandatory` flag on the question, never off a
+  // module bucket, so the paper is correct however the bank is arranged.
   const mandatoryPool = questions.filter((q) => q.mandatory === true && isActive(q));
   const mandatory = mandatoryPool.length ? sample(mandatoryPool, 1, rng) : [];
+  const mandatoryModule = modules.find((m) => m.mandatory === true) || null;
   if (!mandatory.length) {
     warnings.push('No mandatory question is configured; the paper starts with the first module.');
   } else {
     paper.push(...mandatory);
+    // Described by the same shape as every other section (`group`, not
+    // `family`), and named from the configured module rather than a literal.
     sections.push({
-      module: 'M00', name: 'Mandatory Common Question', family: 'mandatory',
+      module: mandatoryModule?.key || mandatory[0].module,
+      name: mandatoryModule?.name || 'Mandatory Common Question',
+      group: mandatoryModule?.group || 'mandatory',
       technical: false, mandatory: true,
-      objective: 0, open: mandatory.length, from_optional: 0, short: 0,
+      objective: mandatory.filter(isObjective).length,
+      open: mandatory.filter(isOpen).length,
+      from_optional: 0, short: 0,
       question_ids: mandatory.map((q) => q.id),
     });
   }

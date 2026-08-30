@@ -221,3 +221,101 @@ test('every module has at least the 10 objective questions the bank promises', (
     assert.ok(objective.length >= 10, `${mod.key} has only ${objective.length}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression tests: bank-integrity invariants
+//
+// The family counts shown in the Admin UI come from the module tree, while the
+// drill-down lists questions by `family_id`. Those are two different code
+// paths over the same data, so nothing stops them disagreeing — and they did:
+// the mandatory question was declared under M00 but stored under F01, so M00
+// rendered "0 objective, 0 open" with an empty drill-down while F01 reported
+// one fewer open question than it holds.
+// ---------------------------------------------------------------------------
+
+test('every family declares the counts it actually holds', () => {
+  for (const family of FAMILIES) {
+    const rows = QUESTIONS.filter((q) => q.family_id === family.id);
+    const objective = rows.filter((q) => q.type === 'objective').length;
+    const open = rows.filter((q) => q.type === 'open').length;
+    assert.equal(objective, family.objective, `${family.id} objective`);
+    assert.equal(open, family.open, `${family.id} open`);
+  }
+});
+
+test('no family is empty', () => {
+  for (const family of FAMILIES) {
+    const rows = QUESTIONS.filter((q) => q.family_id === family.id);
+    assert.ok(rows.length > 0, `${family.id} has no questions`);
+  }
+});
+
+test('every module holds at least one question', () => {
+  for (const mod of MODULES) {
+    const rows = QUESTIONS.filter((q) => q.module === mod.key);
+    assert.ok(rows.length > 0, `${mod.key} has no questions`);
+  }
+});
+
+test('a family declares the role its questions actually have', () => {
+  for (const family of FAMILIES) {
+    const rows = QUESTIONS.filter((q) => q.family_id === family.id);
+    const hasObjective = rows.some((q) => q.type === 'objective');
+    const hasOpen = rows.some((q) => q.type === 'open');
+    const expected = hasObjective && hasOpen ? 'mixed' : hasObjective ? 'objective' : 'open';
+    assert.equal(family.role, expected, family.id);
+  }
+});
+
+test('the mandatory question lives in the mandatory module', () => {
+  const mandatoryModule = MODULES.find((m) => m.mandatory === true);
+  const question = QUESTIONS.find((q) => q.id === MANDATORY_QUESTION_ID);
+  assert.equal(question.module, mandatoryModule.key);
+  assert.equal(question.mandatory, true);
+  // Exactly one question is flagged mandatory, and it is the only member of
+  // that module — so the module a candidate always sees owns real content.
+  assert.equal(QUESTIONS.filter((q) => q.mandatory === true).length, 1);
+  assert.deepEqual(
+    QUESTIONS.filter((q) => q.module === mandatoryModule.key).map((q) => q.id),
+    [MANDATORY_QUESTION_ID],
+  );
+  // Its provenance in the source PDF is retained.
+  assert.equal(question.origin_module, 'F01');
+});
+
+test('the modules partition the bank: every question counted exactly once', () => {
+  const keys = new Set(MODULES.map((m) => m.key));
+  let counted = 0;
+  for (const mod of MODULES) counted += QUESTIONS.filter((q) => q.module === mod.key).length;
+  assert.equal(counted, QUESTIONS.length);
+  for (const q of QUESTIONS) assert.ok(keys.has(q.module), `${q.id} -> ${q.module}`);
+});
+
+test('the blueprint is derived from the per-module quotas, not restated', () => {
+  const technical = MODULES.filter((m) => m.technical).length;
+  const nonTechnical = MODULES.filter((m) => !m.technical && !m.mandatory).length;
+  assert.equal(TEST_BLUEPRINT.technical_objective, technical * TECHNICAL_OBJECTIVE_PER_MODULE);
+  assert.equal(TEST_BLUEPRINT.technical_open, technical * TECHNICAL_OPEN_PER_MODULE);
+  assert.equal(TEST_BLUEPRINT.non_technical_open, nonTechnical);
+  assert.equal(
+    TEST_BLUEPRINT.total,
+    TEST_BLUEPRINT.mandatory + TEST_BLUEPRINT.technical_objective
+      + TEST_BLUEPRINT.technical_open + TEST_BLUEPRINT.non_technical_open,
+  );
+});
+
+test('every section describes itself with the same shape', () => {
+  const { sections } = generateTest(bank, { rng: seeded(11) });
+  const groups = new Set(MODULE_GROUPS.map((g) => g.key));
+  for (const s of sections) {
+    // `group`, never the old `family` key — the mandatory section used to be
+    // hand-built with a different shape from every other section.
+    assert.ok(s.group, `${s.module} has no group`);
+    assert.ok(groups.has(s.group), `${s.module} -> ${s.group}`);
+    assert.equal(s.family, undefined, `${s.module} still carries a stale 'family' key`);
+    const mod = MODULES.find((m) => m.key === s.module);
+    assert.ok(mod, `${s.module} is not a real module`);
+    assert.equal(s.name, mod.name);
+    assert.equal(s.question_ids.length, s.objective + s.open);
+  }
+});
