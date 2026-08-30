@@ -7,6 +7,7 @@ import {
 import { renderReport } from './report.js';
 import {
   speechRecognitionCtor, buildTextAnswer, blobToStoredAudio, transcriptFromSpeechEvent,
+  micCapability, startAudioRecorder,
 } from '../exam-audio.js';
 
 /* ================================ Portal (My Journey) ================================ */
@@ -85,7 +86,8 @@ function renderExamGate(view, d, onStart) {
         <ul class="exam-rules">
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
           <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer.</li>
-          <li><b>Open / scenario:</b> 60 seconds to review the scenario, then 2 minutes to answer. Some open questions are oral exercises that require a recorded audio answer; others are answered by typing. Speech is transcribed when the browser allows.</li>
+          <li><b>Open / scenario:</b> 60 seconds to review the scenario, then 2 minutes to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
+          <li><b>Microphone.</b> An open question cannot be locked without a recording, so allow the browser's microphone prompt. Granting access on the review screen keeps the dialog from eating your answer time.</li>
           <li><b>Integrity.</b> Copying the question is blocked. Switching tabs, pasting, or leaving fullscreen is logged.</li>
           <li><b>Time expiry</b> auto-submits the current item (blank if unanswered) and advances.</li>
         </ul>
@@ -111,6 +113,10 @@ async function runExamSession(view, id, payload) {
   let ticking = null;
   let advancing = false;
   let finished = false;
+  // Released whenever the exam view is torn down or repainted, so a recording
+  // never outlives the question it belongs to (the browser tab keeps showing
+  // the "microphone in use" indicator otherwise).
+  let stopLiveCapture = null;
   let pageHideLogged = false;
   const tabId = `${id}-${Math.random().toString(36).slice(2, 9)}`;
   const collected = {};
@@ -304,6 +310,7 @@ async function runExamSession(view, id, payload) {
       const current = JSON.parse(localStorage.getItem('ecod.exam.tab') || 'null');
       if (current?.tab_id === tabId) localStorage.removeItem('ecod.exam.tab');
     } catch { /* ignore */ }
+    stopLiveCapture?.();
     document.body.classList.remove('exam-lock');
     if (ticking) clearInterval(ticking);
   });
@@ -352,6 +359,13 @@ async function runExamSession(view, id, payload) {
     }
     const phase = exam.phase || 'answer';
     const open = q.type === 'text';
+    // The microphone is mandatory for every open question — the projection
+    // derives `audio_required` from the open-question contract
+    // (src/core/spoken-answer.mjs) — and any other type an author explicitly
+    // flagged is answered the same way. `micCapable` is the browser check: a
+    // browser that cannot capture audio at all never hard-locks a candidate.
+    const needsMic = open || q.audio_required === true;
+    const micCapable = micCapability(window).canRecord;
     const n = exam.index + 1;
     const pctFill = exam.total ? Math.round((exam.index / exam.total) * 100) : 0;
     const deadline = Date.now() + (exam.remaining_ms || 0);
@@ -386,7 +400,7 @@ async function runExamSession(view, id, payload) {
                 <span class="chip">${esc(typeLabel(q.type))}</span>
                 <span class="chip">${esc(q.difficulty)}</span>
                 <span class="chip">${esc(q.points)} pts</span>
-                ${open ? `<span class="chip">${phase === 'review' ? 'Review window · 60s' : (q.audio_required ? 'Audio window · 2 min' : 'Answer window · 2 min')}</span>` : `<span class="chip">30s</span>`}
+                ${open ? `<span class="chip">${phase === 'review' ? 'Review window · 60s' : 'Recording window · 2 min'}</span><span class="chip chip-mic">🎙 Recorded answer required</span>` : `<span class="chip">30s</span>`}
               </div>
             </div>
           </div>
@@ -400,13 +414,44 @@ async function runExamSession(view, id, payload) {
 
     const body = view.querySelector('#exam-body');
     const nextBtn = view.querySelector('#exam-next');
-    let rec = { stream: null, recorder: null, chunks: [], recognition: null };
+    // Extra work the 250 ms exam ticker performs for the current answer screen
+    // (recording clock + unlock), set by the open-question branch below.
+    let onTick = null;
+    let rec = { stream: null, recorder: null, chunks: [], recognition: null, startedAt: 0 };
+    // Live "recording for 0:42" readout, driven by the exam's existing 250 ms
+    // ticker, so the candidate can see how long they have been speaking.
+    const recElapsed = () => (rec.startedAt ? fmtMs(Date.now() - rec.startedAt) : '');
 
     if (open && phase === 'review') {
-      const requiredAudio = q.audio_required === true;
       body.innerHTML = `<div class="exam-review">
-        <p>Read the scenario carefully. When this review window ends you have 2 minutes to answer${requiredAudio ? ' with a recorded audio answer (required). Typed notes are optional.' : '. You can type your answer in the answer screen.'}</p>
+        <p>Read the scenario carefully. When this review window ends you have 2 minutes to <b>record your spoken answer</b> — the microphone is required. The text box on the answer screen is optional space for supporting notes.</p>
+        <div class="mic-check-row">
+          <button type="button" class="btn secondary sm" id="mic-check" ${micCapable ? '' : 'disabled'}>Check microphone access</button>
+          <span class="small muted" id="mic-check-state">${micCapable
+            ? 'Allow the browser prompt now so no dialog interrupts your 2-minute answer window.'
+            : 'This browser cannot capture audio (no microphone support). Tell your administrator — a typed answer will be accepted and flagged for the assessor.'}</span>
+        </div>
       </div>`;
+      const micCheck = body.querySelector('#mic-check');
+      const micCheckState = body.querySelector('#mic-check-state');
+      if (micCheck) {
+        micCheck.onclick = async () => {
+          micCheck.disabled = true;
+          micCheckState.textContent = 'Waiting for the browser permission prompt…';
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach((t) => t.stop());
+            micCheckState.textContent = '✓ Microphone ready. Recording will now start without a prompt.';
+            micCheckState.classList.add('ok');
+          } catch {
+            micCheckState.textContent = 'Microphone blocked — open the browser’s site permissions, allow the microphone, then check again.';
+            micCheckState.classList.add('warn');
+          } finally {
+            micCheck.disabled = false;
+            micCheck.textContent = 'Check again';
+          }
+        };
+      }
       nextBtn.onclick = async () => {
         await attempt(() => api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } }));
         d = await api(`/candidate/assessments/${id}`);
@@ -445,44 +490,79 @@ async function runExamSession(view, id, payload) {
       });
       nextBtn.onclick = () => advance(val);
     } else {
-      const requiredAudio = q.audio_required === true;
+      // Open / scenario answer: the recording IS the answer, the text box is
+      // optional supporting notes. The lock button stays disabled until the
+      // candidate has actually spoken (recorded audio or a live transcript), so
+      // the requirement is enforced before the answer reaches the API.
       const existing = currentAnswer && typeof currentAnswer === 'object' ? currentAnswer : { text: currentAnswer || '', transcript: '' };
       let text = existing.text || '';
       let transcript = existing.transcript || '';
       body.innerHTML = `
-        <div class="exam-answer${requiredAudio ? ' has-audio' : ''}">
-          <textarea id="exam-ta" rows="8" placeholder="${requiredAudio ? 'Optional notes (audio answer is required)' : 'Type your answer here'}">${esc(text)}</textarea>
-          ${requiredAudio ? `
+        <div class="exam-answer${needsMic ? ' has-audio' : ''}">
+          <textarea id="exam-ta" rows="8" placeholder="${needsMic ? 'Optional notes — the recording below is your answer' : 'Type your answer here'}">${esc(text)}</textarea>
+          ${needsMic ? `
           <div class="exam-audio-side">
             <button type="button" class="btn rec-btn" id="rec-btn" aria-pressed="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
               <span id="rec-label">Record answer</span>
             </button>
-            <span class="small muted rec-state" id="rec-state">Required · press record to answer</span>
+            <span class="small rec-timer" id="rec-timer" hidden>0:00</span>
+            <span class="small muted rec-state" id="rec-state" role="status">Required · press record and speak your answer</span>
           </div>` : ''}
+          ${needsMic && !micCapable ? `<div class="small exam-mic-note warn">This browser cannot capture microphone audio, so a recording cannot be required here. Type your answer instead — it is stored and flagged for the assessor as “no recording”.</div>` : ''}
           <div class="small muted transcript-block" id="transcript-preview" ${transcript ? '' : 'hidden'}></div>
         </div>`;
       const ta = body.querySelector('#exam-ta');
-      ta.oninput = () => { text = ta.value; };
+      ta.oninput = () => { text = ta.value; syncNext(); };
       ta.onpaste = () => logIntegrity('paste');
       const recBtn = body.querySelector('#rec-btn');
       const recLabel = body.querySelector('#rec-label');
       const recState = body.querySelector('#rec-state');
+      const recTimer = body.querySelector('#rec-timer');
       const preview = body.querySelector('#transcript-preview');
       if (transcript) { preview.hidden = false; preview.textContent = `Transcript: ${transcript}`; }
-      const hasAnswer = () => Boolean((ta?.value || text).trim() || transcript.trim());
-      const hasEnough = () => requiredAudio
-        ? Boolean(rec.audioB64 || transcript.trim())
-        : Boolean(hasAnswer() || rec.audioB64);
+      const hasAnswer = () => Boolean((ta?.value || text).trim() || transcript.trim() || rec.audioB64);
+      // Spoken evidence = a stored recording or a transcript. Either alone is
+      // enough: Safari/Firefox have no speech recognition, and a clip can be
+      // dropped for size, so both paths count as "answered out loud". While the
+      // recorder is live the answer also counts — browsers only flush chunks on
+      // stop(), and "Lock & continue" stops the recording first, so the button
+      // must not deadlock a candidate mid-sentence.
+      const hasSpoken = () => Boolean(rec.audioB64 || transcript.trim()
+        || (rec.startedAt && Date.now() - rec.startedAt >= 400));
+      const enforceMic = needsMic && micCapable;
+      const hasEnough = () => (enforceMic ? hasSpoken() : hasAnswer());
+      const setRecState = (message, tone = 'muted') => {
+        if (!recState) return;
+        recState.textContent = message;
+        recState.classList.toggle('muted', tone === 'muted');
+        recState.classList.toggle('ok', tone === 'ok');
+        recState.classList.toggle('warn', tone === 'warn');
+      };
       const syncNext = () => {
         nextBtn.disabled = !hasEnough();
-        if (nextBtn.disabled) nextBtn.title = requiredAudio ? 'Record an audio answer to continue' : 'Add an answer before continuing';
-        else nextBtn.title = '';
+        nextBtn.title = nextBtn.disabled
+          ? (enforceMic ? 'Record your spoken answer to continue — typed notes alone are not an answer' : 'Add an answer before continuing')
+          : '';
       };
       if (existing.audio_b64) rec.audioB64 = existing.audio_b64;
+      if (existing.audio_mime) rec.audioMime = existing.audio_mime;
+      if (existing.audio_b64) setRecState('Recorded answer restored · you can continue', 'ok');
+      else if (existing.transcript) setRecState('Spoken answer captured · you can continue', 'ok');
       syncNext();
 
-      const SpeechRec = requiredAudio ? speechRecognitionCtor(window) : null;
+      const SpeechRec = needsMic ? speechRecognitionCtor(window) : null;
+      const releaseMic = () => {
+        rec.stream?.getTracks().forEach((t) => t.stop());
+        rec.stream = null;
+        rec.startedAt = 0;
+        if (recTimer) recTimer.hidden = true;
+      };
+      stopLiveCapture = releaseMic;
+      onTick = () => {
+        if (recTimer && !recTimer.hidden) recTimer.textContent = recElapsed();
+        if (rec.startedAt) syncNext();
+      };
       const stopCapture = async () => {
         try { rec.recognition?.stop(); } catch { /* */ }
         rec.recognition = null;
@@ -493,37 +573,45 @@ async function runExamSession(view, id, payload) {
             setTimeout(resolve, 800);
           });
         }
-        rec.stream?.getTracks().forEach((t) => t.stop());
-        rec.stream = rec.recorder = null;
+        rec.recorder = null;
+        releaseMic();
         if (rec.chunks?.length) {
           const blob = new Blob(rec.chunks, { type: rec.mime || 'audio/webm' });
           const stored = await blobToStoredAudio(blob, rec.mime || 'audio/webm');
           rec.audioB64 = stored.audioB64;
           rec.audioMime = stored.audioMime;
           rec.chunks = [];
+          if (stored.dropped) {
+            setRecState('That recording was too large to store — record a shorter answer or add your notes in the text box.', 'warn');
+            toast('The recording exceeded the storage limit and was not saved.', 'error', 4200);
+          }
         }
       };
 
-      if (requiredAudio && recBtn && recLabel) {
+      if (needsMic && recBtn && recLabel) {
         recBtn.onclick = async () => {
           if (rec.recognition || rec.recorder) {
             await stopCapture();
             recLabel.textContent = 'Record answer';
             recBtn.classList.remove('recording');
             recBtn.setAttribute('aria-pressed', 'false');
-            recState.textContent = hasEnough()
+            setRecState(hasSpoken()
               ? 'Audio saved · you can continue'
-              : 'Recording stopped — audio is required';
+              : 'Recording stopped with nothing captured — press record and speak again.', hasSpoken() ? 'ok' : 'warn');
             syncNext();
             return;
           }
           recLabel.textContent = 'Stop recording';
           recBtn.classList.add('recording');
           recBtn.setAttribute('aria-pressed', 'true');
-          recState.textContent = 'Listening… speak clearly';
           rec.chunks = [];
           rec.audioB64 = '';
           rec.audioMime = '';
+          // `startedAt` is only armed once the recorder is actually live: while
+          // the browser permission prompt is open nothing is being captured, and
+          // the unlock must not fire on that wait.
+          if (recTimer) recTimer.hidden = true;
+          setRecState('Waiting for microphone permission…', 'muted');
           if (SpeechRec) {
             const recg = new SpeechRec();
             recg.continuous = true;
@@ -538,21 +626,34 @@ async function runExamSession(view, id, payload) {
               // edit it deliberately.
               syncNext();
             };
-            recg.onerror = () => { recState.textContent = 'Speech recognition unavailable — keep recording; audio is still stored.'; };
+            recg.onerror = () => { setRecState('Speech recognition unavailable — keep recording; your audio is stored.', 'muted'); };
             recg.start();
             rec.recognition = recg;
           } else {
-            recState.textContent = 'Live transcription is not supported in this browser. Audio will still be stored.';
+            setRecState('Live transcription is not supported in this browser. Audio will still be stored.', 'muted');
           }
           try {
             rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             rec.chunks = [];
-            rec.recorder = new MediaRecorder(rec.stream);
-            rec.mime = rec.recorder.mimeType || 'audio/webm';
+            const started = startAudioRecorder(window, rec.stream);
+            rec.recorder = started.recorder;
+            rec.mime = started.mime;
             rec.recorder.ondataavailable = (e) => { if (e.data?.size) rec.chunks.push(e.data); };
             rec.recorder.start();
+            rec.startedAt = Date.now();
+            if (recTimer) { recTimer.hidden = false; recTimer.textContent = '0:00'; }
+            setRecState('Recording — speak clearly', 'ok');
+            syncNext();
           } catch {
-            recState.textContent = 'Microphone permission denied — audio is required for this question.';
+            try { rec.recognition?.stop(); } catch { /* */ }
+            rec.recognition = null;
+            releaseMic();
+            rec.recorder = null;
+            recBtn.classList.remove('recording');
+            recBtn.setAttribute('aria-pressed', 'false');
+            recLabel.textContent = 'Record answer';
+            setRecState('Microphone blocked — allow microphone access for this site in your browser, then press record again.', 'warn');
+            toast('The microphone is required for open questions. Allow microphone access and try again.', 'error', 4200);
             syncNext();
           }
         };
@@ -563,10 +664,17 @@ async function runExamSession(view, id, payload) {
         await stopCapture();
         if (!hasEnough() && !timedOut) {
           syncNext();
-          toast(requiredAudio
-            ? 'Record an audio answer before continuing. Typed notes are optional.'
+          toast(enforceMic
+            ? 'Record your spoken answer before continuing — typed notes are optional support, not the answer.'
             : 'Add an answer before continuing.', 'error', 2800);
           return;
+        }
+        if (timedOut && enforceMic && !hasSpoken()) {
+          // The clock ran out with no recording: the typed notes are still
+          // stored (throwing a candidate's work away helps nobody) but the
+          // answer is flagged `audio_missing` server-side and lands in the
+          // proctoring trail, so the assessor sees it instead of guessing.
+          toast('Time expired with no recording — your notes were saved and flagged for the assessor.', 'error', 4200);
         }
         advance(buildTextAnswer({
           text: ta.value || text,
@@ -587,6 +695,7 @@ async function runExamSession(view, id, payload) {
         el.classList.toggle('urgent', urgent);
         el.closest?.('.exam-clock')?.classList.toggle('urgent', urgent);
       }
+      if (onTick) onTick();
       if (left <= 0) {
         clearInterval(ticking);
         ticking = null;

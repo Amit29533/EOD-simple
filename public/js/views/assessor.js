@@ -130,7 +130,8 @@ function scoreCard(q, n, r) {
   const head = `<div class="q-head"><span class="q-num">${n}</span>
     <div><div class="q-prompt">${esc(q.prompt)}</div>
       <div class="small muted" style="margin-top:5px"><span class="chip">${esc(q.type)}</span> <span class="chip">${esc(q.difficulty)}</span> <span class="chip">${esc(q.points)} pts</span>
-      ${q.type !== 'text' ? `<span class="chip" style="background:var(--blue-bg);color:var(--blue)">auto-scored</span>` : `<span class="chip" style="background:var(--amber-bg);color:var(--amber)">needs your score</span>`}</div>
+      ${q.type !== 'text' ? `<span class="chip" style="background:var(--blue-bg);color:var(--blue)">auto-scored</span>` : `<span class="chip" style="background:var(--amber-bg);color:var(--amber)">needs your score</span>`}
+      ${q.audio_required ? `<span class="chip chip-mic">🎙 recorded answer required</span>` : ''}</div>
     </div></div>`;
 
   let answerBlock = '';
@@ -156,16 +157,25 @@ function scoreCard(q, n, r) {
   } else if (q.type === 'scale') {
     answerBlock = `<div class="row"><b style="font-size:22px">${answer ?? '—'}</b><span class="muted">/5 self-rated</span>${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, 'blue')}</div>`;
   } else {
-    const textAns = answer && typeof answer === 'object'
-      ? [answer.text, answer.transcript && answer.transcript !== answer.text ? `\n\n[Transcript]\n${answer.transcript}` : ''].filter(Boolean).join('')
-      : answer;
-    const audioPlayer = answer && typeof answer === 'object' && answer.audio_b64
-      ? `<audio class="exam-audio-playback" controls src="data:${esc(answer.audio_mime || 'audio/webm')};base64,${esc(answer.audio_b64)}"></audio>`
+    // Open answer: the recording is the answer and typed notes are optional, so
+    // the player — plus an explicit warning when the mandatory recording is
+    // missing — has to be in front of the assessor, not hidden in the payload.
+    const ans = answer && typeof answer === 'object' ? answer : { text: answer || '' };
+    const textAns = [ans.text, ans.transcript && ans.transcript !== ans.text ? `\n\n[Transcript]\n${ans.transcript}` : ''].filter(Boolean).join('');
+    const audioPlayer = ans.audio_b64
+      ? `<audio class="exam-audio-playback" controls src="data:${esc(ans.audio_mime || 'audio/webm')};base64,${esc(ans.audio_b64)}"></audio>`
       : '';
+    const nothingSpoken = !ans.audio_b64 && !String(ans.transcript || '').trim();
+    const spokenWarning = ans.audio_missing === true
+      ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Open questions require a spoken answer, so this is typed notes only — score accordingly and say so in the feedback.</div>'
+      : (nothingSpoken && q.audio_required === true && String(ans.text || '').trim()
+        ? '<div class="small" style="margin-top:6px;color:var(--amber);font-weight:700">⚠ No recording attached to this open answer.</div>'
+        : '');
     answerBlock = `
       <blockquote class="answer">${esc(textAns || '— no answer —')}</blockquote>
       ${audioPlayer}
-      ${answer && typeof answer === 'object' && answer.source === 'audio' ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
+      ${spokenWarning}
+      ${ans.source === 'audio' ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
       <details class="fold" style="margin-top:10px"><summary>📋 Scoring rubric (expected evidence)</summary>
         <div class="rubric" style="margin-top:8px">${esc(q.rubric || 'No rubric configured.')}</div></details>
       <div class="row" style="margin-top:12px;align-items:flex-end">

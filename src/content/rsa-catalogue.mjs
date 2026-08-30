@@ -351,6 +351,15 @@ export const RSA_ORAL_QUESTIONS = [
   oralQ(9, 'Imagine you are joining your first meeting with a new Databricks client. What are the three most important things you want to understand before recommending anything?'),
 ];
 
+/**
+ * The microphone requirement is part of the open-question type contract (see
+ * src/core/spoken-answer.mjs), not a per-question preference: every published
+ * `type: 'text'` prompt demands a recorded spoken answer with optional typed
+ * notes, so the flag is applied once here instead of on 38 individual rows.
+ * Non-open questions are returned untouched.
+ */
+const withAnswerContract = (q) => (q.type === 'text' ? { ...q, audio_required: true } : q);
+
 export const RSA_QUESTIONS = [
   ...RSA_ORAL_QUESTIONS,
   // ---------------- 1. Lakehouse Architecture & Platform Design
@@ -507,4 +516,4 @@ export const RSA_QUESTIONS = [
     rubric: 'Expected evidence: acknowledges the failure without defensiveness; reframes with evidence (usage/cost analysis vs value delivered elsewhere); proposes 2-3 quick, visible wins tied to business outcomes (not platform features); 30-60-90 structure with owners and measurable milestones; addresses spend governance so the VP regains cost control; ends with a concrete decision/ask.' },
 
   ...ADDITIONAL_RSA_QUESTIONS,
-];
+].map(withAnswerContract);

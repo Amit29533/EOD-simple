@@ -1,11 +1,74 @@
 # Bug Fixes & UI Improvements Report
 
 ## Summary
-The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole.
+The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **120/120 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
+Current verification: **135/135 Node tests**, **39/39 smoke tests**, and **196/196 feature tests** pass.
 
 ---
+
+## 🎙️ Every open question now requires the microphone (latest)
+
+**Issue (user-visible)**: the microphone recorder appeared only on the 10 published *spoken*
+customer-advisory prompts. Every other Open / scenario question — questions 7, 8, 9 and 10 of a
+10-question paper — rendered a bare text box, so candidates typed answers to questions that are
+meant to be answered out loud.
+
+**Root cause** (a rule that was modelled as a preference):
+1. *`audio_required` was a per-question opt-in.* `questionForCandidate` only projected the mic when
+   the stored row said `audio_required === true` (or belonged to `rsa-oral`), and only the 10 spoken
+   prompts were authored that way. The 28 standard open questions in the published bank — and every
+   open question in any bank seeded before the flag existed — were silently typed-only questions.
+2. *The answer screen keyed the whole recorder UI off that flag*: `requiredAudio` gated the record
+   button, the layout, the copy **and** the submission gate, so one false flag erased the mic.
+3. *The requirement was not enforced anywhere else*: an open answer that arrived with typed notes
+   only was accepted, and — worse — **a recorded answer with nothing typed was treated as blank**
+   by `isBlank()` and discarded by `POST /next` and autosave, so a candidate who answered out loud
+   in a browser without speech recognition lost the answer entirely.
+
+**Fix** — the requirement is now a property of the question *type*, defined once:
+- **`src/core/spoken-answer.mjs`** is the single contract: `requiresSpokenAnswer(q)` is true for
+  every `type: 'text'` question (and for anything else that explicitly opts in), with
+  `hasSpokenEvidence()` (a stored clip *or* a transcript) and `openAnswerHasContent()` (notes,
+  transcript *or* clip) as the two sides of the same rule.
+- **The projection can't be talked out of it** — `questionForCandidate` derives `audio_required`
+  from the contract, so legacy rows, flag-stripped admin edits and already-frozen snapshots all
+  serve the microphone. `applyOralContract()` was generalized into **`applySpokenContract()`**
+  (alias kept), which additionally heals `audio_required` onto every open row before pin/oral
+  partitioning, and `repairPatch()` now persists it during both sync paths (`npm run seed` and the
+  in-app published-catalogue top-up). `normalizeQuestion()` coerces the flag on for open questions,
+  so an admin edit — or an explicit `audio_required: false` — can never store a silent open
+  question; the published catalogue applies the same rule at authoring time (38/38 open prompts).
+- **The exam always shows the recorder and won't unlock without speech** — the record control,
+  its layout, copy and gating now follow `needsMic` (open ⇒ always) instead of a stored flag:
+  "Lock & continue" stays disabled with the tooltip *"Record your spoken answer to continue"* until
+  a recording or transcript exists, the transcript preview and a live recording clock sit beside the
+  box, the review window gained a **Check microphone access** pre-flight so the permission dialog
+  cannot eat answer time, and a denied mic says so instead of failing silently.
+- **No dead ends** — a browser without `MediaRecorder`/`getUserMedia` (or an insecure context) is
+  told plainly and may submit typed notes rather than timing out on an unanswerable question;
+  recordings are captured at a speech-safe **16 kbps mono / supported codec** profile so a full
+  two-minute answer fits the 300 KB storage cap instead of being dropped as oversized, and a clip
+  that still has to be dropped is announced instead of silently discarded. The mic is released on
+  every repaint/teardown, and the recorder no longer deadlocks mid-sentence (locking stops the
+  recording first). The text box is always optional, and typing now re-evaluates the lock button
+  (previously `oninput` never re-synced it, so an unflagged open question could only be left by
+  letting the timer expire).
+- **Honest records** — an open answer is stored whenever it has *any* content (audio-only answers
+  are no longer discarded as blank); a mic-required lock that carries no spoken evidence is kept
+  but marked `audio_missing: true`, counted as a `spoken_answer_missing` integrity event, audited
+  as `exam_spoken_answer_missing`, and called out in red on the assessor's scoring card. The
+  candidate rules screen and the `Audio window` chip now state the requirement up front.
+
+**Verified**: `tests/exam-mic-ui.test.mjs` (new, jsdom) drives the real `quizView` and asserts the
+record control on a standard open question, the disabled-until-spoken lock, the review pre-check and
+the no-recorder fallback; `tests/exam-full-journey.test.mjs` gained section **F** — projection of the
+mic on every open question, audio-only answers persisted and locked, typed-only answers flagged and
+audited, and a legacy flag-less bank allocating a paper that still requires the microphone;
+`quiz-session`, `catalogue-sync`, `admin-validation` and `exam-audio` suites were extended to the new
+contract (and now assert that non-open questions are untouched). Also proven against a store
+deliberately degraded to the pre-fix shape: a 10-question paper served from a flag-less bank and a
+stripped frozen snapshot now projects `audio_required: true` on all open items, positions 7–10 included.
 
 ## ⏱️ Exam lifecycle test pass (latest)
 

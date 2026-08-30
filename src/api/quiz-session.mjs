@@ -4,7 +4,13 @@ import {
   EXAM_OPEN_ANSWER_SECONDS,
 } from '../core/constants.mjs';
 import { promptKey, mergeDuplicateMetadata } from '../core/question-selection.mjs';
-import { applyOralContract } from './catalogue-service.mjs';
+// The open/spoken answer contract lives in core so the exam session, the admin
+// write path and the published catalogue all read the same rule. Re-exported
+// from here because the exam session is where candidates meet it.
+import { isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
+import { applySpokenContract } from './catalogue-service.mjs';
+
+export { isOpenQuestion, requiresSpokenAnswer };
 
 export function sortedQuestions(snap) {
   // Never serve the same question twice. Existing snapshots may have been
@@ -30,19 +36,15 @@ export function sortedQuestions(snap) {
     if (promptId) prompts.set(promptId, rows.length);
     rows.push(q);
   }
-  // Restore the published spoken-question contract before partitioning, so a
-  // frozen row that lost its flags still pins first and demands audio.
-  const healed = applyOralContract(rows);
+  // Restore the spoken-answer contract before partitioning, so a frozen row
+  // that lost its flags still pins first and demands a recorded answer.
+  const healed = applySpokenContract(rows);
   const pin = healed.filter((q) => q.pin_first);
   const oral = healed.filter((q) => q.question_set && !q.pin_first)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const rest = healed.filter((q) => !q.question_set && !q.pin_first)
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   return [...pin, ...oral, ...rest];
-}
-
-export function isOpenQuestion(q) {
-  return q?.type === 'text';
 }
 
 export function budgetsFor(q) {
@@ -110,6 +112,9 @@ const INTEGRITY_EVENT_KEYS = {
   cut_attempt: 'cut_attempt',
   paste_attempt: 'paste_attempt',
   screenshot: 'screenshot',
+  // Recorded by the API itself (not the candidate's browser) when an
+  // open-question lock carries no audio — see handlers/candidate.mjs.
+  spoken_answer_missing: 'spoken_answer_missing',
 };
 
 /**

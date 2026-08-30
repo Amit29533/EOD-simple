@@ -519,6 +519,8 @@ const INTEGRITY_EVENT_TONE = {
   multi_window: 'red', devtools_key: 'red', devtools_resize: 'red',
   paste_attempt: 'amber', copy_attempt: 'amber', cut_attempt: 'amber',
   screenshot: 'red', fullscreen_exit: 'red', contextmenu: 'amber',
+  // Logged by the API when an open question is locked without a recording.
+  spoken_answer_missing: 'amber',
 };
 
 export async function integrityView(view, { id }) {
@@ -542,6 +544,7 @@ export async function integrityView(view, { id }) {
         <div class="stat"><div class="lbl">Copy / paste / devtools</div><div class="num">${((counters.copy_attempt || 0) + (counters.paste_attempt || 0) + (counters.cut_attempt || 0) + (counters.devtools_key || 0) + (counters.devtools_resize || 0))}</div></div>
         <div class="stat"><div class="lbl">Fullscreen exit</div><div class="num">${counters.fullscreen_exit || 0}</div></div>
         <div class="stat"><div class="lbl">Multi-window</div><div class="num">${counters.multi_window || 0}</div></div>
+        <div class="stat"><div class="lbl">Open answers locked without a recording</div><div class="num">${counters.spoken_answer_missing || 0}</div></div>
       </div>
     </div>
     <div class="card table-card">
@@ -755,7 +758,7 @@ export async function questionsView(view) {
     <div class="card table-card" id="q-list">
       ${questions.length ? dataTable([
         { label: 'Question', render: (qq) => `<div style="max-width:520px">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name)}</div>` },
-        { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>` },
+        { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>${qq.audio_required ? '<div class="small muted" style="margin-top:4px">🎙 recorded answer required</div>' : ''}` },
         { label: 'Points', render: (qq) => esc(qq.points) },
         { label: 'Difficulty', render: (qq) => esc(qq.difficulty || '') },
         { label: 'Status', render: (qq) => qq.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
@@ -824,6 +827,10 @@ function questionEditorModal(existing, competencies) {
           <textarea id="qe-prompt" rows="3">${esc(v.prompt || '')}</textarea></label>
         <label class="f"><span class="lbl">Guidance shown to candidate (optional)</span>
           <input type="text" id="qe-help" value="${esc(v.help_text || '')}"/></label>
+        <div id="qe-mic-note" class="info-strip">
+          <span class="info-strip-icon">🎙</span>
+          <span>Open questions are answered <b>out loud</b>: the exam shows a microphone recorder and the candidate must submit a recording. The text box beside it is optional supporting notes. This requirement comes from the question type and cannot be turned off.</span>
+        </div>
         <div id="qe-options-zone">
           <span class="lbl" style="display:block;font-size:12.5px;font-weight:600;color:var(--ink-2);margin-bottom:6px">Options & correct answer(s)</span>
           <div id="qe-opts">${optionRows()}</div>
@@ -890,9 +897,11 @@ function questionEditorModal(existing, competencies) {
       onOpen: (el) => {
         const zone = el.querySelector('#qe-options-zone');
         const rubricZone = el.querySelector('#qe-rubric-zone');
+        const micNote = el.querySelector('#qe-mic-note');
         const syncVisibility = () => {
           zone.style.display = ['mcq_single', 'mcq_multi'].includes(v.type) ? '' : 'none';
           rubricZone.style.display = v.type === 'text' ? '' : 'none';
+          if (micNote) micNote.style.display = v.type === 'text' ? '' : 'none';
         };
         syncVisibility();
         const wireOpts = () => {
