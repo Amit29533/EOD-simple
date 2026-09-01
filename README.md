@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 249 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 253 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, full exam
                     #           lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom), admin validation, question-bank
@@ -39,7 +39,7 @@ Two black-box suites run against a **live server** and are not part of `npm test
 ```bash
 npm run seed:fresh && npm start   # in one shell (restart the server after reseeding)
 npm run test:smoke                # candidate -> assessor -> report lifecycle + compartmentalization
-npm run test:features             # 198 checks across every admin/candidate/assessor feature
+npm run test:features             # 202 checks across every admin/candidate/assessor feature
 ```
 
 Both consume seeded records as they go (submitting, scoring, deleting a demo candidate), so
@@ -57,7 +57,7 @@ Full end-to-end suites (need a running, seeded server):
 
 ```bash
 python3 tests/smoke.py        # 39 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 196 checks: every feature — CRUD, validation, config editing,
+python3 tests/features.py     # 202 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
                               # password-gated candidate deletion, capped question allocation,
                               # integrity trail, and published-catalogue sync

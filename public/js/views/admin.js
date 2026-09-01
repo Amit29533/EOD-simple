@@ -1702,6 +1702,7 @@ function importCandidatesModal(onDone) {
   let payload = null;      // { file_base64 | csv, filename }
   let lastFile = null;     // re-checked when the user toggle changes
   let rootEl = null;       // the open dialog, set in onOpen
+  let committed = false;   // a successful import happened; close -> refresh
   const part = (sel) => rootEl?.querySelector(sel);
 
   const body = `
@@ -1820,12 +1821,17 @@ function importCandidatesModal(onDone) {
           }));
           btn.disabled = false;
           if (!out) return;
+          committed = true;
           renderSuccess(out);
           btn.textContent = 'Done';
-          btn.onclick = () => { close(); if (onDone) onDone(); };
+          btn.onclick = () => close();
         },
       },
     ],
+    // After a successful import the dialog stays open (credentials), so any
+    // way it is closed afterwards — Done, ✕, Esc, backdrop — refreshes the
+    // list. Cancel before a commit never refreshes anything.
+    onClose: () => { if (committed) onDone?.(); },
     onOpen: (root) => {
       rootEl = root;
       const file = root.querySelector('#ic-file');

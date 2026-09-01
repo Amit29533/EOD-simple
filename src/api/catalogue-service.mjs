@@ -1,6 +1,7 @@
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
+import { bulkInsert } from './helpers.mjs';
 
 /**
  * Published-catalogue service.
@@ -169,13 +170,14 @@ export async function synchronizeBank(store, role) {
   const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
 
   // Competencies the published questions rely on must exist before inserting.
-  let competenciesAdded = 0;
-  for (const c of RSA_COMPETENCIES) {
-    if (compIds[c.key]) continue;
-    const rec = await store.insert('competencies', { ...c, role_id: role.id, active: true });
-    compIds[c.key] = rec.id;
-    competenciesAdded += 1;
+  // Batch: only the ones actually missing.
+  const missingComps = RSA_COMPETENCIES.filter((c) => !compIds[c.key]);
+  if (missingComps.length) {
+    const recs = await bulkInsert(store, 'competencies',
+      missingComps.map((c) => ({ ...c, role_id: role.id, active: true })));
+    recs.forEach((rec) => { compIds[rec.key] = rec.id; });
   }
+  const competenciesAdded = missingComps.length;
 
   const existingQuestions = await store.list('questions', { role_id: role.id });
   const byPrompt = new Map();
@@ -183,8 +185,8 @@ export async function synchronizeBank(store, role) {
     const key = promptKey(q.prompt);
     if (key && !byPrompt.has(key)) byPrompt.set(key, q);
   }
-  let added = 0;
   let repaired = 0;
+  const toAdd = [];
   for (const q of RSA_QUESTIONS) {
     const twin = byPrompt.get(promptKey(q.prompt));
     if (twin) {
@@ -200,10 +202,10 @@ export async function synchronizeBank(store, role) {
       continue;
     }
     if (!compIds[q.competency]) continue;
-    await store.insert('questions', questionRecord(q, role.id, compIds));
-    byPrompt.set(promptKey(q.prompt), q);
-    added += 1;
+    toAdd.push(questionRecord(q, role.id, compIds));
   }
+  if (toAdd.length) await bulkInsert(store, 'questions', toAdd);
+  const added = toAdd.length;
 
   const bankTotal = (await store.list('questions', { role_id: role.id }))
     .filter((q) => q.active !== false).length;

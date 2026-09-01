@@ -16,6 +16,7 @@ import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
 import { requiresSpokenAnswer } from '../src/core/spoken-answer.mjs';
 import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
 import { synchronizeBank } from '../src/api/catalogue-service.mjs';
+import { bulkInsert } from '../src/api/helpers.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
 
 const env = process.env;
@@ -58,34 +59,32 @@ if (existingAdmin.length) {
 }
 
 // ---- role track ------------------------------------------------------
+// One batched write per table; per-row writes rewrote (and persisted) the
+// whole JSON store 350+ times on a fresh seed.
 const role = await store.insert('roles', { ...RSA_ROLE, active: true });
 const compIds = {};
-for (const c of RSA_COMPETENCIES) {
-  const rec = await store.insert('competencies', { ...c, role_id: role.id, active: true });
-  compIds[c.key] = rec.id;
-}
-for (const q of RSA_QUESTIONS) await store.insert('questions', questionRecord(q, role.id, compIds));
+const compRecs = await bulkInsert(store, 'competencies',
+  RSA_COMPETENCIES.map((c) => ({ ...c, role_id: role.id, active: true })));
+compRecs.forEach((rec) => { compIds[rec.key] = rec.id; });
+await bulkInsert(store, 'questions', RSA_QUESTIONS.map((q) => questionRecord(q, role.id, compIds)));
 await store.insert('frameworks', { role_id: role.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
 console.log(`[seed] role track "${role.name}": ${RSA_COMPETENCIES.length} competencies, ${RSA_QUESTIONS.length} questions`);
 
 // ---- users -----------------------------------------------------------
 const userIds = {};
-for (const u of DEMO_USERS) {
-  const rec = await store.insert('users', {
-    username: u.username, name: u.name, email: u.email, role: u.role,
-    password_hash: hashPassword(u.password), active: true,
-  });
-  userIds[u.username] = rec.id;
-}
+const userRecs = await bulkInsert(store, 'users', DEMO_USERS.map((u) => ({
+  username: u.username, name: u.name, email: u.email, role: u.role,
+  password_hash: hashPassword(u.password), active: true,
+})));
+userRecs.forEach((rec) => { userIds[rec.username] = rec.id; });
 console.log('[seed] users created:', DEMO_USERS.map((u) => `${u.username} (${u.role})`).join(', '));
 
 // ---- candidates ------------------------------------------------------
 const candIds = {};
-for (const c of DEMO_CANDIDATES) {
-  const { key, ...fields } = c;
-  const rec = await store.insert('candidates', { ...fields, target_role_id: key === 'sana' ? null : role.id });
-  candIds[key] = rec.id;
-}
+const candRecs = await bulkInsert(store, 'candidates', DEMO_CANDIDATES.map(({ key, ...fields }) => ({
+  ...fields, target_role_id: key === 'sana' ? null : role.id,
+})));
+DEMO_CANDIDATES.forEach(({ key }, i) => { candIds[key] = candRecs[i].id; });
 // candidate login for Rohit
 await store.update('users', userIds['rohit.verma'], { candidate_id: candIds.rohit });
 console.log('[seed] demo candidates created; rohit.verma linked to candidate record');

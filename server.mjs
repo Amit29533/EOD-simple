@@ -4,7 +4,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
-import { DEFAULT_PORT } from './src/core/constants.mjs';
+import { DEFAULT_PORT, MAX_SPREADSHEET_BYTES } from './src/core/constants.mjs';
+
+/** Ordinary JSON payloads are capped tight (this is the 413 the feature suite
+ * pins). Spreadsheet imports need more headroom: the app accepts files up to
+ * MAX_SPREADSHEET_BYTES, sent as base64, so ~1/3 extra + JSON overhead. */
+const MAX_BODY_BYTES = 2e6;
+const MAX_UPLOAD_BODY_BYTES = MAX_SPREADSHEET_BYTES * 1.5 + 1024 * 1024;
+const UPLOAD_PATHS = [
+  '/api/admin/candidates/import',
+  '/api/admin/question-bank/import',
+];
 
 /**
  * Local development server: serves the static SPA from /public and routes
@@ -44,9 +54,10 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/')) {
     let body;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const limit = UPLOAD_PATHS.includes(url.pathname) ? MAX_UPLOAD_BODY_BYTES : MAX_BODY_BYTES;
       const chunks = [];
       let size = 0;
-      for await (const c of req) { chunks.push(c); size += c.length; if (size > 2e6) { send(res, 413, { error: 'Payload too large' }); return; } }
+      for await (const c of req) { chunks.push(c); size += c.length; if (size > limit) { send(res, 413, { error: 'Payload too large' }); return; } }
       try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; }
       catch { send(res, 400, { error: 'Invalid JSON body' }); return; }
     }

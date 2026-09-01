@@ -30,3 +30,17 @@ export async function audit(store, actor, action, entity, entity_id, message = '
     });
   } catch { /* audit must never break the request */ }
 }
+
+/**
+ * Batch insert over the storage contract. Uses the adapter's `insertMany`
+ * (one write per batch — json file, blobs, Airtable chunks) when available,
+ * otherwise falls back to a plain loop, so every handler can batch without
+ * knowing which backend it runs on.
+ */
+export async function bulkInsert(store, table, rows = []) {
+  if (!rows.length) return [];
+  if (typeof store.insertMany === 'function') return store.insertMany(table, rows);
+  const out = [];
+  for (const data of rows) out.push(await store.insert(table, data));
+  return out;
+}

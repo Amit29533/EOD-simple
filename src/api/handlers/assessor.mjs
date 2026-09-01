@@ -37,6 +37,9 @@ export function assessorHandlers(route) {
     const candidate = await store.get('candidates', a.candidate_id);
     const responses = await store.list('responses', { assessment_id: a.id });
     const questions = sortedQuestions(a.snapshot_json);
+    // Look responses up against the DE-DUPLICATED served set (sortedQuestions),
+    // exactly as scoring does, and in O(1) per response rather than O(n²).
+    const qById = new Map(questions.map((q) => [q.id, q]));
     const manualTotal = questions.filter(isManualQuestion).length;
     const manualScored = responses.filter((r) => r.assessor_score !== undefined && r.assessor_score !== null).length;
     return ok({
@@ -49,7 +52,7 @@ export function assessorHandlers(route) {
       competencies: a.snapshot_json.competencies,
       questions, // full: includes rubric + correct answers (assessor-only)
       responses: responses.map((r) => {
-        const q = a.snapshot_json.questions.find((x) => x.id === r.question_id);
+        const q = qById.get(r.question_id);
         const live = q && isAutoQuestion(q) ? (autoScore(q, r.answer) ?? 0) : r.auto_score;
         return {
           question_id: r.question_id, answer: r.answer,

@@ -109,10 +109,18 @@ test('airtable adapter: full CRUD contract + pagination + JSON fields', async ()
     assert.equal(updated.rubric, 'updated rubric');
     assert.ok(updated.updated_at);
 
+    // insertMany: batch in 10-record chunks, order preserved, per-row semantics
+    const batch = [];
+    for (let i = 0; i < 12; i++) batch.push({ actor_name: 'b', action: 'bulk', entity: 'e', entity_id: `bulk-${i}` });
+    const recs = await store.insertMany('audit_log', batch);
+    assert.equal(recs.length, 12);
+    assert.deepEqual(recs.map((r) => r.entity_id), batch.map((r) => r.entity_id), 'order preserved across chunks');
+    assert.equal((await store.list('audit_log', { action: 'bulk' })).length, 12);
+
     // pagination across >100 rows
     for (let i = 0; i < 150; i++) await store.insert('audit_log', { actor_name: 't', action: 'a', entity: 'e', entity_id: `id-${i}` });
     const logs = await store.list('audit_log');
-    assert.equal(logs.length, 150);
+    assert.equal(logs.length, 150 + 12);
 
     // remove
     assert.equal(await store.remove('roles', role.id), true);

@@ -63,6 +63,21 @@ export async function createBlobsStore() {
       await writeTable(t, rows);
       return { ...rec };
     },
+    /**
+     * Batch insert: one read + one blob write for the whole batch (per-row
+     * writes would burn a blob round-trip per record during bulk onboarding).
+     */
+    async insertMany(t, rows = []) {
+      const all = await readTable(t);
+      const recs = rows.map((data) => {
+        const id = data.id || newId();
+        const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
+        all[id] = rec;
+        return rec;
+      });
+      if (recs.length) await writeTable(t, all);
+      return recs.map((r) => ({ ...r }));
+    },
     async update(t, id, patch) {
       const rows = await readTable(t);
       if (!rows[id]) return null;
