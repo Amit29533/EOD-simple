@@ -25,6 +25,10 @@ export const TABLE_NAMES = Object.keys(TABLES);
  *   list(table, filter?)  -> Promise<record[]>   // filter = equality AND of primitives
  *   get(table, id)        -> Promise<record|null>
  *   insert(table, data)   -> Promise<record>     // id generated when absent
+ *   insertMany(table, rows) -> Promise<record[]> // optional; atomic-ish batch write,
+ *                                                // same per-row semantics as insert,
+ *                                                // order preserved. Handlers fall back
+ *                                                // to a loop when an adapter lacks it.
  *   update(table, id, patch) -> Promise<record|null>
  *   remove(table, id)     -> Promise<boolean>
  */

@@ -100,3 +100,6 @@ export const RSA_ORAL_SET = 'rsa-oral';
 
 /** Max base64 characters stored with an open-response audio clip (~300 KB). */
 export const MAX_AUDIO_B64 = 400_000;
+
+/** Largest spreadsheet (xlsx/csv) an import endpoint will accept, in bytes. */
+export const MAX_SPREADSHEET_BYTES = 8_000_000;

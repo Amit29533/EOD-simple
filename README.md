@@ -23,13 +23,14 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 222 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 253 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, full exam
                     #           lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom), admin validation, question-bank
-                    #           authoring (add/edit/import), Airtable adapter
-                    #           contract, sign-in view, app shell, the allocation dialog and
-                    #           the published-catalogue sync
+                    #           authoring (add/edit/import), bulk candidate + portal-user
+                    #           import (API + jsdom dialog), Airtable adapter contract,
+                    #           sign-in view, app shell, the allocation dialog and the
+                    #           published-catalogue sync
                     #           (jsdom is optional; installed for the UI suites)
 ```
 
@@ -38,7 +39,7 @@ Two black-box suites run against a **live server** and are not part of `npm test
 ```bash
 npm run seed:fresh && npm start   # in one shell (restart the server after reseeding)
 npm run test:smoke                # candidate -> assessor -> report lifecycle + compartmentalization
-npm run test:features             # 196 checks across every admin/candidate/assessor feature
+npm run test:features             # 202 checks across every admin/candidate/assessor feature
 ```
 
 Both consume seeded records as they go (submitting, scoring, deleting a demo candidate), so
@@ -56,7 +57,7 @@ Full end-to-end suites (need a running, seeded server):
 
 ```bash
 python3 tests/smoke.py        # 39 checks: one candidate's complete journey + isolation proofs
-python3 tests/features.py     # 196 checks: every feature — CRUD, validation, config editing,
+python3 tests/features.py     # 202 checks: every feature — CRUD, validation, config editing,
                               # immutability, reassignment, scoring math, audit, persistence,
                               # password-gated candidate deletion, capped question allocation,
                               # integrity trail, and published-catalogue sync
@@ -74,6 +75,7 @@ python3 tests/features.py     # 196 checks: every feature — CRUD, validation, 
 ## What's built (v1 scope)
 
 - **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline. Deletion is admin-password-gated and cascades the linked portal login, its sessions and any open assessments (finalized reports protect the candidate).
+- **Bulk onboarding from Excel** — Admin → *Candidates* (or *Users & access*) → *Import from Excel* takes an `.xlsx` or `.csv` and creates all the candidate records **and**, in the same pass, their linked candidate-role portal logins. Same dry-run-first contract as the question import (ready / rejected / duplicate with reasons), blank usernames derived from email and made collision-free, blank passwords generated and shown once.
 - **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
 - **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks.
 - **Configurable assessment length** — at allocation the admin serves either the full question
@@ -253,6 +255,39 @@ actually contains and flags each affected item `needs_option_review` (all 201
 objective items in v1.3, up from 155 in v1.2). Stems and correct answers are
 complete, so every item is servable, but the remaining distractors need finishing in
 the Admin UI.
+
+## Bulk candidate & user onboarding (from Excel)
+
+Admin → **Candidates** or **Users & access** → *Import from Excel* provisions a whole
+cohort in one pass. The upload is an `.xlsx` or `.csv`, first row = header, up to 2000
+rows; a starter template downloads from the dialog. The workflow mirrors the question
+bank import:
+
+1. **Dry run first** — the file is validated and the dialog reports, per row, what is
+   ready, what was rejected and why, and what is a duplicate (already in the directory,
+   or repeated earlier in the same sheet). Nothing is written until the admin presses
+   Import, and the button stays disabled until at least one row is valid.
+2. **One checkbox: "Create linked portal users"** (on by default) — every accepted row
+   also gets a `candidate`-role portal login linked to its candidate record.
+
+| Column | Required | Behaviour |
+| ------ | :------: | --------- |
+| `Name` | ✅ | Creates (or is, for a user) the display name |
+| `Email`, `Phone`, `Current title`, `Location`, `Source`, `Notes` | | Profiles the candidate; email also seeds a blank username |
+| `Years of experience` | | 0–50, numeric |
+| `Target role` | | Matched by role **name, key or id**; blank = no track |
+| `Pipeline stage` | | Matched by stage **key or label** (Intake, Role Mapping, …) |
+| `Username` | | Portal login; blank → derived from email (fallback: name) and numbered on collision (`jane`, `jane2`…) |
+| `Password` | | Min 8 chars; blank → generated (`Ecod-…`) |
+
+**Credentials are returned exactly once** — after a successful import the dialog lists
+every created login and password (only the scrypt hash is stored), with a
+*Download credentials (.csv)* button, so the admin can hand them out. Duplicate
+emails, names and usernames are reported rather than overwritten, and re-uploading the
+same sheet imports nothing new. The whole batch lands as one
+`candidates_bulk_imported` audit event.
+
+
 
 ## Compartmentalization matrix
 

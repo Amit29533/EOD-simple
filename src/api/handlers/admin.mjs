@@ -1,13 +1,16 @@
 import { hashPassword, verifyPassword } from '../../core/passwords.mjs';
-import { ok, created, bad, notFound, conflict, forbidden, unprocessable, audit, str, num, bool, missing } from '../helpers.mjs';
+import {
+  ok, created, bad, notFound, conflict, forbidden, unprocessable,
+  audit, str, num, bool, missing, bulkInsert,
+} from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import {
   USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG,
-  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE,
+  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE, MAX_SPREADSHEET_BYTES,
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
-import { buildSnapshot, roleBank } from '../assessment-service.mjs';
+import { buildSnapshot, roleBank, advanceStage } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
 import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
@@ -21,12 +24,24 @@ import {
 } from '../../core/question-intake.mjs';
 import { parseSheet } from '../../core/sheet-parser.mjs';
 import {
+  CANDIDATE_IMPORT_COLUMNS, candidateImportTemplateCsv, validateCandidateBatch,
+} from '../../core/candidate-import.mjs';
+import {
   effectiveBank, composeModules, composeFamilies, resolveFamily,
   nextAuthoredId, toStoredRecord, hydrate,
 } from '../bank-service.mjs';
 
 /** Upper bound on one spreadsheet import, to bound request time and memory. */
 const MAX_IMPORT_ROWS = 2000;
+
+/**
+ * Candidate field lengths, shared by the create form and PATCH so an edit can
+ * never store a value the create path would reject (PATCH used to truncate
+ * name/current_title/location/source at 200 while POST capped them at 120).
+ */
+const CANDIDATE_TEXT_FIELDS = {
+  name: 120, email: 200, phone: 60, current_title: 120, location: 120, source: 120, notes: 4000,
+};
 
 /** The columns the import understands, in the order the template lists them. */
 const IMPORT_COLUMNS = [
@@ -116,7 +131,7 @@ function readImportPayload(body = {}) {
     if (!/^[A-Za-z0-9+/\r\n]*={0,2}$/.test(raw)) throw new Error('The uploaded file is not valid base64.');
     const buf = Buffer.from(raw, 'base64');
     if (!buf.length) throw new Error('The uploaded file is empty.');
-    if (buf.length > 8_000_000) throw new Error('The file is larger than 8 MB.');
+    if (buf.length > MAX_SPREADSHEET_BYTES) throw new Error('The file is larger than 8 MB.');
     // A .xlsx always starts with the ZIP magic "PK"; anything else is text.
     const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
     if (isZip || name.endsWith('.xlsx')) {
@@ -201,6 +216,117 @@ export function adminHandlers(route) {
     return created(rec);
   });
 
+  // ------------------------------------------------ bulk import (candidates + portal users)
+  // The same spreadsheet workflow as the question-bank import: every upload is
+  // validated as a dry run first (nothing written), rows are reported as
+  // ready / rejected / duplicate with their reasons, then the commit creates
+  // candidate records and — when asked — their linked candidate-role portal
+  // users. Blank usernames/passwords are generated, and the plaintext
+  // credentials are returned exactly once in the commit response.
+  route('GET', '/admin/candidates/import-template', A, async () => ok({
+    filename: 'ecod-candidates-import-template.csv',
+    content_type: 'text/csv',
+    columns: CANDIDATE_IMPORT_COLUMNS,
+    csv: candidateImportTemplateCsv(),
+  }));
+
+  route('POST', '/admin/candidates/import', A, async ({ store, body, auth }) => {
+    let parsed;
+    try {
+      parsed = readImportPayload(body);
+    } catch (err) {
+      return bad(err.message);
+    }
+    if (!parsed.rows.length) {
+      return unprocessable('No data rows found. The first row must be a header (Name, Email, Target role, ...).', {
+        headers: parsed.headers,
+      });
+    }
+    if (parsed.rows.length > MAX_IMPORT_ROWS) {
+      return unprocessable(`This file has ${parsed.rows.length} rows; the limit is ${MAX_IMPORT_ROWS} per import.`);
+    }
+
+    const createUsers = bool(body.create_users);
+    const [roles, existingCandidates, existingUsers] = await Promise.all([
+      store.list('roles'), store.list('candidates'), store.list('users'),
+    ]);
+    const report = validateCandidateBatch(parsed.rows, {
+      roles,
+      stages: PIPELINE_STAGES,
+      createUsers,
+      existingCandidates,
+      existingUsernames: existingUsers.map((u) => u.username),
+    });
+
+    const dryRun = bool(body.dry_run);
+    const summary = {
+      headers: parsed.headers,
+      create_users: createUsers,
+      total: parsed.rows.length,
+      accepted: report.accepted.length,
+      rejected: report.rejected.length,
+      duplicates: report.duplicates.length,
+      dry_run: dryRun,
+      errors: report.rejected.slice(0, 50),
+      duplicate_rows: report.duplicates.slice(0, 50),
+      preview: report.accepted.slice(0, 10).map((a) => ({
+        line: a.line,
+        name: a.candidate.name,
+        target_role: a.candidate.target_role || '',
+        stage: a.candidate.stage || '',
+        username: a.candidate.username || '',
+      })),
+    };
+    if (dryRun) return ok({ ...summary, imported: 0, users_created: 0, credentials: [] });
+
+    // One batched write per table (the adapters' `insertMany`; a plain loop
+    // as a fallback), so a 2000-row onboarding is one store write instead of
+    // thousands of full-file rewrites.
+    const batch = report.accepted.map(({ candidate }) => ({
+      name: candidate.name,
+      email: candidate.email,
+      phone: candidate.phone,
+      current_title: candidate.current_title,
+      years_experience: candidate.years_experience ?? null,
+      location: candidate.location,
+      source: candidate.source,
+      notes: candidate.notes,
+      target_role_id: candidate.target_role_id || null,
+      stage: candidate.stage || (candidate.target_role_id ? 'role_mapped' : 'intake'),
+      created_by: auth.user.id,
+    }));
+    const importedRecords = batch.length ? await bulkInsert(store, 'candidates', batch) : [];
+    const imported = importedRecords.length;
+
+    let credentials = [];
+    let usersCreated = 0;
+    if (createUsers && importedRecords.length) {
+      const userBatch = report.accepted.map(({ candidate }, i) => ({
+        username: candidate.username,
+        name: candidate.name,
+        email: candidate.email,
+        role: 'candidate',
+        password_hash: hashPassword(candidate.password),
+        candidate_id: importedRecords[i].id,
+        active: true,
+        created_by: auth.user.id,
+      }));
+      const users = await bulkInsert(store, 'users', userBatch);
+      usersCreated = users.length;
+      credentials = users.map((u, i) => ({
+        username: u.username,
+        name: report.accepted[i].candidate.name,
+        password: report.accepted[i].candidate.password,
+      }));
+    }
+    if (imported) {
+      await audit(store, auth.user, 'candidates_bulk_imported', 'candidates', '',
+        `${imported} candidate(s) imported from a spreadsheet`
+        + (usersCreated ? ` (${usersCreated} portal user(s) created)` : ''));
+    }
+    return ok({ ...summary, imported, users_created: usersCreated, credentials });
+  });
+
   route('GET', '/admin/candidates/:id', A, async ({ store, params }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
@@ -236,11 +362,14 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/candidates/:id', A, async ({ store, body, params, auth }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
-    if (body.stage && !STAGE_KEYS.includes(body.stage)) return bad('Unknown pipeline stage.');
+    if (body.stage !== undefined && (!body.stage || !STAGE_KEYS.includes(body.stage)))
+      return bad('Unknown pipeline stage.');
     if (body.target_role_id && !(await store.get('roles', body.target_role_id))) return bad('Unknown target role.');
     const patch = {};
-    for (const f of ['name', 'email', 'phone', 'current_title', 'location', 'source', 'notes', 'stage', 'target_role_id'])
-      if (body[f] !== undefined) patch[f] = body[f] === '' ? (f === 'target_role_id' ? null : '') : str(body[f], f === 'notes' ? 4000 : 200);
+    for (const [f, max] of Object.entries(CANDIDATE_TEXT_FIELDS))
+      if (body[f] !== undefined) patch[f] = body[f] === '' ? '' : str(body[f], max);
+    if (body.target_role_id !== undefined)
+      patch.target_role_id = body.target_role_id === '' ? null : str(body.target_role_id, 60);
     if (body.years_experience !== undefined) patch.years_experience = num(body.years_experience, null);
     const updated = await store.update('candidates', params.id, patch);
     await audit(store, auth.user, 'candidate_updated', 'candidates', params.id, `Candidate "${updated.name}" updated`);
@@ -817,17 +946,18 @@ export function adminHandlers(route) {
     if (dryRun) return ok({ ...summary, imported: 0 });
 
     // Ids are allocated against a list that grows as we insert, so a batch
-    // cannot hand two questions the same id.
+    // cannot hand two questions the same id. The whole batch then lands in a
+    // single store write (adapters' `insertMany`; loop fallback otherwise).
     const existingRows = await store.list('bank_questions');
     const allocated = [...existingRows];
-    let imported = 0;
-    for (const { question } of report.accepted) {
+    const batch = report.accepted.map(({ question }) => {
       const id = nextAuthoredId(question.module, allocated);
       const rec = toStoredRecord(question, { id, actorId: auth.user.id });
-      await store.insert('bank_questions', rec);
       allocated.push(rec);
-      imported += 1;
-    }
+      return rec;
+    });
+    if (batch.length) await bulkInsert(store, 'bank_questions', batch);
+    const imported = batch.length;
     if (imported) {
       await audit(store, auth.user, 'bank_questions_imported', 'bank_questions', '',
         `${imported} question(s) imported from a spreadsheet`);
@@ -895,7 +1025,7 @@ export function adminHandlers(route) {
       overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
     });
     await store.update('candidates', candidate.id, { target_role_id: candidate.target_role_id || body.role_id });
-    await advanceCandidate(store, candidate.id, 'assessment');
+    await advanceStage(store, candidate.id, 'assessment');
     const scope = snapshot.question_limit
       ? `${snapshot.questions.length} of ${snapshot.bank_total} questions`
       : `all ${snapshot.questions.length} questions`;
@@ -970,15 +1100,6 @@ export function adminHandlers(route) {
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     return ok({ events: rows.slice(0, 200) });
   });
-}
-
-/** Move candidate stage forward only (never regress on re-allocation). */
-async function advanceCandidate(store, candidateId, stage) {
-  const c = await store.get('candidates', candidateId);
-  if (!c) return;
-  const cur = STAGE_KEYS.indexOf(c.stage || 'intake');
-  const next = STAGE_KEYS.indexOf(stage);
-  if (next > cur) await store.update('candidates', candidateId, { stage });
 }
 
 function normalizeQuestion(body, existing = {}) {

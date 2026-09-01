@@ -94,6 +94,28 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
       const out = await api(encodeURIComponent(t), { method: 'POST', body });
       return recordToRow(t, out.records[0]);
     },
+    /**
+     * Batch insert in Airtable's 10-record chunks. Same per-row semantics as
+     * insert(); records come back in the order the API echoes (request order),
+     * flattened across chunks so the caller's row order is preserved.
+     */
+    async insertMany(t, rows = []) {
+      const out = [];
+      for (let i = 0; i < rows.length; i += 10) {
+        const chunk = rows.slice(i, i + 10).map((data) => {
+          const { id: _ignored, created_at: _c, ...fields } = data;
+          const row = { fields: serialize(t, fields) };
+          if (data.created_at) row.fields.created_at = data.created_at;
+          return row;
+        });
+        const resp = await api(encodeURIComponent(t), {
+          method: 'POST',
+          body: { typecast: true, records: chunk },
+        });
+        out.push(...(resp?.records || []).map((rec) => recordToRow(t, rec)));
+      }
+      return out;
+    },
     async update(t, id, patch) {
       const { id: _i, created_at: _c, ...fields } = patch;
       const out = await api(`${encodeURIComponent(t)}/${encodeURIComponent(id)}`, {

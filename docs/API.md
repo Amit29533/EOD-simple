@@ -15,6 +15,8 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | ------ | ----------------------------- | ------------------------------------------------- |
 | GET    | /admin/dashboard              | KPIs, pipeline, statuses, activity                |
 | CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline. DELETE requires `{password}` (the signed-in admin's password) and cascades the linked portal user, their sessions and open assessments; blocked (409) once a report is finalized |
+| GET    | /admin/candidates/import-template | downloadable `.csv` template (Name, Email, Target role, Username, Password, …) |
+| POST   | /admin/candidates/import      | bulk create candidates (+ linked portal users when `create_users: true`); accepts `csv` or base64 `file_base64`, `dry_run: true` validates without writing; blank username derived from email, blank password generated; credentials returned once |
 | CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate   |
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |

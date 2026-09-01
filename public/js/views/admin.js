@@ -94,7 +94,10 @@ export async function candidatesView(view) {
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Talent directory</div><h1>Candidates</h1><p>Search, filter and open a candidate record.</p></div>
-      <div class="heading-actions"><button class="btn" id="add-cand">＋ Add candidate</button></div>
+      <div class="heading-actions">
+        <button class="btn secondary" id="import-cands">Import from Excel</button>
+        <button class="btn" id="add-cand">＋ Add candidate</button>
+      </div>
     </div>
     <div class="card flat toolbar-card">
       <div class="toolbar-label"><span class="toolbar-icon">⌕</span><span>Filter talent</span></div>
@@ -131,6 +134,7 @@ export async function candidatesView(view) {
   };
   view.querySelector('#cand-q').oninput = debounce(refilter, 350);
   view.querySelector('#cand-stage').onchange = refilter;
+  view.querySelector('#import-cands').onclick = () => importCandidatesModal(() => candidatesView(view));
   view.querySelector('#add-cand').onclick = async () => {
     const vals = await formModal({ title: 'Add candidate', fields: candidateFields(roles), values: { stage: 'intake' } });
     if (!vals) return;
@@ -863,7 +867,10 @@ export async function usersView(view) {
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Workspace access</div><h1>Users & access</h1><p>Provision accounts and assign roles.</p></div>
-      <div class="heading-actions"><button class="btn" id="add-user">＋ Create user</button></div>
+      <div class="heading-actions">
+        <button class="btn secondary" id="import-users">Import from Excel</button>
+        <button class="btn" id="add-user">＋ Create user</button>
+      </div>
     </div>
     <div class="demo-creds no-print"><span class="info-strip-icon">⌁</span><span>Only admins can provision accounts. Permissions are role-based, and sensitive candidate details stay compartmentalized.</span></div>
     <div class="card flat account-summary"><span class="account-summary-number">${users.length}</span><span>account${users.length === 1 ? '' : 's'} provisioned</span><span class="summary-divider"></span><span class="muted">Passwords are stored as salted hashes</span></div>
@@ -894,6 +901,7 @@ export async function usersView(view) {
     }]),
   ];
 
+  view.querySelector('#import-users').onclick = () => importCandidatesModal(() => usersView(view));
   view.querySelector('#add-user').onclick = async () => {
     let values = { role: 'assessor' };
     while (true) {
@@ -1673,6 +1681,215 @@ function importQuestionsModal(onImported) {
       root.querySelector('#iq-template').onclick = async (e) => {
         e.preventDefault();
         const tpl = await attempt(() => api('/admin/question-bank/import-template'));
+        if (tpl) downloadText(tpl.filename, tpl.csv, tpl.content_type);
+      };
+    },
+  });
+  return m;
+}
+
+/**
+ * Bulk import of candidates (+ their portal users) from a spreadsheet.
+ *
+ * Same dry-run-first contract as the question import: the server validates
+ * every row and reports accepted / rejected / duplicate before anything is
+ * written. The "Create linked portal users" switch creates a candidate-role
+ * login per row — a blank Username/Password is generated, and the plaintext
+ * credentials are shown once (and downloadable) so the admin can share them.
+ */
+function importCandidatesModal(onDone) {
+  let checked = null;      // last dry-run report
+  let payload = null;      // { file_base64 | csv, filename }
+  let lastFile = null;     // re-checked when the user toggle changes
+  let rootEl = null;       // the open dialog, set in onOpen
+  let committed = false;   // a successful import happened; close -> refresh
+  const part = (sel) => rootEl?.querySelector(sel);
+
+  const body = `
+    <p class="modal-intro">Upload an .xlsx or .csv of candidates. The first row must be a header.
+      The file is validated as a dry run first — nothing is written until you press Import.</p>
+    <div class="import-drop" id="ic-drop">
+      <input type="file" id="ic-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
+      <div class="import-drop-copy">
+        <b id="ic-name">Choose a file or drop it here</b>
+        <small>.xlsx or .csv · up to 2000 rows</small>
+      </div>
+      <button type="button" class="btn secondary sm" id="ic-browse">Browse</button>
+    </div>
+    <label class="import-toggle" id="ic-users-row">
+      <input type="checkbox" id="ic-users" checked />
+      <span><b>Create linked portal users</b>
+        <small>Each candidate gets a candidate-role login. Leave <span class="mono">Username</span> /
+        <span class="mono">Password</span> blank and they are generated; credentials are shown once here.</small></span>
+    </label>
+    <p class="small muted" style="margin:11px 0 0">
+      Columns: <b>Name</b> · Email · Current title · Years of experience · Target role · Pipeline stage ·
+      Username · Password · Notes (plus Phone, Location, Source).
+      Not sure? <a href="#" id="ic-template">Download the template</a>.
+    </p>
+    <div id="ic-report"></div>`;
+
+  const renderReport = (r) => {
+    const report = part('#ic-report');
+    const problems = [
+      ...r.errors.map((e) => ({ ...e, kind: 'Rejected' })),
+      ...r.duplicate_rows.map((d) => ({ ...d, kind: 'Duplicate', errors: d.errors || ['Already in the directory.'] })),
+    ].sort((a, b) => a.line - b.line);
+
+    report.innerHTML = `
+      <div class="import-summary">
+        ${badge(`${r.accepted} ready`, r.accepted ? 'green' : 'grey')}
+        ${r.rejected ? badge(`${r.rejected} rejected`, 'red') : ''}
+        ${r.duplicates ? badge(`${r.duplicates} duplicate`, 'amber') : ''}
+        <span class="small muted">of ${r.total} data ${r.total === 1 ? 'row' : 'rows'}
+          ${r.create_users ? '· portal users will be created' : '· candidates only'}</span>
+      </div>
+      ${r.preview.length ? `
+        <div class="preview-scroll" style="max-height:26vh;margin-top:12px">
+          <table class="data"><thead><tr>
+            <th>Row</th><th>Name</th><th>Target role</th><th>Stage</th><th>Username</th>
+          </tr></thead><tbody>${r.preview.map((p) => `
+            <tr><td class="muted">${p.line}</td><td><b>${esc(p.name)}</b></td>
+              <td class="small">${esc(p.target_role || '—')}</td>
+              <td class="small">${esc(p.stage || '—')}</td>
+              <td class="small mono">${esc(p.username || '')}</td></tr>`).join('')}
+          </tbody></table>
+        </div>
+        ${r.accepted > r.preview.length
+          ? `<p class="small muted">…and ${r.accepted - r.preview.length} more ready to import.</p>` : ''}` : ''}
+      ${problems.length ? `
+        <div class="preview-scroll" style="max-height:24vh;margin-top:12px">
+          <table class="data"><thead><tr><th>Row</th><th>Problem</th></tr></thead><tbody>
+            ${problems.map((p) => `<tr>
+              <td class="muted">${p.line}</td>
+              <td><b>${esc(p.kind)}</b> — ${esc((p.errors || []).join(' '))}
+                ${p.name ? `<div class="small muted">${esc(String(p.name).slice(0, 120))}</div>` : ''}</td>
+            </tr>`).join('')}
+          </tbody></table>
+        </div>` : ''}
+      ${!r.accepted ? '<p class="small muted">Nothing can be imported from this file yet.</p>' : ''}`;
+    const importBtn = [...rootEl.querySelectorAll('.m-foot .btn')].pop();
+    importBtn.disabled = !r.accepted;
+  };
+
+  const renderSuccess = (out) => {
+    const report = part('#ic-report');
+    const creds = out.credentials || [];
+    report.innerHTML = `
+      <div class="import-summary">
+        ${badge(`${out.imported} imported`, 'green')}
+        ${out.users_created ? badge(`${out.users_created} user${out.users_created === 1 ? '' : 's'} created`, 'blue') : ''}
+      </div>
+      ${creds.length ? `
+        <div class="preview-scroll" style="max-height:32vh;margin-top:12px">
+          <table class="data"><thead><tr><th>Name</th><th>Username</th><th>Password</th></tr></thead><tbody>
+            ${creds.map((c) => `<tr><td>${esc(c.name)}</td><td class="mono">${esc(c.username)}</td><td class="mono">${esc(c.password)}</td></tr>`).join('')}
+          </tbody></table>
+        </div>
+        <p class="small muted" style="margin-top:10px">
+          Credentials are shown only once — save them now.
+          <button type="button" class="btn secondary sm" id="ic-dl-creds" style="margin-left:6px">Download credentials (.csv)</button>
+        </p>` : ''}
+      <p class="small muted" style="margin-top:10px">${out.imported} candidate${out.imported === 1 ? '' : 's'} added to the directory.</p>`;
+    const dl = part('#ic-dl-creds');
+    if (dl) dl.onclick = () => downloadText(
+      'ecod-imported-credentials.csv',
+      ['name,username,password', ...creds.map((c) => [c.name, c.username, c.password]
+        .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n'),
+      'text/csv',
+    );
+  };
+
+  const m = modal({
+    title: 'Import candidates from Excel',
+    wide: true,
+    bodyHtml: body,
+    actions: [
+      { label: 'Cancel', kind: 'ghost' },
+      {
+        label: 'Import',
+        onClick: async (close, btn) => {
+          if (!checked || !checked.accepted) {
+            toast('Choose a file with at least one valid row first.', 'error');
+            return;
+          }
+          btn.disabled = true;
+          const createUsers = part('#ic-users')?.checked !== false;
+          const out = await attempt(() => api('/admin/candidates/import', {
+            method: 'POST',
+            body: { ...payload, dry_run: false, create_users: createUsers },
+          }));
+          btn.disabled = false;
+          if (!out) return;
+          committed = true;
+          renderSuccess(out);
+          btn.textContent = 'Done';
+          btn.onclick = () => close();
+        },
+      },
+    ],
+    // After a successful import the dialog stays open (credentials), so any
+    // way it is closed afterwards — Done, ✕, Esc, backdrop — refreshes the
+    // list. Cancel before a commit never refreshes anything.
+    onClose: () => { if (committed) onDone?.(); },
+    onOpen: (root) => {
+      rootEl = root;
+      const file = root.querySelector('#ic-file');
+      const drop = root.querySelector('#ic-drop');
+      const name = root.querySelector('#ic-name');
+      const usersToggle = root.querySelector('#ic-users');
+      const report = root.querySelector('#ic-report');
+      const importBtn = [...root.querySelectorAll('.m-foot .btn')].pop();
+      importBtn.disabled = true;
+
+      const check = async (f) => {
+        checked = null;
+        payload = null;
+        lastFile = f;
+        importBtn.disabled = true;
+        name.textContent = f.name;
+        report.innerHTML = '<p class="small muted">Checking…</p>';
+
+        const isCsv = /\.csv$/i.test(f.name) || f.type === 'text/csv';
+        try {
+          payload = isCsv
+            ? { csv: await f.text(), filename: f.name }
+            : { file_base64: await fileToBase64(f), filename: f.name };
+        } catch {
+          report.innerHTML = '<p class="small muted">That file could not be read.</p>';
+          return;
+        }
+
+        const createUsers = usersToggle.checked !== false;
+        try {
+          const out = await api('/admin/candidates/import', {
+            method: 'POST',
+            body: { ...payload, dry_run: true, create_users: createUsers },
+          });
+          checked = out;
+          renderReport(out);
+        } catch (err) {
+          checked = null;
+          report.innerHTML = `<div class="import-summary">${badge('Cannot read this file', 'red')}</div>
+            <p class="small muted">${esc(err.message)}</p>`;
+        }
+      };
+
+      root.querySelector('#ic-browse').onclick = () => file.click();
+      drop.onclick = (e) => { if (!e.target.closest('button')) file.click(); };
+      file.onchange = () => { if (file.files[0]) check(file.files[0]); };
+      usersToggle.onchange = () => { if (lastFile) check(lastFile); };
+      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+      drop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        drop.classList.remove('over');
+        const f = e.dataTransfer?.files?.[0];
+        if (f) check(f);
+      });
+      root.querySelector('#ic-template').onclick = async (e) => {
+        e.preventDefault();
+        const tpl = await attempt(() => api('/admin/candidates/import-template'));
         if (tpl) downloadText(tpl.filename, tpl.csv, tpl.content_type);
       };
     },

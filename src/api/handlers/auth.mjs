@@ -6,6 +6,14 @@ const MAX_FAILURES = 8;
 const WINDOW_MS = 10 * 60 * 1000;
 const failures = new Map(); // in-memory login throttle (per instance)
 
+/**
+ * Concurrent sessions kept per user. Cap bounds row growth on the login hot
+ * path (every login used to sweep *all* sessions — a full-table scan plus one
+ * store write per expired row — while still only ever producing one live
+ * token per client); the oldest live sessions are revoked when the cap is hit.
+ */
+const MAX_SESSIONS_PER_USER = 10;
+
 const throttled = (key) => {
   const f = failures.get(key);
   return f && f.count >= MAX_FAILURES && f.resetAt > Date.now();
@@ -31,12 +39,23 @@ export function authHandlers(route) {
     }
     failures.delete(username);
 
-    // opportunistically clear expired sessions
-    for (const s of await store.list('sessions')) {
-      if (new Date(s.expires_at).getTime() < Date.now()) await store.remove('sessions', s.id).catch(() => {});
-    }
+    // Session hygiene is scoped to THIS user, never a full-table scan on the
+    // login hot path: drop expired sessions and cap concurrent ones (oldest
+    // first). Anything that expires between here and the next request is
+    // removed lazily by resolveAuth when its token is presented.
+    const now = Date.now();
+    const mine = await store.list('sessions', { user_id: user.id });
+    const live = mine
+      .filter((s) => new Date(s.expires_at).getTime() >= now)
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const drop = [
+      ...mine.filter((s) => new Date(s.expires_at).getTime() < now),
+      ...live.slice(MAX_SESSIONS_PER_USER - 1),
+    ];
+    await Promise.all(drop.map((s) => store.remove('sessions', s.id).catch(() => {})));
+
     const token = helpers.newToken();
-    const expires = new Date(Date.now() + helpers.sessionTtlHours * 3600 * 1000).toISOString();
+    const expires = new Date(now + helpers.sessionTtlHours * 3600 * 1000).toISOString();
     await store.insert('sessions', { token, user_id: user.id, expires_at: expires });
     await audit(store, user, 'login', 'users', user.id, `${user.name} signed in`);
 

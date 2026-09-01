@@ -74,6 +74,32 @@ test('admin question validation rejects competencies from another role', async (
   assert.equal(saved.competency_id, compA.id, 'failed PATCH leaves the existing competency unchanged');
 });
 
+test('candidate PATCH enforces the same field lengths and stage rules as create', async () => {
+  // PATCH used to truncate at 200 while create capped at 120 — the same
+  // candidate could hold two different validation rules depending on the path.
+  const longName = `${'X'.repeat(150)} Name`;
+  let res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { name: longName },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.name, longName.slice(0, 120), 'PATCH truncates to the create limit');
+
+  // An empty/unknown stage must not be storable (it used to slip through as '').
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { stage: '' },
+  });
+  assert.equal(res.status, 400);
+  const after = await store.get('candidates', candA.id);
+  assert.equal(after.stage, 'intake', 'the failed patch left the stored stage untouched');
+
+  // Clearing the target role is still allowed (maps to null).
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { target_role_id: '' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.target_role_id, null);
+});
+
 test('candidate user relinking remains one-to-one and cannot be cleared', async () => {
   const clear = await call('PATCH', `/admin/users/${userA.id}`, {
     token: adminToken,

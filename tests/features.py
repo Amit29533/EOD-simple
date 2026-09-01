@@ -363,7 +363,7 @@ check('assessment filter by role', all(a['role_id'] == SR for a in lst['assessme
 section('S7 · meta/bootstrap + full compartmentalization sweep')
 st, meta = call('GET', '/meta/bootstrap', RT)
 check('bootstrap enums', st == 200 and len(meta['pipelineStages']) == 7 and len(meta['questionTypes']) == 4)
-ADMIN_ROUTES = ['/admin/dashboard', '/admin/candidates', '/admin/users', '/admin/roles', '/admin/questions', '/admin/audit']
+ADMIN_ROUTES = ['/admin/dashboard', '/admin/candidates', '/admin/candidates/import-template', '/admin/users', '/admin/roles', '/admin/questions', '/admin/audit']
 ok_all = all(call('GET', r, tok)[0] == 403 for tok in (PT, RT) for r in ADMIN_ROUTES)
 check('assessor+candidate blocked from ALL admin routes (403)', ok_all)
 _, val = call('POST', '/auth/login', body={'username': 'feat.validator', 'password': 'val-pass-1'})

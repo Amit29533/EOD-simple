@@ -37,6 +37,23 @@ export function createJsonStore(file = 'data/ecod.json') {
       persist();
       return { ...rec };
     },
+    /**
+     * Batch insert: one persist for the whole batch instead of one full-file
+     * write per row. Bulk onboarding (hundreds of candidates + users) and bank
+     * syncs are the hot paths — per-row persists made them O(n) file rewrites.
+     * Same per-row semantics as insert() (id generated when absent, created_at
+     * stamped), and result order matches the input order.
+     */
+    async insertMany(t, rows = []) {
+      const recs = rows.map((data) => {
+        const id = data.id || newId();
+        const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
+        table(t)[id] = rec;
+        return rec;
+      });
+      if (recs.length) persist();
+      return recs.map((r) => ({ ...r }));
+    },
     async update(t, id, patch) {
       const rec = table(t)[id];
       if (!rec) return null;

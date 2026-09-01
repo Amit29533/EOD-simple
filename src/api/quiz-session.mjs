@@ -69,15 +69,10 @@ export function budgetsFor(q) {
 
 export function remainingMs(q, state, now = Date.now()) {
   const started = Date.parse(state.question_started_at || 0) || now;
-  const b = budgetsFor(q);
-  if (isOpenQuestion(q) && state.phase === 'review') {
-    return Math.max(0, b.review_ms - (now - started));
-  }
-  const elapsed = now - started;
-  if (isOpenQuestion(q) && state.phase === 'answer') {
-    return Math.max(0, b.answer_ms - elapsed);
-  }
-  return Math.max(0, b.answer_ms - elapsed);
+  const budget = isOpenQuestion(q) && state.phase === 'review'
+    ? budgetsFor(q).review_ms
+    : budgetsFor(q).answer_ms;
+  return Math.max(0, budget - (now - started));
 }
 
 export function ensureQuizState(a, questions) {
