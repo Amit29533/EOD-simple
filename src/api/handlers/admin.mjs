@@ -21,12 +21,16 @@ import {
 } from '../../core/question-intake.mjs';
 import { parseSheet } from '../../core/sheet-parser.mjs';
 import {
+  CANDIDATE_IMPORT_COLUMNS, candidateImportTemplateCsv, validateCandidateBatch,
+} from '../../core/candidate-import.mjs';
+import {
   effectiveBank, composeModules, composeFamilies, resolveFamily,
   nextAuthoredId, toStoredRecord, hydrate,
 } from '../bank-service.mjs';
 
 /** Upper bound on one spreadsheet import, to bound request time and memory. */
 const MAX_IMPORT_ROWS = 2000;
+const MAX_CANDIDATE_IMPORT_ROWS = 2000;
 
 /** The columns the import understands, in the order the template lists them. */
 const IMPORT_COLUMNS = [
@@ -199,6 +203,110 @@ export function adminHandlers(route) {
     });
     await audit(store, auth.user, 'candidate_created', 'candidates', rec.id, `Candidate "${rec.name}" added`);
     return created(rec);
+  });
+
+  // ------------------------------------------------ bulk import (candidates + portal users)
+  // The same spreadsheet workflow as the question-bank import: every upload is
+  // validated as a dry run first (nothing written), rows are reported as
+  // ready / rejected / duplicate with their reasons, then the commit creates
+  // candidate records and — when asked — their linked candidate-role portal
+  // users. Blank usernames/passwords are generated, and the plaintext
+  // credentials are returned exactly once in the commit response.
+  route('GET', '/admin/candidates/import-template', A, async () => ok({
+    filename: 'ecod-candidates-import-template.csv',
+    content_type: 'text/csv',
+    columns: CANDIDATE_IMPORT_COLUMNS,
+    csv: candidateImportTemplateCsv(),
+  }));
+
+  route('POST', '/admin/candidates/import', A, async ({ store, body, auth }) => {
+    let parsed;
+    try {
+      parsed = readImportPayload(body);
+    } catch (err) {
+      return bad(err.message);
+    }
+    if (!parsed.rows.length) {
+      return unprocessable('No data rows found. The first row must be a header (Name, Email, Target role, ...).', {
+        headers: parsed.headers,
+      });
+    }
+    if (parsed.rows.length > MAX_CANDIDATE_IMPORT_ROWS) {
+      return unprocessable(`This file has ${parsed.rows.length} rows; the limit is ${MAX_CANDIDATE_IMPORT_ROWS} per import.`);
+    }
+
+    const createUsers = bool(body.create_users);
+    const [roles, existingCandidates, existingUsers] = await Promise.all([
+      store.list('roles'), store.list('candidates'), store.list('users'),
+    ]);
+    const report = validateCandidateBatch(parsed.rows, {
+      roles,
+      stages: PIPELINE_STAGES,
+      createUsers,
+      existingCandidates,
+      existingUsernames: existingUsers.map((u) => u.username),
+    });
+
+    const dryRun = bool(body.dry_run);
+    const summary = {
+      headers: parsed.headers,
+      create_users: createUsers,
+      total: parsed.rows.length,
+      accepted: report.accepted.length,
+      rejected: report.rejected.length,
+      duplicates: report.duplicates.length,
+      dry_run: dryRun,
+      errors: report.rejected.slice(0, 50),
+      duplicate_rows: report.duplicates.slice(0, 50),
+      preview: report.accepted.slice(0, 10).map((a) => ({
+        line: a.line,
+        name: a.candidate.name,
+        target_role: a.candidate.target_role || '',
+        stage: a.candidate.stage || '',
+        username: a.candidate.username || '',
+      })),
+    };
+    if (dryRun) return ok({ ...summary, imported: 0, users_created: 0, credentials: [] });
+
+    let imported = 0;
+    let usersCreated = 0;
+    const credentials = [];
+    for (const { candidate } of report.accepted) {
+      const rec = await store.insert('candidates', {
+        name: candidate.name,
+        email: candidate.email,
+        phone: candidate.phone,
+        current_title: candidate.current_title,
+        years_experience: candidate.years_experience ?? null,
+        location: candidate.location,
+        source: candidate.source,
+        notes: candidate.notes,
+        target_role_id: candidate.target_role_id || null,
+        stage: candidate.stage || (candidate.target_role_id ? 'role_mapped' : 'intake'),
+        created_by: auth.user.id,
+      });
+      imported += 1;
+      if (createUsers) {
+        const user = await store.insert('users', {
+          username: candidate.username,
+          name: candidate.name,
+          email: candidate.email,
+          role: 'candidate',
+          password_hash: hashPassword(candidate.password),
+          candidate_id: rec.id,
+          active: true,
+          created_by: auth.user.id,
+        });
+        usersCreated += 1;
+        credentials.push({ username: user.username, name: candidate.name, password: candidate.password });
+      }
+    }
+    if (imported) {
+      await audit(store, auth.user, 'candidates_bulk_imported', 'candidates', '',
+        `${imported} candidate(s) imported from a spreadsheet`
+        + (usersCreated ? ` (${usersCreated} portal user(s) created)` : ''));
+    }
+    return ok({ ...summary, imported, users_created: usersCreated, credentials });
   });
 
   route('GET', '/admin/candidates/:id', A, async ({ store, params }) => {
