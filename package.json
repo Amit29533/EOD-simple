@@ -13,6 +13,9 @@
     "seed:fresh": "SEED_FRESH=1 node scripts/seed.mjs",
     "airtable:setup": "STORAGE=airtable node scripts/airtable-setup.mjs",
     "seed:airtable": "STORAGE=airtable node scripts/seed.mjs",
+    "bank:extract": "node scripts/extract-question-bank-from-xlsx.mjs \"Question bank 1.4.xlsx\" data/bank.json",
+    "bank:build": "python3 scripts/build-question-bank.py data/bank.json src/content/rsa-question-bank.mjs 1.4",
+    "bank:rebuild": "npm run bank:extract && npm run bank:build",
     "test": "node --test tests/*.test.mjs",
     "test:smoke": "python3 tests/smoke.py",
     "test:features": "python3 tests/features.py"

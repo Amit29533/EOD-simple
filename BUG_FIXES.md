@@ -3,11 +3,46 @@
 ## Summary
 The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **238/238 Node tests**, **39/39 smoke tests**, and **202/202 feature tests** pass.
+Current verification: **259/259 Node tests**, **39/39 smoke tests**, and **202/202 feature tests** pass.
 
 ---
 
-## 📄 Question Bank v1.3, shuffled papers, one content screen (latest)
+## 📄 Question Bank v1.4 & CSV import (latest)
+
+**1. The published bank was still the clipped v1.3 extract.** The repo now carries
+`Question bank 1.4.xlsx`; `src/content/rsa-question-bank.mjs` still held the v1.3 PDF
+extract, whose 201 objective items had truncated or polluted distractors and
+`needs_option_review: true`. The bank is now rebuilt from the workbook with
+`npm run bank:rebuild` (`extract-question-bank-from-xlsx.mjs` → `build-question-bank.py`):
+**v1.4: 348 questions, 20 modules, 62 module-family pairs, 0/201 objective items flagged**.
+The workbook carries all four option texts and the answer inline
+(`Correct answer: A`), so every published MCQ now has complete, review-ready options
+and correct answer ids.
+
+**2. CSV import accepted only the template columns.** The import endpoint handled `.csv`
+files, but a CSV exported from the published workbook (columns such as
+`original_ecod_question`, `follow_up_probes`, `difficulty_1_5`,
+`expected_evidence_ecod_designed`, `suggested_minutes`, `assessment_mode`, `gap_tag`)
+was rejected because options are embedded in the question cell. `question-intake.mjs`
+now maps those workbook headers, treats `Objective Question` / `Customer Simulation`
+/ `Scenario` / `Concept` / `Deep Dive` / `Incident` / `Practical` / `Migration` /
+`Architecture Case` / `Experience Probe` / `Discovery` / `Communication` as the two
+supported modes, splits `• A) … • B) …` into real options, reads the key from
+`Correct answer: A`, and preserves `gap_tag` / `randomization_eligible`. The Question
+Bank import button and dialog now say `.xlsx / .csv` and explain that both the template
+and the published export shapes are accepted.
+
+**3. Build pipeline is now reproducible from the workbook.** `scripts/extract-question-bank-from-xlsx.mjs`
+normalises the workbook to the existing `bank.json` shape (including the float-encoded
+`1.1000000000000001` version cell); `DEFAULT_VERSION` is `1.4`; `npm run bank:rebuild`
+regenerates the module without touching admin-authored rows.
+
+**Verified**: the new `tests/question-import-csv.test.mjs` (6 tests) covers embedded-option
+splitting, the workbook header aliases, dry-run/commit, and duplicate detection.
+
+---
+
+## 📄 Question Bank v1.3, shuffled papers, one content screen (previous)
 
 **Three user-reported issues, fixed together:**
 

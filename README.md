@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 253 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 259 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, full exam
                     #           lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom), admin validation, question-bank
@@ -129,10 +129,10 @@ Deliberately deferred to the next phases (architecture already supports them): E
 module, Independent Validation module, candidate-facing enrichment plan, client/commercial
 entities. There are no `clients`/commercial tables anywhere — nobody can stumble into them.
 
-## Question Bank v1.3 — modules, families and test generation
+## Question Bank v1.4 — modules, families and test generation
 
 The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`),
-generated from the source PDF in this repo (`Question bank 1.3.xlsx_4343.pdf`):
+generated from the published source workbook (`Question bank 1.4.xlsx`):
 **348 questions across 20 modules**, organised **module → family → question**, and
 listed module by module: `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02`.
 
@@ -173,22 +173,25 @@ gone; `#/questions` redirects here.
 
 ### Adding questions
 
-The published bank is **read-only** — it is generated from the source PDF and is never
-written to at runtime. Additions live alongside it in the `bank_questions` table and are
-merged over the published set on read, so the bank grows without the generated file
-drifting from its source. Only these authored rows can be edited or deleted.
+The published bank is **read-only** — it is generated from the source workbook and is
+never written to at runtime. Additions live alongside it in the `bank_questions` table
+and are merged over the published set on read, so the bank grows without the generated
+file drifting from its source. Only these authored rows can be edited or deleted.
 
 - **One at a time** — *Add question*, or *+ Add a question to `<MODULE>`* on any module
   card. The form follows the answer type: objective questions collect 2–8 options and a
   single correct answer, open questions collect a rubric and probes. Family suggestions
   are scoped to the chosen module, and **typing a name that does not exist creates that
   family** inside the module.
-- **In bulk** — *Import from Excel* accepts an `.xlsx` or `.csv` (first row = header,
-  up to 2000 rows). Every upload is **validated as a dry run first**: the dialog reports
-  what is ready, what was rejected and why, and which rows already exist, before anything
-  is written. Import stays disabled until at least one row is valid. Column headers are
-  matched by alias (`Option A`/`A`/`opt_a`/`choice_a` all work) and a starter template is
-  downloadable from the dialog.
+- **In bulk** — *Import (.xlsx / .csv)* accepts an `.xlsx` or `.csv` (first row =
+  header, up to 2000 rows). Every upload is **validated as a dry run first**: the dialog
+  reports what is ready, what was rejected and why, and which rows already exist, before
+  anything is written. Import stays disabled until at least one row is valid. Column
+  headers are matched by alias (`Option A`/`A`/`opt_a`/`choice_a` all work), and the
+  published Question Bank export is accepted as-is: objective questions whose options are
+  embedded as `• A) … • B) …` inside the question cell are split automatically, and the
+  correct answer is read from `Correct answer: A` in the probes/evidence cell. A starter
+  CSV template is downloadable from the dialog.
 
 Both paths run the same validation as the API, so a question added by hand and one
 imported from a sheet are held to identical rules: known module, resolvable family,
@@ -243,18 +246,20 @@ Snapshots allocated **before** positions existed carry no positions and keep the
 order they were allocated with: re-ordering a paper someone is halfway through would
 move questions out from under their cursor.
 
-The bank is regenerated from the source PDF with:
+The bank is regenerated from the published workbook (or an equivalent CSV export) with:
 
 ```bash
-python3 scripts/extract-question-bank.py "Question bank 1.3.xlsx_4343.pdf" bank.json
-python3 scripts/build-question-bank.py    bank.json src/content/rsa-question-bank.mjs 1.3
+npm run bank:rebuild
+# or, step by step:
+node   scripts/extract-question-bank-from-xlsx.mjs "Question bank 1.4.xlsx" data/bank.json
+python3 scripts/build-question-bank.py data/bank.json src/content/rsa-question-bank.mjs 1.4
 ```
 
-The source export clips long MCQ option text — the extractor keeps what the PDF
-actually contains and flags each affected item `needs_option_review` (all 201
-objective items in v1.3, up from 155 in v1.2). Stems and correct answers are
-complete, so every item is servable, but the remaining distractors need finishing in
-the Admin UI.
+Unlike the older PDF export, the v1.4 workbook contains **all four option texts** and
+the correct answer inline in `follow_up_probes`, so the generated bank no longer
+flags published objective items `needs_option_review` (0 of the 201 objective items
+in v1.4). The old PDF extractor (`scripts/extract-question-bank.py`) is retained only
+for historical migration.
 
 ## Bulk candidate & user onboarding (from Excel)
 

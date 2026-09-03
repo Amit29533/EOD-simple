@@ -21,18 +21,21 @@ const FIELD_ALIASES = {
   family: ['family', 'question_family', 'family_name', 'sub_family'],
   family_id: ['family_id', 'familyid'],
   type: ['type', 'question_type', 'answer_type', 'kind'],
-  prompt: ['prompt', 'question', 'question_text', 'stem', 'text'],
-  correct: ['correct', 'correct_answer', 'answer', 'correct_option', 'key'],
-  rubric: ['rubric', 'expected_evidence', 'model_answer', 'guidance', 'evidence'],
+  prompt: ['prompt', 'question', 'question_text', 'stem', 'text', 'original_ecod_question'],
+  correct: ['correct', 'correct_answer', 'answer', 'correct_option', 'key', 'answer_key'],
+  rubric: ['rubric', 'expected_evidence', 'expected_evidence_ecod_designed', 'model_answer', 'guidance', 'evidence'],
   rationale: ['rationale', 'explanation', 'why', 'reason'],
-  difficulty: ['difficulty', 'level'],
-  band: ['band', 'seniority', 'grade'],
-  minutes: ['minutes', 'time', 'duration', 'time_minutes'],
-  tags: ['tags', 'tag', 'labels', 'keywords', 'gap_tag'],
-  probes: ['probes', 'follow_ups', 'followups', 'probing_questions'],
+  difficulty: ['difficulty', 'difficulty_1_5', 'level'],
+  band: ['band', 'difficulty_band', 'seniority', 'grade'],
+  minutes: ['minutes', 'suggested_minutes', 'time', 'duration', 'time_minutes'],
+  tags: ['tags', 'tag', 'labels', 'keywords'],
+  gap_tag: ['gap_tag', 'gap-tag'],
+  probes: ['probes', 'follow_up_probes', 'follow_ups', 'followups', 'probing_questions'],
   red_flags: ['red_flags', 'redflags', 'warning_signs'],
-  enrichment: ['enrichment', 'development', 'learning'],
-  mode: ['mode', 'delivery', 'delivery_mode'],
+  enrichment: ['enrichment', 'enrichment_prescription', 'development', 'learning'],
+  mode: ['mode', 'assessment_mode', 'delivery', 'delivery_mode'],
+  status: ['status', 'question_status'],
+  randomizable: ['randomizable', 'randomization_eligible'],
 };
 
 /** Option columns: "Option A" / "A" / "option_1" all map to one option slot. */
@@ -42,6 +45,39 @@ const OPTION_PATTERNS = [
 ];
 
 const LETTERS = 'abcdefgh';
+const OPTION_MARKER = /\n\s*(?:[•▪●*·\-]\s*)?([A-H])[.)]\s*/g;
+
+/**
+ * Some worksheet exports embed an objective question's answer options inside
+ * the prompt cell rather than in separate Option A/B/C/D columns:
+ *
+ *   "Which response is most defensible?\n• A) ...\n• B) ...\n• C) ..."
+ *
+ * The published Question Bank workbook uses exactly this shape (see
+ * scripts/extract-question-bank-from-xlsx.mjs). Return the stem and the parsed
+ * options; anything that does not look like an objective marker is left alone
+ * so an open question can never be silently split.
+ */
+export function splitEmbeddedOptions(text) {
+  const src = String(text ?? '').replace(/\r\n?/g, '\n');
+  const markers = [...src.matchAll(OPTION_MARKER)];
+  if (markers.length < 2) return { prompt: src.trim(), options: [] };
+
+  const prompt = src.slice(0, markers[0].index).replace(/\s+$/, '').trim();
+  const options = markers.map((m, i) => {
+    const letter = m[1];
+    const start = m.index + m[0].length;
+    const end = markers[i + 1]?.index ?? src.length;
+    return { id: letter.toLowerCase(), label: src.slice(start, end).trim() };
+  });
+  return { prompt, options };
+}
+
+/** Parse "Correct answer: A" (or "Correct answer is A") from a cell. */
+export function correctFromCell(text) {
+  const hit = /Correct answer\s*(?:is|:|=|\u2014|--)?\s*([A-H])/i.exec(String(text ?? ''));
+  return hit ? hit[1].toLowerCase() : null;
+}
 
 /** Map a spreadsheet row (already header-normalized) onto canonical fields. */
 export function canonicalizeRow(row = {}) {
@@ -75,6 +111,17 @@ export function canonicalizeRow(row = {}) {
     id: LETTERS[index] || String(index + 1),
     label,
   }));
+
+  // The published Question Bank export stores options inline in the prompt
+  // cell ("• A) ..."). If no option columns were used, recover them from the
+  // prompt so a CSV exported from that workbook imports without reformatting.
+  if (!out.options.length && out.prompt) {
+    const embedded = splitEmbeddedOptions(out.prompt);
+    if (embedded.options.length >= 2) {
+      out.prompt = embedded.prompt;
+      out.options = embedded.options;
+    }
+  }
   return out;
 }
 
@@ -139,8 +186,12 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
 
   // ---- answer mode -----------------------------------------------------
   let type = String(row.type ?? '').trim().toLowerCase();
-  if (['mcq', 'mcq_single', 'multiple choice', 'multiple_choice', 'objective'].includes(type)) type = 'objective';
-  else if (['open', 'text', 'open-ended', 'open_ended', 'non-objective', 'non_objective', 'scenario'].includes(type)) type = 'open';
+  if (['mcq', 'mcq_single', 'multiple choice', 'multiple_choice', 'objective', 'objective question'].includes(type)) type = 'objective';
+  else if ([
+    'open', 'text', 'open-ended', 'open_ended', 'non-objective', 'non_objective', 'scenario',
+    'customer simulation', 'common question', 'architecture case', 'concept', 'deep dive',
+    'incident', 'practical', 'migration', 'experience probe', 'discovery', 'communication',
+  ].includes(type)) type = 'open';
   else if (!type) {
     // Infer from shape rather than rejecting: a row with options is objective.
     type = (row.options || []).length >= 2 ? 'objective' : 'open';
@@ -183,6 +234,12 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
     correct = Array.isArray(row.correct_option_ids) && row.correct_option_ids.length
       ? row.correct_option_ids.map((id) => String(id).toLowerCase())
       : parseCorrect(row.correct, options);
+    if (!correct.length) {
+      // The published workbook records the key in the probe/evidence cell
+      // ("Correct answer: A; ...") rather than in a Correct column.
+      const fromCell = correctFromCell(row.probes || row.rationale || row.rubric);
+      if (fromCell && options.some((o) => o.id === fromCell)) correct.push(fromCell);
+    }
     if (!correct.length) errors.push('A correct answer is required (e.g. "B").');
     else if (correct.some((id) => !options.some((o) => o.id === id))) {
       errors.push('The correct answer must be one of the options.');
@@ -214,16 +271,16 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
       mode: String(row.mode ?? '').trim() || 'Online assessment',
       minutes: clampInt(row.minutes, 1, 120, type === 'open' ? 5 : 2),
       status: 'Active',
-      randomizable: true,
+      randomizable: !/^(no|false|0)$/i.test(String(row.randomizable ?? '').trim()),
       tags: splitList(row.tags).slice(0, 12),
-      gap_tag: splitList(row.tags)[0] || resolvedName,
+      gap_tag: String(row.gap_tag ?? '').trim() || splitList(row.tags)[0] || resolvedName,
       red_flags: String(row.red_flags ?? '').trim().slice(0, 2000),
       enrichment: String(row.enrichment ?? '').trim().slice(0, 2000),
       ...(type === 'objective'
         ? {
             options,
             correct_option_ids: correct,
-            rationale: String(row.rationale ?? '').trim().slice(0, 2000),
+            rationale: String(row.rationale || row.probes || '').trim().slice(0, 2000),
             needs_option_review: options.length < 4,
           }
         : {

@@ -20,7 +20,8 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate   |
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |
-| GET/POST/PATCH/DELETE | /admin/questions[/:id] | question bank, validated per type               |
+| GET/POST/PATCH/DELETE | /admin/questions[/:id] | role/competency question bank, validated per type               |
+| GET/POST/PATCH/DELETE | /admin/question-bank/* | module/family question bank (modules, family detail, plan, preview, single add/edit/delete, import) — `POST …/import` accepts raw `csv` or base64 `file_base64`, honors `dry_run` before committing, and accepts both the template columns and the published workbook export headers (including `• A) …` inline options) |
 | GET/PUT | /admin/frameworks?role_id=   | scoring framework (validated)                     |
 | GET    | /admin/roles/:id/question-plan | preview an allocation: `?limit=X` → served total, points and per-competency split (no `limit` = full bank; capped previews are limited to 50). Also returns `max_questions` and, for the published-catalogue track, `catalogue: { total, missing }` |
 | GET/POST | /admin/assessments          | allocation builds immutable snapshot; optional `question_count` (1–50, and never more than the track's active bank) serves a random weighted sample of X questions, apportioned across competencies by weight |
