@@ -57,7 +57,6 @@ const IMPORT_COLUMNS = [
   { key: 'Rubric', required: false, note: 'Open only: what good evidence looks like' },
   { key: 'Difficulty', required: false, note: '1-5 (default 4)' },
   { key: 'Band', required: false, note: 'Foundation / Intermediate / Advanced' },
-  { key: 'Minutes', required: false, note: 'Expected answer time' },
   { key: 'Tags', required: false, note: 'Comma-separated' },
 ];
 
@@ -107,12 +106,12 @@ function importTemplateCsv() {
     ['T01', 'Advanced Technical Judgment', 'objective',
       'Which Unity Catalog object is the boundary for cross-workspace data sharing?',
       'The cluster', 'The metastore', 'The notebook', 'The job',
-      'B', '', '4', 'Advanced', '2', 'governance,unity-catalog'],
+      'B', '', '4', 'Advanced', 'governance,unity-catalog'],
     ['C01', 'Customer Solutioning', 'open',
       'A client cannot articulate their success criteria. How do you run the discovery?',
       '', '', '', '', '',
       'Structures discovery, maps stakeholders, converts vague goals into measurable criteria.',
-      '4', 'Intermediate', '5', 'discovery'],
+      '4', 'Intermediate', 'discovery'],
   ];
   return [header, ...example].map((r) => r.map((c) => esc(String(c))).join(',')).join('\n');
 }
