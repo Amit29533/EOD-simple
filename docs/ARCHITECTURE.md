@@ -70,12 +70,12 @@ than the configured 50. Sync semantics live in `src/api/catalogue-service.mjs` a
 mirror `npm run seed`: match the track by key, insert only prompts that are absent,
 never touch existing records or snapshots.
 
-## 2c. Question Bank v1.3 — module → family → question
+## 2c. Question Bank v1.4 — module → family → question
 
 The finalized bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
-`Question bank 1.3.xlsx_4343.pdf`) is organised **MODULE → FAMILY → QUESTION** and
-drives a *fixed-shape* paper, rather than the weight-proportional apportionment
-described in 2b:
+the published `Question bank 1.4.xlsx` workbook) is organised **MODULE → FAMILY →
+QUESTION** and drives a *fixed-shape* paper, rather than the weight-proportional
+apportionment described in 2b:
 
 | Group | Modules | Served per module |
 | ------ | ------- | ----------------- |
@@ -108,16 +108,17 @@ paper-wide totals from it. Watch the units — `technical_objective` is *3 per
 module* in the former and *30 per paper* in the latter.
 
 **Authoring: published content plus an authored overlay.** `rsa-question-bank.mjs`
-is generated from the source PDF and is **never written at runtime** — writing to it
-would put the file permanently out of step with the script that reproduces it. Admin
-additions are rows in the `bank_questions` table instead, and `src/api/bank-service.mjs`
-merges them over the published set (`effectiveBank`) on every read. So:
+is generated from the published workbook (or an equivalent CSV export) and is **never
+written at runtime** — writing to it would put the file permanently out of step with
+the script that reproduces it. Admin additions are rows in the `bank_questions` table
+instead, and `src/api/bank-service.mjs` merges them over the published set
+(`effectiveBank`) on every read. So:
 
 - reads see one bank; `bank_total = published_total + authored_total`,
 - only authored ids are mutable — `PATCH`/`DELETE` on a published id is a **404**,
 - an authored question that names a new family **creates** that family in its module,
   which is how the taxonomy grows without a rebuild,
-- regenerating the published file from the PDF never clobbers authored work.
+- regenerating the published file from the workbook never clobbers authored work.
 
 Validation is shared rather than duplicated per entry point. `src/core/question-intake.mjs`
 exposes `validateQuestion` (one question) and `validateBatch` (a sheet), and both the
@@ -132,6 +133,18 @@ directory** (local headers may carry zeroes with a trailing data descriptor), an
 the shared-string table. Its cell regex must match both `<c …>…</c>` and the self-closing
 `<c … />` Excel emits for a blank styled cell — matching only the former shifts every
 later value one column left.
+
+Question imports accept the template columns (`Option A`/`correct`/`rubric`) and the
+published Question Bank export columns as-is. `question-intake.mjs` treats
+`original_ecod_question` as the prompt and `follow_up_probes` / `difficulty_band` /
+`assessment_mode` / `suggested_minutes` / `expected_evidence_ecod_designed` /
+`enrichment_prescription` as their alias fields, and when an objective cell carries its
+options inline (`• A) … • B) …`), `splitEmbeddedOptions()` recovers the stem and the
+four options and `correctFromCell()` reads the answer from `Correct answer: A`.
+The workbook's `Objective Question` / `Customer Simulation` / `Scenario` / `Concept` /
+`Deep Dive` / `Incident` / `Practical` / `Migration` / `Architecture Case` /
+`Experience Probe` / `Discovery` / `Communication` type labels are normalised to the
+two modes the generator understands.
 
 **Optional pool.** The retired 115-question competency catalogue is re-shaped by
 `src/content/rsa-optional-bank.mjs`: each retired competency becomes a `Legacy - …`

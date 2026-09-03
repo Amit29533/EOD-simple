@@ -1043,7 +1043,7 @@ export async function modulesView(view) {
            of this same screen.</p>
       </div>
       <div class="heading-actions">
-        <button class="btn secondary" id="mv-import">Import from Excel</button>
+        <button class="btn secondary" id="mv-import">Import (.xlsx / .csv)</button>
         <button class="btn secondary" id="mv-add">Add question</button>
         <button class="btn" id="mv-preview">Preview a test</button>
       </div>
@@ -1553,7 +1553,9 @@ function importQuestionsModal(onImported) {
 
   const body = `
     <p class="modal-intro">Upload an .xlsx or .csv. The first row must be a header.
-      The file is checked before anything is written.</p>
+      The file is checked before anything is written. Both the template columns and the
+      published Question Bank export columns (including options embedded as
+      “• A) … • B) …”) are accepted.</p>
     <div class="import-drop" id="iq-drop">
       <input type="file" id="iq-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
       <div class="import-drop-copy">
@@ -1563,7 +1565,7 @@ function importQuestionsModal(onImported) {
       <button type="button" class="btn secondary sm" id="iq-browse">Browse</button>
     </div>
     <p class="small muted" style="margin:11px 0 0">
-      Not sure about the columns? <a href="#" id="iq-template">Download the template</a>.
+      Need a starting point? <a href="#" id="iq-template">Download the CSV template</a>.
     </p>
     <div id="iq-report"></div>`;
 
