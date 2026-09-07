@@ -92,6 +92,34 @@ test('candidate PATCH enforces the same field lengths and stage rules as create'
   const after = await store.get('candidates', candA.id);
   assert.equal(after.stage, 'intake', 'the failed patch left the stored stage untouched');
 
+  // A valid stage must actually persist — the Edit form sends it on every save,
+  // but PATCH used to validate it and then drop it from the write.
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { stage: 'enrichment' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.stage, 'enrichment', 'PATCH must persist a valid pipeline stage');
+  assert.equal((await store.get('candidates', candA.id)).stage, 'enrichment');
+
+  // Clearing years of experience must store null, not 0 (Number(null) === 0).
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { years_experience: null },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.years_experience, null, 'clearing years_experience stores null, not 0');
+
+  res = await call('POST', '/admin/candidates', {
+    token: adminToken, body: { name: 'No Years', years_experience: null },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.years_experience, null, 'create with blank years stores null, not 0');
+
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, {
+    token: adminToken, body: { years_experience: '' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.years_experience, null, 'empty-string years_experience stores null, not 0');
+
   // Clearing the target role is still allowed (maps to null).
   res = await call('PATCH', `/admin/candidates/${candA.id}`, {
     token: adminToken, body: { target_role_id: '' },

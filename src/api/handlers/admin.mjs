@@ -227,7 +227,7 @@ export function adminHandlers(route) {
     if (body.target_role_id && !(await store.get('roles', body.target_role_id))) return bad('Unknown target role.');
     const rec = await store.insert('candidates', {
       name: str(body.name, 120), email: str(body.email, 200), phone: str(body.phone, 60),
-      current_title: str(body.current_title, 120), years_experience: num(body.years_experience, null),
+      current_title: str(body.current_title, 120), years_experience: yearsExperience(body.years_experience),
       location: str(body.location, 120), source: str(body.source, 120), notes: str(body.notes, 4000),
       target_role_id: body.target_role_id || null,
       stage: body.stage || (body.target_role_id ? 'role_mapped' : 'intake'),
@@ -391,7 +391,10 @@ export function adminHandlers(route) {
       if (body[f] !== undefined) patch[f] = body[f] === '' ? '' : str(body[f], max);
     if (body.target_role_id !== undefined)
       patch.target_role_id = body.target_role_id === '' ? null : str(body.target_role_id, 60);
-    if (body.years_experience !== undefined) patch.years_experience = num(body.years_experience, null);
+    if (body.years_experience !== undefined) patch.years_experience = yearsExperience(body.years_experience);
+    // Stage was validated above but never written — the admin Edit form sends it
+    // on every save, so changing a candidate's pipeline stage silently no-op'd.
+    if (body.stage !== undefined) patch.stage = body.stage;
     const updated = await store.update('candidates', params.id, patch);
     await audit(store, auth.user, 'candidate_updated', 'candidates', params.id, `Candidate "${updated.name}" updated`);
     return ok(updated);
@@ -1150,6 +1153,12 @@ export function adminHandlers(route) {
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     return ok({ events: rows.slice(0, 200) });
   });
+}
+
+/** Years of experience: empty/omitted → null, never coerced to 0 via Number(null). */
+function yearsExperience(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return num(value, null);
 }
 
 function normalizeQuestion(body, existing = {}) {

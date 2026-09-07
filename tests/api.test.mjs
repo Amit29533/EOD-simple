@@ -218,6 +218,14 @@ test('assessor scores with rubric visible; finalize produces report + advances p
   assert.equal(fin.body.report.band.key, 'enterprise_ready');
   const cand = await store.get('candidates', globalThis.__ids.candId);
   assert.equal(cand.stage, 'gap_mapping', 'pipeline advanced to Gap Mapping');
+
+  const workspace = await call('GET', '/assessor/assessments', { token: priyaToken });
+  const row = workspace.body.assessments.find((a) => a.id === assessmentId);
+  assert.equal(row.readiness_key, 'enterprise_ready', 'assessor list carries the key the readiness badge needs');
+  assert.equal(row.readiness_label, 'Enterprise Ready');
+
+  const scored = await call('GET', `/assessor/assessments/${assessmentId}`, { token: priyaToken });
+  assert.equal(scored.body.assessment.readiness_key, 'enterprise_ready', 'assessor detail also carries readiness_key');
 });
 
 test('candidate report card: band + areas to improve, but no assessor identity/comments', async () => {
