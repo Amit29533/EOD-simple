@@ -98,6 +98,28 @@ function mergeForPatch(current, body = {}) {
   return merged;
 }
 
+/**
+ * Remove a published question from circulation (or restore it).
+ *
+ * Published questions live in a generated file, so they cannot be edited or
+ * hard-deleted at runtime. Removal is a visibility override row instead:
+ * `{ question_id, active: false }` hides the question from the tree counts,
+ * the plan and generation until the override is deleted again (restore).
+ * Overrides are found by `question_id` rather than record id so the Airtable
+ * adapter — which mints its own record ids — works the same as the rest.
+ */
+async function setPublishedVisibility(store, questionId, active, actorId) {
+  const rows = await store.list('bank_question_overrides', { question_id: questionId });
+  if (active) {
+    for (const r of rows) await store.remove('bank_question_overrides', r.id);
+    return null;
+  }
+  if (rows[0]) return rows[0];
+  return store.insert('bank_question_overrides', {
+    question_id: questionId, active: false, created_by: actorId || null,
+  });
+}
+
 /** A downloadable CSV template with the header row and one example of each type. */
 function importTemplateCsv() {
   const esc = (v) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
@@ -789,10 +811,12 @@ export function adminHandlers(route) {
           : [];
         return { ...m, optional: optionalByModule.get(m.key) || 0, families: [...own, ...legacy] };
       }),
-      // Totals describe what generation can actually draw; deactivated
-      // questions are reported separately instead of padding the headline.
+      // Totals describe what generation can actually draw; deactivated and
+      // removed questions are reported separately instead of padding the
+      // headline. All three are derived from the effective bank (published
+      // minus removals, plus authored) so they cannot disagree with the tree.
       bank_total: questions.filter(isActive).length,
-      published_total: QUESTIONS.filter(isActive).length,
+      published_total: questions.filter((q) => !q.authored && isActive(q)).length,
       authored_total: questions.filter((q) => q.authored && isActive(q)).length,
       inactive_total: questions.filter((q) => !isActive(q)).length,
       family_total: composeFamilies(questions).length,
@@ -817,6 +841,7 @@ export function adminHandlers(route) {
         optional: q.optional === true,
         authored: q.authored === true,
         active: isActive(q),
+        removed: q.removed === true,
         tags: q.tags || [],
         needs_option_review: q.needs_option_review === true,
       })),
@@ -873,7 +898,25 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/question-bank/questions/:id', A, async ({ store, body, params, auth }) => {
     const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
     if (!existing) {
-      return notFound('Only admin-authored questions can be edited; this id is not one of them.');
+      // Published questions are read-only except for visibility: an admin can
+      // remove one from circulation ({ active: false }) and restore it later
+      // ({ active: true }). Anything else is rejected, not silently ignored.
+      const published = QUESTIONS.find((q) => q.id === params.id);
+      if (!published) return notFound('Question not found.');
+      if (body.active === undefined) {
+        return bad('Published questions are read-only; only visibility (active) can be changed. Remove it to hide it from tests, or restore it.');
+      }
+      const extra = Object.keys(body || {}).filter((k) => k !== 'active');
+      if (extra.length) return bad(`Published questions are read-only; cannot change: ${extra.join(', ')}.`);
+      const restore = bool(body.active);
+      await setPublishedVisibility(store, params.id, restore, auth.user.id);
+      await audit(store, auth.user, restore ? 'bank_question_restored' : 'bank_question_removed',
+        'bank_questions', params.id,
+        restore
+          ? `Published question restored to ${published.module}`
+          : `Published question removed from ${published.module} (can be restored)`);
+      const updated = (await effectiveBank(store)).find((q) => q.id === params.id);
+      return ok({ question: updated });
     }
     const { questions, families } = await bankContext(store);
     const merged = mergeForPatch(hydrate(existing), body);
@@ -893,13 +936,21 @@ export function adminHandlers(route) {
 
   route('DELETE', '/admin/question-bank/questions/:id', A, async ({ store, params, auth }) => {
     const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
-    if (!existing) {
-      return notFound('Only admin-authored questions can be deleted; the published bank is read-only.');
+    if (existing) {
+      await store.remove('bank_questions', params.id);
+      await audit(store, auth.user, 'bank_question_deleted', 'bank_questions', params.id,
+        `Question removed from ${existing.module}`);
+      return ok({ ok: true });
     }
-    await store.remove('bank_questions', params.id);
-    await audit(store, auth.user, 'bank_question_deleted', 'bank_questions', params.id,
-      `Question removed from ${existing.module}`);
-    return ok({ ok: true });
+    // Published questions live in a generated file, so DELETE removes them
+    // from circulation (hidden from counts and generation) rather than
+    // destroying anything — restoring is PATCH { active: true }.
+    const published = QUESTIONS.find((q) => q.id === params.id);
+    if (!published) return notFound('Question not found.');
+    await setPublishedVisibility(store, params.id, false, auth.user.id);
+    await audit(store, auth.user, 'bank_question_removed', 'bank_questions', params.id,
+      `Published question removed from ${published.module} (can be restored)`);
+    return ok({ ok: true, removed: true });
   });
 
   // ---- authoring: bulk import from a spreadsheet -----------------------

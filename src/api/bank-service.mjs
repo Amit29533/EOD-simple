@@ -66,15 +66,35 @@ export async function authoredQuestions(store) {
 }
 
 /**
- * The full effective bank: published questions plus authored ones.
+ * Visibility overrides for published questions, as a set of removed ids.
+ * Stored as rows ({ question_id, active: false }) rather than keyed by record
+ * id so every adapter — including Airtable, which mints its own record ids —
+ * can hold them.
+ */
+export async function removedPublishedIds(store) {
+  const rows = await store.list('bank_question_overrides');
+  return new Set(rows.filter((r) => r.active === false && r.question_id).map((r) => r.question_id));
+}
+
+/**
+ * The full effective bank: published questions (minus admin-removed ones)
+ * plus authored ones.
  * Ordered by module (configured order), then by family, then published before
  * authored — so an addition appears at the end of the family it joined rather
  * than scattered through the list.
+ *
+ * A removed published question stays in the list as inactive (`removed: true`)
+ * rather than vanishing, so the tree reports it under `inactive`, the family
+ * drill-down can offer a Restore, and generation (which only draws active
+ * questions) skips it.
  */
 export async function effectiveBank(store) {
-  const authored = await authoredQuestions(store);
+  const [authored, removed] = await Promise.all([authoredQuestions(store), removedPublishedIds(store)]);
+  const published = removed.size
+    ? QUESTIONS.map((q) => (removed.has(q.id) ? { ...q, active: false, status: 'Inactive', removed: true } : q))
+    : QUESTIONS;
   const order = new Map(MODULES.map((m, i) => [m.key, i]));
-  const all = [...QUESTIONS, ...authored];
+  const all = [...published, ...authored];
   all.sort((a, b) => (order.get(a.module) ?? 99) - (order.get(b.module) ?? 99)
     || String(a.family_id).localeCompare(String(b.family_id))
     || (a.authored === b.authored ? 0 : a.authored ? 1 : -1)
