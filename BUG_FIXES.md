@@ -3,7 +3,28 @@
 ## Summary
 The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **268/268 Node tests**, **39/39 smoke tests**, and **206/206 feature tests** pass.
+Current verification: **278/278 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+
+## 🔒 Production hardening pass (latest)
+
+Full production-readiness audit — security, reliability, performance and correctness:
+
+**Server & runtime:**
+- `server.mjs`: async `fs/promises` (no blocking stat/readSync), security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy`, `Permissions-Policy`, HSTS in prod), per-IP sliding-window rate limiting (300 req/min prod, 200 api), request-id (`x-request-id`), CORS origin echo in prod + `OPTIONS 204`, health `/api/health` + `/health`, graceful SIGTERM/SIGINT 10s shutdown, `x-forwarded-for` client IP, expanded MIME types, env validation at startup.
+- `netlify/functions/api.mjs`: same security headers, CORS preflight, 12 MB payload cap, JSON parse guard.
+- `src/api/app.mjs`: token format validation (hex 32-128), path sanitization (length, null byte), error logging capped (no stack leak).
+
+**Storage layer:**
+- `src/storage/index.mjs`: validates `STORAGE` env (allowlist `json|airtable|blobs`), unknown falls back to json with warning, `DATA_FILE` traversal guard, early check for Airtable keys.
+- `src/storage/json-file.mjs`: audit_log rotation — cap 2000 entries, trim oldest 500 on overflow to prevent unbounded growth.
+- `src/storage/netlify-blobs.mjs`: per-table write lock (`withLock`) to prevent concurrent read-modify-write races, same audit rotation.
+- `src/storage/airtable.mjs`: field-name allowlist (`SAFE_FIELD_RE`), `sanitizeField`, `formulaValue` finite/boolean/escape hardening.
+
+**API hardening:**
+- `src/api/handlers/admin.mjs`: `paginate()` helper (default 200, max 500, offset, total metadata) applied to `/admin/candidates`, `/admin/users`, `/admin/questions`, `/admin/assessments`, `/admin/audit`; `POST /admin/candidates` and `PATCH` check `role.active===false`.
+- `src/api/handlers/candidate.mjs`: timer enforcement is now correct — `rawRemainingMs` is source of truth (not clamped `remainingMs`), grace 5 s, hard-expired (< -grace) discards client answer + `integrityPatch time_expired` auto-advanced as blank, soft expiry records blank response (`mcq_multi []` / `text {text:'',transcript:'',source:'timed_out'}` / else `''`) locked, review phase auto-advances to answer on expiry with `phase_advanced:true`, validation and `persistableAnswer` use `answerToLock` not `body.answer`, spoken missing still integrityPatch + audit.
+
+Regression: all suites green — **278/278 Node, 39 smoke, 216 feature**.
 
 ## 🧹 Audit pass: tightening API validation (latest)
 
