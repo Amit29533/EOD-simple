@@ -912,6 +912,13 @@ export async function usersView(view) {
       required: values?.role === 'candidate',
       help: values ? 'Candidate portal users must stay linked to exactly one candidate record.' : 'Required only when Role is candidate; ignored for other roles.',
     }]),
+    // New candidate users are auto-allocated the default 50-question
+    // assessment — this is the switch that turns that off for one user.
+    // Create-only: editing an account never (re-)allocates.
+    ...(!values ? [{
+      name: 'auto_allocate', label: 'Auto-allocate a 50-question assessment', type: 'checkbox', value: true,
+      help: 'Candidate users get their assessment automatically — no manual Allocate step. Ignored for other roles.',
+    }] : []),
   ];
 
   view.querySelector('#import-users').onclick = () => importCandidatesModal(() => usersView(view));
@@ -927,8 +934,19 @@ export async function usersView(view) {
       }
       const body = { ...vals };
       if (body.role !== 'candidate') delete body.candidate_id;
-      const out = await attempt(() => api('/admin/users', { method: 'POST', body }), { okMessage: `User "${vals.username}" created` });
-      if (out) usersView(view);
+      const out = await attempt(() => api('/admin/users', { method: 'POST', body }));
+      if (!out) return;
+      // The account is created either way — the toast then says whether its
+      // assessment was auto-allocated or why it was skipped.
+      const alloc = vals.role === 'candidate' ? out.auto_allocation : null;
+      if (alloc?.allocated) {
+        toast(`User "${vals.username}" created · ${alloc.question_count}-question assessment auto-allocated (${alloc.role_name})`, 'success');
+      } else if (alloc && !alloc.skipped) {
+        toast(`User "${vals.username}" created · assessment not auto-allocated: ${alloc.reason}`, 'success');
+      } else {
+        toast(`User "${vals.username}" created`, 'success');
+      }
+      usersView(view);
       return;
     }
   };
@@ -1764,6 +1782,11 @@ function importCandidatesModal(onDone) {
         <small>Each candidate gets a candidate-role login. Leave <span class="mono">Username</span> /
         <span class="mono">Password</span> blank and they are generated; credentials are shown once here.</small></span>
     </label>
+    <label class="import-toggle" id="ic-alloc-row">
+      <input type="checkbox" id="ic-alloc" checked />
+      <span><b>Auto-allocate a 50-question assessment</b>
+        <small>Each new portal user gets their assessment automatically — no manual Allocate step per candidate.</small></span>
+    </label>
     <p class="small muted" style="margin:11px 0 0">
       Columns: <b>Name</b> · Email · Current title · Years of experience · Target role · Pipeline stage ·
       Username · Password · Notes (plus Phone, Location, Source).
@@ -1786,6 +1809,12 @@ function importCandidatesModal(onDone) {
         <span class="small muted">of ${r.total} data ${r.total === 1 ? 'row' : 'rows'}
           ${r.create_users ? '· portal users will be created' : '· candidates only'}</span>
       </div>
+      ${r.create_users ? `<p class="small muted" style="margin:8px 0 0">${
+        r.auto_allocate
+          ? (r.would_auto_allocate
+            ? `↳ <b>${r.would_auto_allocate}</b> assessment${r.would_auto_allocate === 1 ? '' : 's'} will be auto-allocated (50 questions each)${r.auto_skipped ? ` — ${r.auto_skipped} row${r.auto_skipped === 1 ? '' : 's'} skipped (no track or empty bank)` : ''}.`
+            : '↳ No assessments can be auto-allocated yet (no track with questions) — allocate manually after importing.')
+          : '↳ Automatic allocation is off — allocate manually after importing.'}</p>` : ''}
       ${r.preview.length ? `
         <div class="preview-scroll" style="max-height:26vh;margin-top:12px">
           <table class="data"><thead><tr>
@@ -1817,11 +1846,14 @@ function importCandidatesModal(onDone) {
   const renderSuccess = (out) => {
     const report = part('#ic-report');
     const creds = out.credentials || [];
+    const skipped = (out.auto_allocations || []).filter((a) => !a.allocated).length;
     report.innerHTML = `
       <div class="import-summary">
         ${badge(`${out.imported} imported`, 'green')}
         ${out.users_created ? badge(`${out.users_created} user${out.users_created === 1 ? '' : 's'} created`, 'blue') : ''}
+        ${out.auto_allocated ? badge(`${out.auto_allocated} assessment${out.auto_allocated === 1 ? '' : 's'} auto-allocated`, 'green') : ''}
       </div>
+      ${skipped ? `<p class="small muted" style="margin:8px 0 0">${skipped} row${skipped === 1 ? '' : 's'} imported without an assessment (no track or empty bank) — allocate manually from the candidate record.</p>` : ''}
       ${creds.length ? `
         <div class="preview-scroll" style="max-height:32vh;margin-top:12px">
           <table class="data"><thead><tr><th>Name</th><th>Username</th><th>Password</th></tr></thead><tbody>
@@ -1857,9 +1889,10 @@ function importCandidatesModal(onDone) {
           }
           btn.disabled = true;
           const createUsers = part('#ic-users')?.checked !== false;
+          const autoAllocate = part('#ic-alloc')?.checked !== false;
           const out = await attempt(() => api('/admin/candidates/import', {
             method: 'POST',
-            body: { ...payload, dry_run: false, create_users: createUsers },
+            body: { ...payload, dry_run: false, create_users: createUsers, auto_allocate: autoAllocate },
           }));
           btn.disabled = false;
           if (!out) return;
@@ -1880,6 +1913,7 @@ function importCandidatesModal(onDone) {
       const drop = root.querySelector('#ic-drop');
       const name = root.querySelector('#ic-name');
       const usersToggle = root.querySelector('#ic-users');
+      const allocToggle = root.querySelector('#ic-alloc');
       const report = root.querySelector('#ic-report');
       const importBtn = [...root.querySelectorAll('.m-foot .btn')].pop();
       importBtn.disabled = true;
@@ -1903,10 +1937,11 @@ function importCandidatesModal(onDone) {
         }
 
         const createUsers = usersToggle.checked !== false;
+        const autoAllocate = allocToggle.checked !== false;
         try {
           const out = await api('/admin/candidates/import', {
             method: 'POST',
-            body: { ...payload, dry_run: true, create_users: createUsers },
+            body: { ...payload, dry_run: true, create_users: createUsers, auto_allocate: autoAllocate },
           });
           checked = out;
           renderReport(out);
@@ -1921,6 +1956,7 @@ function importCandidatesModal(onDone) {
       drop.onclick = (e) => { if (!e.target.closest('button')) file.click(); };
       file.onchange = () => { if (file.files[0]) check(file.files[0]); };
       usersToggle.onchange = () => { if (lastFile) check(lastFile); };
+      allocToggle.onchange = () => { if (lastFile) check(lastFile); };
       drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('over'));
       drop.addEventListener('drop', (e) => {

@@ -16,8 +16,8 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | GET    | /admin/dashboard              | KPIs, pipeline, statuses, activity                |
 | CRUD   | /admin/candidates[/:id]       | intake fields, stage, notes, timeline. DELETE requires `{password}` (the signed-in admin's password) and cascades the linked portal user, their sessions and open assessments; blocked (409) once a report is finalized |
 | GET    | /admin/candidates/import-template | downloadable `.csv` template (Name, Email, Target role, Username, Password, …) |
-| POST   | /admin/candidates/import      | bulk create candidates (+ linked portal users when `create_users: true`); accepts `csv` or base64 `file_base64`, `dry_run: true` validates without writing; blank username derived from email, blank password generated; credentials returned once |
-| CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate   |
+| POST   | /admin/candidates/import      | bulk create candidates (+ linked portal users when `create_users: true`); accepts `csv` or base64 `file_base64`, `dry_run: true` validates without writing; blank username derived from email, blank password generated; credentials returned once; each new portal user is auto-allocated a 50-question assessment unless `auto_allocate: false` |
+| CRUD   | /admin/users                  | provision users (admin-only) + reset/deactivate; candidate users are auto-allocated a 50-question assessment (their target track, else the workspace default; `role_id`/`assessor_id`/`question_count` steer it, `auto_allocate: false` provisions the login only) |
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |
 | GET/POST/PATCH/DELETE | /admin/questions[/:id] | role/competency question bank, validated per type               |
