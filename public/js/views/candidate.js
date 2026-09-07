@@ -85,7 +85,7 @@ function renderExamGate(view, d, onStart) {
         <p class="muted">You are about to start a timed, proctored-style assessment for <b>${esc(d.assessment.role?.name || 'this role')}</b>. ${total} question${total === 1 ? '' : 's'} will be presented one at a time. You cannot return to a question once it has passed.</p>
         <ul class="exam-rules">
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
-          <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer.</li>
+          <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer. Multi-select items score only on an exact match — any incorrect choice scores the question at zero, with no partial credit.</li>
           <li><b>Open / scenario:</b> 60 seconds to review the scenario, then 2 minutes to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
           <li><b>Microphone.</b> An open question cannot be locked without a recording, so allow the browser's microphone prompt. Granting access on the review screen keeps the dialog from eating your answer time.</li>
           <li><b>Integrity.</b> Copying the question is blocked. Switching tabs, pasting, or leaving fullscreen is logged.</li>
@@ -460,13 +460,18 @@ async function runExamSession(view, id, payload) {
       };
     } else if (q.type === 'mcq_single' || q.type === 'mcq_multi') {
       const multi = q.type === 'mcq_multi';
-      let val = multi ? (Array.isArray(currentAnswer) ? [...currentAnswer] : []) : (typeof currentAnswer === 'string' ? currentAnswer : null);
-      body.innerHTML = (q.options || []).map((o) => {
+      let val = multi
+        ? (Array.isArray(currentAnswer) ? [...currentAnswer] : (currentAnswer ? [String(currentAnswer)] : []))
+        : (typeof currentAnswer === 'string' ? currentAnswer : null);
+      body.innerHTML = ((q.options || []).map((o) => {
         const selected = multi ? val.includes(o.id) : val === o.id;
         return `<label class="opt ${selected ? 'selected' : ''}">
           <input type="${multi ? 'checkbox' : 'radio'}" name="q-cur" value="${esc(o.id)}" ${selected ? 'checked' : ''}/>
           <span>${esc(o.label)}</span></label>`;
-      }).join('') || '<div class="muted small">No options configured.</div>';
+      }).join('') || '<div class="muted small">No options configured.</div>')
+        + (multi
+          ? '<div class="small muted" style="margin-top:8px">Select every correct option. Any incorrect choice scores this question at zero — there is no partial credit.</div>'
+          : '');
       body.querySelectorAll('input').forEach((inp) => {
         inp.onchange = () => {
           if (multi) val = [...body.querySelectorAll('input:checked')].map((x) => x.value);

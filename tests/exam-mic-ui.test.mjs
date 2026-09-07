@@ -220,6 +220,36 @@ test('the review window tells the candidate to record and offers a microphone pr
   }
 });
 
+test('multi-select exam copy states that any incorrect choice scores zero', { skip: SKIP }, async () => {
+  const q = {
+    id: 'q3', competency_id: 'comp1', type: 'mcq_multi', order: 2, points: 4,
+    prompt: 'Which statements are true?',
+    help_text: '', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }],
+    difficulty: 'foundation', pin_first: false, audio_required: false,
+  };
+  const payload = () => ({
+    assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
+    exam: {
+      index: 2, total: 10, phase: 'answer', remaining_ms: 28_000, server_now: new Date().toISOString(),
+      budgets: { review_ms: 0, answer_ms: 30_000 }, integrity: {}, complete: false,
+    },
+    current_question: q, current_answer: null, competency: null, questions: [q], competencies: [], answers: {},
+  });
+  const ctx = await setupDom({ payload });
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+
+    assert.equal(view.querySelectorAll('input[type=checkbox]').length, 3, 'multi-select renders checkboxes');
+    assert.match(view.textContent, /no partial credit/i);
+    assert.match(view.textContent, /any incorrect choice scores this question at zero/i);
+  } finally {
+    teardown(ctx);
+  }
+});
+
 test('a browser that cannot capture audio is never hard-locked by the requirement', { skip: SKIP }, async () => {
   const ctx = await setupDom({ payload: () => openQuestionPayload(), capture: false });
   try {

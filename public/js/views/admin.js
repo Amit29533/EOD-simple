@@ -772,6 +772,7 @@ function questionEditorModal(existing, competencies) {
         </div>
         <div id="qe-options-zone">
           <span class="lbl" style="display:block;font-size:12.5px;font-weight:600;color:var(--ink-2);margin-bottom:6px">Options & correct answer(s)</span>
+          <div id="qe-multi-note" class="small muted" style="margin:0 0 8px">Multi-select scoring is all-or-nothing: the candidate must pick every correct option and no others. Any incorrect choice scores the question at zero.</div>
           <div id="qe-opts">${optionRows()}</div>
           <button type="button" class="btn secondary sm" id="qe-add-opt">＋ Add option</button>
         </div>
@@ -837,10 +838,12 @@ function questionEditorModal(existing, competencies) {
         const zone = el.querySelector('#qe-options-zone');
         const rubricZone = el.querySelector('#qe-rubric-zone');
         const micNote = el.querySelector('#qe-mic-note');
+        const multiNote = el.querySelector('#qe-multi-note');
         const syncVisibility = () => {
           zone.style.display = ['mcq_single', 'mcq_multi'].includes(v.type) ? '' : 'none';
           rubricZone.style.display = v.type === 'text' ? '' : 'none';
           if (micNote) micNote.style.display = v.type === 'text' ? '' : 'none';
+          if (multiNote) multiNote.style.display = v.type === 'mcq_multi' ? '' : 'none';
         };
         syncVisibility();
         const wireOpts = () => {
