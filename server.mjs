@@ -43,6 +43,10 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'content-type': isObj ? 'application/json; charset=utf-8' : (headers['content-type'] || 'application/octet-stream'),
     'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'SAMEORIGIN',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    'permissions-policy': 'camera=(), microphone=(self), geolocation=()',
     ...headers,
   });
   res.end(payload);

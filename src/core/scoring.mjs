@@ -187,7 +187,7 @@ export function validateFrameworkConfig(config) {
   } else {
     for (const b of bands) {
       if (!b.key || !b.label) problems.push('Every band needs a key and a label.');
-      if (!Number.isFinite(Number(b.min)) || b.min < 0 || b.min > 100)
+      if (!Number.isFinite(Number(b.min)) || Number(b.min) < 0 || Number(b.min) > 100)
         problems.push(`Band "${b.label || b.key}" min must be between 0 and 100.`);
     }
   }

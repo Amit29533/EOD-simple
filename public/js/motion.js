@@ -60,14 +60,15 @@ export function staggerIn(root, selector = '.card, .stat, .q-card, .activity-ite
  * @param {object} opts - { duration, suffix, prefix }
  */
 export function countUp(el, to, { duration = 1200, suffix = '', prefix = '' } = {}) {
-  if (!el) return;
+  if (!el || to == null || Number.isNaN(Number(to))) return;
   if (reduceMotion()) { el.textContent = `${prefix}${to}${suffix}`; return; }
   let start = null;
+  const target = Number(to);
   const tick = (now) => {
     if (start === null) start = now;
     const t = Math.min(1, (now - start) / duration);
     const eased = 1 - Math.pow(1 - t, 4); // ease-out quart
-    el.textContent = `${prefix}${Math.round(to * eased)}${suffix}`;
+    el.textContent = `${prefix}${Math.round(target * eased)}${suffix}`;
     if (t < 1) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

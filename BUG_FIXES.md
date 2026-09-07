@@ -3,7 +3,7 @@
 ## Summary
 The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **259/259 Node tests**, **39/39 smoke tests**, and **202/202 feature tests** pass.
+Current verification: **266/266 Node tests**, **39/39 smoke tests**, and **206/206 feature tests** pass.
 
 ---
 
@@ -587,7 +587,7 @@ body {
 
 **Total Bugs Fixed (original audit)**: 7
 **Total Improvements (original audit)**: 6
-**Current verification**: 99/99 Node tests · 39/39 smoke tests · 196/196 feature tests (100%)
+**Current verification**: 266/266 Node tests · 39/39 smoke tests · 206/206 feature tests (100%)
 **Files Modified (original audit)**: 5
 **Lines Changed (original audit)**: ~120
 **Time Spent**: Comprehensive audit and fix
