@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { newId } from '../core/ids.mjs';
+import { AUDIT_TABLE, trimAuditRows } from './audit-rotation.mjs';
 
 /** Local JSON-file store. Used for development, demos and tests. Not for Netlify runtime. */
 export function createJsonStore(file = 'data/ecod.json') {
@@ -66,15 +67,7 @@ export function createJsonStore(file = 'data/ecod.json') {
         const id = data.id || newId();
         const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
         table(t)[id] = rec;
-        // Audit log rotation: keep max 2000 entries, trim oldest 500 when over
-        if (t === 'audit_log') {
-          const all = Object.values(table(t));
-          if (all.length > 2000) {
-            all.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-            const toDelete = all.slice(0, 500);
-            for (const r of toDelete) delete table(t)[r.id];
-          }
-        }
+        if (t === AUDIT_TABLE) trimAuditRows(table(t));
         persist();
         return { ...rec };
       });
@@ -94,6 +87,9 @@ export function createJsonStore(file = 'data/ecod.json') {
           table(t)[id] = rec;
           return rec;
         });
+        // Rotation applies here too: a bulk audit insert that skipped it would
+        // be a hole in the cap.
+        if (recs.length && t === AUDIT_TABLE) trimAuditRows(table(t));
         if (recs.length) persist();
         return recs.map((r) => ({ ...r }));
       });
@@ -106,6 +102,27 @@ export function createJsonStore(file = 'data/ecod.json') {
         rec.updated_at = new Date().toISOString();
         persist();
         return { ...rec };
+      });
+    },
+    /**
+     * Batch update: one persist for the whole batch, mirroring insertMany.
+     * `patches` is an ordered list of { id, patch }; the result mirrors it, with
+     * null where the id was not found (same per-row contract as update()).
+     */
+    async updateMany(t, patches = []) {
+      return withLock(() => {
+        const rows = table(t);
+        let touched = 0;
+        const out = patches.map(({ id, patch }) => {
+          const rec = rows[id];
+          if (!rec) return null;
+          Object.assign(rec, patch, { id });
+          rec.updated_at = new Date().toISOString();
+          touched += 1;
+          return { ...rec };
+        });
+        if (touched) persist();
+        return out;
       });
     },
     async remove(t, id) {

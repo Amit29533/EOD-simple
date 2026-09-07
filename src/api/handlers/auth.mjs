@@ -36,7 +36,7 @@ setInterval(() => {
 }, 60_000).unref?.();
 
 export function authHandlers(route) {
-  route('POST', '/auth/login', 'public', async ({ store, body, helpers, audit: _a }) => {
+  route('POST', '/auth/login', 'public', async ({ store, body, helpers }) => {
     const need = missing(body, ['username', 'password']);
     if (need.length) return bad('Username and password are required.');
     const username = str(body.username, 100).toLowerCase();

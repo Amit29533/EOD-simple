@@ -3,7 +3,7 @@ import {
   EXAM_OPEN_REVIEW_SECONDS,
   EXAM_OPEN_ANSWER_SECONDS,
 } from '../core/constants.mjs';
-import { promptKey, mergeDuplicateMetadata } from '../core/question-selection.mjs';
+import { dedupeQuestions } from '../core/question-selection.mjs';
 // The open/spoken answer contract lives in core so the exam session, the admin
 // write path and the published catalogue all read the same rule. Re-exported
 // from here because the exam session is where candidates meet it.
@@ -19,23 +19,9 @@ export function sortedQuestions(snap) {
   // spacing and case differences between two stored copies of the same
   // question must not let it be asked twice). The surviving row inherits the
   // oral metadata of the dropped twin so the microphone requirement, pin and
-  // question-set membership survive the merge.
-  const ids = new Map();
-  const prompts = new Map();
-  const rows = [];
-  for (const q of (snap?.questions || [])) {
-    if (!q) continue;
-    const idKey = q.id ? `id:${q.id}` : '';
-    const promptId = q.prompt ? promptKey(q.prompt) : '';
-    const keptAt = (idKey && ids.get(idKey)) ?? (promptId && prompts.get(promptId));
-    if (Number.isInteger(keptAt)) {
-      rows[keptAt] = mergeDuplicateMetadata(rows[keptAt], q);
-      continue;
-    }
-    if (idKey) ids.set(idKey, rows.length);
-    if (promptId) prompts.set(promptId, rows.length);
-    rows.push(q);
-  }
+  // question-set membership survive the merge. Same rule the allocator uses,
+  // from one shared implementation (core/question-selection.mjs).
+  const rows = dedupeQuestions(snap?.questions || []);
   // Restore the spoken-answer contract before partitioning, so a frozen row
   // that lost its flags still pins first and demands a recorded answer.
   const healed = applySpokenContract(rows);
@@ -67,19 +53,50 @@ export function budgetsFor(q) {
   return { review_ms: 0, answer_ms: EXAM_MCQ_SECONDS * 1000 };
 }
 
+/**
+ * The current question's start time, or null when the state has no usable one.
+ *
+ * Only a real string is parsed. Handing a number to `Date.parse` coerces it to
+ * a string that *does* parse — `Date.parse(0)` is 2000-01-01 — and that is
+ * exactly what made a state with a missing clock read as 26 years overdue: the
+ * exam auto-advanced through every question with blank answers and a
+ * `time_expired` entry each time. `null` here means "the clock starts now".
+ */
+function parseQuestionStartedAt(state) {
+  const raw = state?.question_started_at;
+  if (typeof raw !== 'string' || !raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Budget in force for the current question and phase. */
+function activeBudgetMs(q, state) {
+  const b = budgetsFor(q);
+  return isOpenQuestion(q) && (state?.phase || 'answer') === 'review' ? b.review_ms : b.answer_ms;
+}
+
+/**
+ * Milliseconds left on the current question. Unclamped, so a caller can tell
+ * "just expired" from "long expired" (the exam grace window relies on it).
+ */
+export function remainingTimeMs(q, state, now = Date.now()) {
+  return activeBudgetMs(q, state) - (now - (parseQuestionStartedAt(state) ?? now));
+}
+
 export function remainingMs(q, state, now = Date.now()) {
-  const started = Date.parse(state.question_started_at || 0) || now;
-  const budget = isOpenQuestion(q) && state.phase === 'review'
-    ? budgetsFor(q).review_ms
-    : budgetsFor(q).answer_ms;
-  return Math.max(0, budget - (now - started));
+  return Math.max(0, remainingTimeMs(q, state, now));
 }
 
 export function ensureQuizState(a, questions) {
   const qs = questions || sortedQuestions(a.snapshot_json);
   const existing = a.quiz_state && typeof a.quiz_state === 'object' ? a.quiz_state : null;
   if (existing && Number.isInteger(existing.index)) {
-    return { ...existing, events: Array.isArray(existing.events) ? existing.events : [] };
+    // Backfill a clock a partial/legacy state is missing, so the restored
+    // question starts a fresh budget instead of reading as already expired.
+    const healed = parseQuestionStartedAt(existing) === null
+      ? { ...existing, question_started_at: new Date().toISOString() }
+      : existing;
+    return { ...healed, events: Array.isArray(existing.events) ? existing.events : [] };
   }
   return {
     index: 0,
@@ -96,31 +113,45 @@ export function ensureQuizState(a, questions) {
   };
 }
 
-const INTEGRITY_EVENT_KEYS = {
-  blur: 'blur',
-  copy: 'copy',
-  paste: 'paste',
-  visibility: 'visibility',
-  contextmenu: 'contextmenu',
-  fullscreen_exit: 'fullscreen_exit',
-  tab_switch: 'tab_switch',
-  tab_return: 'tab_return',
-  window_blur: 'window_blur',
-  browser_close: 'browser_close',
-  exam_exit: 'exam_exit',
-  exam_reopen: 'exam_reopen',
-  exam_start: 'exam_start',
-  multi_window: 'multi_window',
-  devtools_key: 'devtools_key',
-  devtools_resize: 'devtools_resize',
-  copy_attempt: 'copy_attempt',
-  cut_attempt: 'cut_attempt',
-  paste_attempt: 'paste_attempt',
-  screenshot: 'screenshot',
+/**
+ * Known integrity event names. A `Set` rather than an object literal: with an
+ * object, `KEYS[eventName]` resolves inherited members for a browser that
+ * reports an event called `constructor` or `toString`, and the counter was then
+ * filed under a garbage key instead of `other`.
+ */
+const INTEGRITY_EVENT_KEYS = new Set([
+  'blur',
+  'copy',
+  'paste',
+  'visibility',
+  'contextmenu',
+  'fullscreen_exit',
+  'tab_switch',
+  'tab_return',
+  'window_blur',
+  'browser_close',
+  'exam_exit',
+  'exam_reopen',
+  'exam_start',
+  'multi_window',
+  'devtools_key',
+  'devtools_resize',
+  'copy_attempt',
+  'cut_attempt',
+  'paste_attempt',
+  'screenshot',
   // Recorded by the API itself (not the candidate's browser) when an
   // open-question lock carries no audio — see handlers/candidate.mjs.
-  spoken_answer_missing: 'spoken_answer_missing',
-};
+  'spoken_answer_missing',
+]);
+
+/**
+ * How much of the raw event log is kept on the assessment record. Counters are
+ * exact and unbounded; the history is a ring, because every append rewrites
+ * the whole assessment (and, on the file/blob adapters, the whole store), so an
+ * unbounded log turns a chatty or misbehaving client into quadratic writes.
+ */
+export const MAX_INTEGRITY_EVENTS = 200;
 
 /**
  * Record one integrity event. `detail`, `question_index` and `question_id` are
@@ -131,8 +162,10 @@ const INTEGRITY_EVENT_KEYS = {
 export function integrityPatch(state, event, detail = '', { question_index = null, question_id = '', question_prompt = '' } = {}) {
   const safeEvent = String(event || '').slice(0, 80);
   if (!safeEvent) return state;
-  const key = INTEGRITY_EVENT_KEYS[safeEvent] || 'other';
-  const integrity = { ...(state.integrity || {}) };
+  const key = INTEGRITY_EVENT_KEYS.has(safeEvent) ? safeEvent : 'other';
+  // Counters live on a null-prototype object so an event named `__proto__`
+  // cannot reach the prototype chain through the write below.
+  const integrity = { __proto__: null, ...state.integrity };
   integrity[key] = (integrity[key] || 0) + 1;
   const line = {
     at: new Date().toISOString(),
@@ -142,5 +175,12 @@ export function integrityPatch(state, event, detail = '', { question_index = nul
     question_id: String(question_id || '').slice(0, 80),
     question_prompt: String(question_prompt || '').slice(0, 200),
   };
-  return { ...state, integrity, events: [...(state.events || []), line] };
+  const events = [...(state.events || []), line];
+  const dropped = (state.events_dropped || 0) + Math.max(0, events.length - MAX_INTEGRITY_EVENTS);
+  return {
+    ...state,
+    integrity,
+    events: events.slice(-MAX_INTEGRITY_EVENTS),
+    events_dropped: dropped || undefined,
+  };
 }

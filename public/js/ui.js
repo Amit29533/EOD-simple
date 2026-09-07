@@ -13,9 +13,12 @@ export const initials = (name = '') => name.split(/\s+/).map((w) => w[0]).filter
 export function badge(text, tone = 'grey') {
   return `<span class="badge ${tone}">${esc(text)}</span>`;
 }
+// `untested` is a real verdict: the paper simply carried no question for that
+// competency, which must never be displayed as (or scored like) a failure.
 export const gapBadge = (c) => c.status === 'critical_gap' ? badge(`Gap ${c.gap} · critical`, 'red')
   : c.status === 'moderate_gap' ? badge(`Gap ${c.gap}`, 'amber')
-  : c.status === 'strength' ? badge('Strength', 'green') : badge('On target', 'green');
+  : c.status === 'strength' ? badge('Strength', 'green')
+  : c.status === 'untested' ? badge('Not assessed', 'grey') : badge('On target', 'green');
 
 export const loading = (text = 'Loading…') => `<div class="loading"><span class="spinner"></span><span>${esc(text)}</span></div>`;
 export const emptyState = (title, sub = '', emoji = '') =>

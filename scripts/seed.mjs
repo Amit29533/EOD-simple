@@ -91,7 +91,7 @@ console.log('[seed] demo candidates created; rohit.verma linked to candidate rec
 
 // ---- assessment for Rohit (allocated to Priya, awaiting the candidate) --
 const snapshot = await buildSnapshot(store, role.id);
-const rohitAssessment = await store.insert('assessments', {
+await store.insert('assessments', {
   candidate_id: candIds.rohit, role_id: role.id, assessor_id: userIds['priya.nair'],
   status: 'assigned', snapshot_json: snapshot, report_json: null,
   overall_pct: null, readiness_key: '', readiness_label: '', created_by: userIds.admin,

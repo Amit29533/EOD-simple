@@ -12,6 +12,15 @@
  * import can never corrupt the shipped catalogue.
  */
 
+// The duplicate check below and the serving-side allocator must agree on what
+// "the same question" means: this module used to keep its own copy of the key
+// function, which normalized dash and quote variants differently, so a prompt
+// could pass the import check and then be silently merged (never served) by
+// `uniqueBy`. Both now import the single rule from core/prompt-key.mjs.
+import { promptKey } from './prompt-key.mjs';
+
+export { promptKey };
+
 /** Answer modes the generator understands. */
 export const QUESTION_MODES = ['objective', 'open'];
 
@@ -45,7 +54,7 @@ const OPTION_PATTERNS = [
 ];
 
 const LETTERS = 'abcdefgh';
-const OPTION_MARKER = /\n\s*(?:[•▪●*·\-]\s*)?([A-H])[.)]\s*/g;
+const OPTION_MARKER = /\n\s*(?:[•▪●*·-]\s*)?([A-H])[.)]\s*/g;
 
 /**
  * Some worksheet exports embed an objective question's answer options inside
@@ -86,11 +95,16 @@ export function canonicalizeRow(row = {}) {
 
   for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
     for (const alias of aliases) {
-      if (row[alias] !== undefined && String(row[alias]).trim() !== '') {
-        out[field] = String(row[alias]).trim();
-        seen.add(alias);
-        break;
-      }
+      const value = row[alias];
+      // A structured value is never text. `String({a:1})` is the literal
+      // "[object Object]", which used to be stored as a prompt (and every such
+      // row then looked identical to the duplicate check and the dedupe). Leave
+      // the field unset so the required/length rules report it properly.
+      if (value === undefined || value === null || typeof value === 'object') continue;
+      if (String(value).trim() === '') continue;
+      out[field] = String(value).trim();
+      seen.add(alias);
+      break;
     }
   }
 
@@ -125,12 +139,33 @@ export function canonicalizeRow(row = {}) {
   return out;
 }
 
+/**
+ * Options are the only nested structure a question carries, and they arrive from
+ * three directions: the admin form (JSON), a CSV grid, and the workbook
+ * extraction script. So an entry may legitimately be null, a bare string, a
+ * number, or an object whose label is numeric — and every consumer below assumes
+ * `{ id, label }` with string values. Normalize once here rather than defending
+ * at each use site (an unguarded `o.label.trim()` used to 500 the endpoint).
+ */
+export function sanitizeOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const o of raw) {
+    if (!o || typeof o !== 'object') continue;
+    const label = String(o.label ?? '').trim();
+    if (!label) continue;
+    out.push({ id: String(o.id ?? '').trim(), label });
+  }
+  return out;
+}
+
 /** "B", "b", "2", "Option B", "b,c" -> ['b'] / ['b','c'] */
 export function parseCorrect(raw, options = []) {
   const text = String(raw ?? '').trim();
   if (!text) return [];
-  const byLabel = new Map(options.map((o) => [o.label.toLowerCase(), o.id]));
-  const ids = new Set(options.map((o) => o.id));
+  const opts = sanitizeOptions(options);
+  const byLabel = new Map(opts.map((o) => [o.label.toLowerCase(), o.id]));
+  const ids = new Set(opts.map((o) => o.id));
 
   const picked = [];
   for (const token of text.split(/[,;/|]+|\s+and\s+/i)) {
@@ -194,11 +229,16 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
   ].includes(type)) type = 'open';
   else if (!type) {
     // Infer from shape rather than rejecting: a row with options is objective.
-    type = (row.options || []).length >= 2 ? 'objective' : 'open';
+    type = sanitizeOptions(row.options).length >= 2 ? 'objective' : 'open';
   }
   if (!QUESTION_MODES.includes(type)) errors.push(`Type must be "objective" or "open" (got "${row.type}").`);
 
   // ---- prompt ----------------------------------------------------------
+  // Checked on the raw request, before canonicalization: a structured prompt is
+  // a type error, not something to stringify and store.
+  if (typeof input?.prompt === 'object' && input.prompt !== null) {
+    errors.push('Prompt must be plain text.');
+  }
   const prompt = String(row.prompt ?? '').replace(/\s+/g, ' ').trim();
   if (!prompt) errors.push('Prompt is required.');
   else if (prompt.length < 15) errors.push('Prompt is too short to be a real question.');
@@ -222,7 +262,7 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
   }
 
   // ---- type-specific ---------------------------------------------------
-  const options = (row.options || []).filter((o) => String(o.label ?? '').trim());
+  const options = sanitizeOptions(row.options);
   let correct = [];
   let rubric = String(row.rubric ?? '').trim();
 
@@ -327,19 +367,4 @@ export function validateBatch(rows = [], { modules = [], families = [], existing
   });
 
   return { accepted, rejected, duplicates };
-}
-
-/** Comparison key for duplicate detection: typography-insensitive, label-insensitive. */
-export function promptKey(text) {
-  return String(text ?? '')
-    .normalize('NFKC')
-    // Strip a leading enumerator/label (\"COMMON QUESTION —\") so the same prompt
-    // with or without its historic label never slips past duplicate detection.
-    .replace(/^[A-Z0-9][A-Z0-9 '/]{1,40}\s*[-\u2013\u2014\u2015\u2212:]\s+/, '')
-    .replace(/[\u2018\u2019\u201b]/g, "'")
-    .replace(/[\u201c\u201d]/g, '"')
-    .replace(/[\u2010-\u2015]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
 }

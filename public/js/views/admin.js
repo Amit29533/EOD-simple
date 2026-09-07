@@ -3,7 +3,7 @@ import { state } from '../app.js';
 import {
   esc, fmtDate, fmtDateTime, badge, dataTable, loading, emptyState, toast, attempt,
   formModal, confirmModal, pipelineStepper, stageBadge, assessmentStatusBadge, readinessBadge,
-  num, pct, modal,
+  modal,
 } from '../ui.js';
 import { renderReport } from './report.js';
 

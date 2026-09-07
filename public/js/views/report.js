@@ -82,13 +82,30 @@ function renderWeightLegend(report) {
   </li>`).join('');
 }
 
+/**
+ * A competency the capped paper never reached has a null score. That is a real
+ * verdict ("not asked"), never a 0% failure, so every renderer below needs the
+ * same test.
+ */
+const isUntested = (c) => c.score_pct === null || c.score_pct === undefined;
+
 function renderCapabilityBars(report) {
   const competencies = report.competencies || [];
   if (!competencies.length) return `<div class="report-chart-empty">No competency data available.</div>`;
   return competencies.map((c, index) => {
-    const score = clamp(c.score_pct);
-    const target = clamp((finite(c.target_level, 0) / 5) * 100);
     const color = CHART_COLORS[index % CHART_COLORS.length];
+    const target = clamp((finite(c.target_level, 0) / 5) * 100);
+    // `score_pct: null` = the paper asked nothing for this competency. Draw an
+    // empty track with a "not assessed" value rather than a 0% bar, which would
+    // read as a total failure on a capability nobody tested.
+    if (isUntested(c)) {
+      return `<div class="report-bar-row" role="img" aria-label="${esc(c.name)} not assessed in this sitting, target level ${esc(c.target_level)}">
+      <div class="report-bar-label"><span>${esc(c.name)}</span><small class="muted">not covered by this paper · L${esc(c.target_level)} target</small></div>
+      <div class="report-bar-track"><i class="report-target-marker" style="left:${target}%" title="Target level marker"></i></div>
+      <b class="report-bar-value muted">—</b>
+    </div>`;
+    }
+    const score = clamp(c.score_pct);
     return `<div class="report-bar-row" role="img" aria-label="${esc(c.name)} score ${rounded(score)} percent, target level ${esc(c.target_level)}">
       <div class="report-bar-label"><span>${esc(c.name)}</span><small>L${esc(c.observed_level)} observed · L${esc(c.target_level)} target</small></div>
       <div class="report-bar-track"><span class="report-bar-fill" style="width:${score}%;background:${color}"></span><i class="report-target-marker" style="left:${target}%" title="Target level marker"></i></div>
@@ -105,7 +122,16 @@ function reportStats(report) {
   const questions = finite(report.questions_evaluated, questionFallback);
   const earned = finite(report.points_earned, earnedFallback);
   const max = finite(report.points_available, maxFallback);
-  return { questions, earned: rounded(earned), max: rounded(max), gaps: (report.areas_to_improve || []).length };
+  // "4 of 7" when the paper was capped: the count of competencies actually
+  // assessed, so a short sitting is never mistaken for a whole-role verdict.
+  const untested = competencies.filter(isUntested).length;
+  return {
+    questions,
+    earned: rounded(earned),
+    max: rounded(max),
+    gaps: (report.areas_to_improve || []).length,
+    competenciesShown: untested ? `${competencies.length - untested} of ${competencies.length}` : competencies.length,
+  };
 }
 
 export function renderReport(view, { candidate, report, assessor_name, audience }) {
@@ -154,7 +180,7 @@ export function renderReport(view, { candidate, report, assessor_name, audience 
         </div>
         <div class="report-stat-strip" aria-label="Assessment summary">
           <div><span>Overall score</span><b>${esc(pct(report.overall_pct))}</b></div>
-          <div><span>Competencies</span><b>${esc((report.competencies || []).length)}</b></div>
+          <div><span>Competencies</span><b>${esc(stats.competenciesShown)}</b></div>
           <div><span>Questions evaluated</span><b>${esc(stats.questions || '—')}</b></div>
           <div><span>Improvement areas</span><b>${esc(stats.gaps)}</b></div>
         </div>
@@ -194,8 +220,12 @@ export function renderReport(view, { candidate, report, assessor_name, audience 
             ${(report.competencies || []).map((c) => `<tr>
               <td><b>${esc(c.name)}</b>${c.category ? `<div class="small muted">${esc(c.category)}</div>` : ''}</td>
               <td>${esc(c.weight)}</td>
-              <td><div class="row" style="gap:8px">${progressBar(c.score_pct, 70)}<b>${esc(c.score_pct)}%</b></div></td>
-              <td>${levelPips(c.observed_level)} <span class="small muted">L${esc(c.observed_level)}</span></td>
+              <td>${isUntested(c)
+                ? '<span class="small muted">not assessed</span>'
+                : `<div class="row" style="gap:8px">${progressBar(c.score_pct, 70)}<b>${esc(c.score_pct)}%</b></div>`}</td>
+              <td>${isUntested(c)
+                ? '<span class="small muted">—</span>'
+                : `${levelPips(c.observed_level)} <span class="small muted">L${esc(c.observed_level)}</span>`}</td>
               <td><span class="small muted">L${esc(c.target_level)}</span></td>
               <td>${gapBadge(c)}</td>
             </tr>`).join('')}
@@ -223,6 +253,20 @@ export function renderReport(view, { candidate, report, assessor_name, audience 
         <div class="pill-row report-strength-pills">
           ${report.strengths.map((s) => `<span class="chip">${esc(s.competency)} <b>${esc(s.score_pct)}%</b></span>`).join('')}
         </div>
+      </section>` : ''}
+
+      ${(report.not_assessed || []).length ? `
+      <section class="card report-improvement-card report-untested-card">
+        <div class="report-section-head compact"><div><div class="section-kicker">Coverage of this sitting</div><h2>Not covered by this paper</h2><p>This assessment was capped, so these competencies were not asked about at all. They are not gaps — they are untested, and need a later sitting before any verdict is drawn.</p></div><span class="report-section-icon grey">◌</span></div>
+        ${report.not_assessed.map((c, i) => `
+          <div class="report-improvement-row" style="${i ? 'border-top:1px solid var(--line)' : ''}">
+            <div class="row between">
+              <b>${esc(c.competency)}</b>
+              <span>${badge('Not assessed', 'grey')}</span>
+            </div>
+            <div class="small muted report-improvement-meta">Competency weight ${esc(c.weight)} · target level L${esc(c.target_level)}</div>
+            ${c.recommended_focus ? `<div class="report-focus"><b>Suggested focus when assessed</b><span>${esc(c.recommended_focus)}</span></div>` : ''}
+          </div>`).join('')}
       </section>` : ''}
 
       ${fullDetail ? renderBreakdown(report) : ''}

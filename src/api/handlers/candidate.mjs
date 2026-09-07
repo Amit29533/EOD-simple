@@ -3,7 +3,7 @@ import { questionForCandidate, competencyForCandidate, reportForCandidate } from
 import { autoScore, isAutoQuestion } from '../../core/scoring.mjs';
 import { MAX_AUDIO_B64 } from '../../core/constants.mjs';
 import {
-  sortedQuestions, isOpenQuestion, budgetsFor, ensureQuizState, remainingMs, integrityPatch,
+  sortedQuestions, isOpenQuestion, budgetsFor, ensureQuizState, remainingMs, remainingTimeMs, integrityPatch,
 } from '../quiz-session.mjs';
 import {
   requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent,
@@ -75,13 +75,6 @@ function validateAnswerShape(q, value) {
     default:
       return false;
   }
-}
-
-function rawRemainingMs(q, quiz, now) {
-  const started = Date.parse(quiz.question_started_at || 0) || now;
-  const b = budgetsFor(q);
-  const budget = isOpenQuestion(q) && (quiz.phase || 'answer') === 'review' ? b.review_ms : b.answer_ms;
-  return budget - (now - started);
 }
 
 export function candidateHandlers(route) {
@@ -251,7 +244,7 @@ export function candidateHandlers(route) {
     if (!q) return ok({ complete: true, index: quiz.index, total: questions.length });
 
     const now = Date.now();
-    const raw = rawRemainingMs(q, quiz, now);
+    const raw = remainingTimeMs(q, quiz, now);
     const timeExpired = raw <= 0;
     const graceMs = 5000;
     const hardExpired = raw < -graceMs;

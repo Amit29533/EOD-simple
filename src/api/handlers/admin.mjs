@@ -1,7 +1,7 @@
 import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
-  ok, created, bad, notFound, conflict, forbidden, unprocessable,
-  audit, str, num, bool, missing, bulkInsert,
+  ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
+  str, num, bool, missing, bulkInsert, isTextish,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import {
@@ -43,6 +43,15 @@ const MAX_IMPORT_ROWS = 2000;
  */
 const CANDIDATE_TEXT_FIELDS = {
   name: 120, email: 200, phone: 60, current_title: 120, location: 120, source: 120, notes: 4000,
+};
+
+/**
+ * Competency text fields, shared by POST and PATCH for the same reason: PATCH
+ * used to cap every one of them at 1500, so an edit could store a 1500-char
+ * name or category that the create path refuses.
+ */
+const COMPETENCY_TEXT_FIELDS = {
+  name: 160, key: 60, category: 60, description: 1500, enrichment_hint: 1500,
 };
 
 /** The columns the import understands, in the order the template lists them. */
@@ -746,9 +755,12 @@ export function adminHandlers(route) {
     if (problem) return bad(problem);
     const rec = await store.insert('competencies', {
       role_id: body.role_id,
-      key: str(body.key, 60) || str(body.name, 60).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-      name: str(body.name, 160), category: str(body.category, 60) || 'technical',
-      description: str(body.description, 1500), enrichment_hint: str(body.enrichment_hint, 1500),
+      key: str(body.key, COMPETENCY_TEXT_FIELDS.key)
+        || str(body.name, COMPETENCY_TEXT_FIELDS.key).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+      name: str(body.name, COMPETENCY_TEXT_FIELDS.name),
+      category: str(body.category, COMPETENCY_TEXT_FIELDS.category) || 'technical',
+      description: str(body.description, COMPETENCY_TEXT_FIELDS.description),
+      enrichment_hint: str(body.enrichment_hint, COMPETENCY_TEXT_FIELDS.enrichment_hint),
       weight: num(body.weight, 0), target_level: num(body.target_level, 4),
       order: num(body.order, 0), active: body.active !== undefined ? bool(body.active) : true,
     });
@@ -762,8 +774,8 @@ export function adminHandlers(route) {
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return bad('Weight must be 0-100.');
     if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return bad('Target level must be 1-5.');
     const patch = {};
-    for (const f of ['name', 'category', 'description', 'enrichment_hint', 'key'])
-      if (body[f] !== undefined) patch[f] = str(body[f], 1500);
+    for (const [f, max] of Object.entries(COMPETENCY_TEXT_FIELDS))
+      if (body[f] !== undefined) patch[f] = str(body[f], max);
     for (const f of ['weight', 'target_level', 'order']) if (body[f] !== undefined) patch[f] = num(body[f], c[f]);
     if (body.active !== undefined) patch.active = bool(body.active);
     const updated = await store.update('competencies', params.id, patch);
@@ -784,6 +796,7 @@ export function adminHandlers(route) {
   const validateQuestion = (body) => {
     if (!QUESTION_TYPE_KEYS.includes(body.type)) return `Type must be one of: ${QUESTION_TYPE_KEYS.join(', ')}`;
     if (!str(body.prompt)) return 'Question prompt is required.';
+    if (!isTextish(body.prompt)) return 'Question prompt must be plain text.';
     const points = body.points === undefined || body.points === ''
       ? 4
       : Number(body.points);
@@ -791,7 +804,7 @@ export function adminHandlers(route) {
     if (DIFFICULTIES.includes(body.difficulty) === false && body.difficulty !== undefined && body.difficulty !== '')
       return `Difficulty must be one of: ${DIFFICULTIES.join(', ')}`;
     if (body.type === 'mcq_single' || body.type === 'mcq_multi') {
-      const opts = Array.isArray(body.options) ? body.options.filter((o) => str(o.label)) : [];
+      const opts = cleanOptions(body.options);
       if (opts.length < 2) return 'At least two options are required.';
       const ids = new Set(opts.map((o) => o.id));
       const correct = Array.isArray(body.correct_option_ids) ? body.correct_option_ids : [];
@@ -1296,11 +1309,15 @@ export function adminHandlers(route) {
     const candidate = await store.get('candidates', a.candidate_id);
     const quiz = a.quiz_state || {};
     const events = Array.isArray(quiz.events) ? quiz.events : [];
+    // `events` is the retained tail (see MAX_INTEGRITY_EVENTS); the counters and
+    // this count cover every event ever reported, trimmed or not.
+    const dropped = Number(quiz.events_dropped) || 0;
     return ok({
       assessment: { id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at },
       candidate: { id: candidate?.id, name: candidate?.name, current_title: candidate?.current_title || '' },
       integrity: quiz.integrity || {},
-      events_count: events.length,
+      events_count: events.length + dropped,
+      events_truncated: dropped,
       events,
     });
   });
@@ -1351,10 +1368,24 @@ function yearsError(value) {
   return null;
 }
 
+/**
+ * The option entries a request may carry are untrusted: a hand-edited JSON
+ * import or a stale form can post `null`, a bare string or a number inside the
+ * array. Validation and persistence must agree on what survives, so both call
+ * this one cleaner — an option needs to be an object with a non-blank label, and
+ * its id/label are stored exactly as validated (numbers stringified, so an
+ * `options:[{id:1}]` row and a `correct_option_ids:[1]` reference line up).
+ */
+function cleanOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((o) => o && typeof o === 'object')
+    .map((o) => ({ id: str(o.id, 40), label: str(o.label, 500) }))
+    .filter((o) => o.label !== '');
+}
+
 function normalizeQuestion(body, existing = {}) {
-  const options = Array.isArray(body.options)
-    ? body.options.filter((o) => str(o.label)).map((o) => ({ id: str(o.id, 40), label: str(o.label, 500) }))
-    : [];
+  const options = cleanOptions(body.options);
   return {
     role_id: body.role_id || existing.role_id,
     competency_id: body.competency_id || existing.competency_id,

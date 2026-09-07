@@ -1,6 +1,6 @@
 import {
   PIPELINE_STAGES, ASSESSMENT_STATUSES, QUESTION_TYPES, USER_ROLES, DIFFICULTIES,
-  MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE,
+  MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE, APP_VERSION,
 } from '../../core/constants.mjs';
 import { MODULE_GROUPS, MODULES, FAMILIES } from '../../content/rsa-question-bank.mjs';
 import { ok } from '../helpers.mjs';
@@ -24,7 +24,7 @@ export function metaHandlers(route) {
   }));
   route('GET', '/health', 'public', async () => ok({
     ok: true,
-    version: '1.0.0',
+    version: APP_VERSION,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   }));

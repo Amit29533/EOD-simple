@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectQuestions, allocationPreview, promptKey } from '../src/core/question-selection.mjs';
+import {
+  selectQuestions, allocationPreview, dedupeQuestions, promptKey,
+} from '../src/core/question-selection.mjs';
+import { promptKey as intakePromptKey } from '../src/core/question-intake.mjs';
 import { maxRunLength, maxRunOf } from '../src/core/paper-order.mjs';
 
 const comps = [
@@ -244,4 +247,37 @@ test('a legacy flag-less twin merges into its published copy instead of being se
   // The merge must never mutate the caller's question objects.
   assert.equal(withPrompts[0].audio_required, undefined);
   assert.equal(withPrompts[0].question_set, undefined);
+});
+
+test('dedupe catches duplicate prompts even when the rows carry no id', () => {
+  // Regression: `(idKey && ids.get(idKey)) ?? …` yields `''` for an id-less row
+  // and `'' ?? x` is `''` (an empty string is not nullish), so the prompt index
+  // was never consulted and both copies were served.
+  const rows = [
+    { prompt: 'How do you design a lakehouse for a retail client?', type: 'mcq_single' },
+    { prompt: 'How do you design a lakehouse for a retail client?', type: 'mcq_single' },
+  ];
+  assert.equal(dedupeQuestions(rows).length, 1, 'the same prompt is served once');
+  const merged = dedupeQuestions([
+    { prompt: 'Explain the answer.', type: 'text' },
+    { prompt: 'Explain the answer.', type: 'text', audio_required: true, question_set: 'rsa-oral' },
+  ])[0];
+  assert.equal(merged.audio_required, true, 'the twin flags survive the merge');
+  assert.equal(merged.question_set, 'rsa-oral');
+});
+
+test('the authoring path and the serve path agree on prompt identity', () => {
+  // Two private promptKey implementations drifted: a row could pass the
+  // import's duplicate check and then be silently merged (never served) by the
+  // allocator's. They are one shared function now (core/prompt-key.mjs).
+  assert.equal(promptKey, intakePromptKey, 'the very same function');
+  for (const prompt of [
+    'A \u2010 B', 'A \u2011 B', 'A\u201aB\u201eC', 'A \u2035 B', 'A \u2212 B',
+    'COMMON QUESTION — what is a lakehouse?', 'What is a lakehouse\u2026 really?',
+    'Q3: name TWO \u201Cgotchas\u201D',
+  ]) {
+    assert.equal(promptKey(prompt), intakePromptKey(prompt), `same key for ${JSON.stringify(prompt)}`);
+  }
+  // And genuinely different prompts stay different.
+  assert.notEqual(promptKey('What is a lakehouse?'), promptKey('What is a warehouse?'));
 });

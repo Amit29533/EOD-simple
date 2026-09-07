@@ -180,7 +180,8 @@ New design tokens added:
 
 ## Testing
 
-All existing tests pass (74/74):
+All existing tests passed at the time of this pass (74/74; `BUG_FIXES.md` carries the current
+count for the whole suite):
 - ✅ Style token validation
 - ✅ Dark theme screen-scoping
 - ✅ Light palette preservation

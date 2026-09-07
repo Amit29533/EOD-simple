@@ -86,6 +86,13 @@ MODULE_TEST_STRUCTURE.total =
     * (MODULE_TEST_STRUCTURE.technical_objective + MODULE_TEST_STRUCTURE.technical_open)
   + MODULE_TEST_STRUCTURE.non_technical_modules * MODULE_TEST_STRUCTURE.non_technical_open;
 
+/**
+ * Reported by `GET /health`. Kept here (not read from package.json) so the
+ * serverless bundle has no file-system dependency at request time — it must
+ * match `version` in package.json.
+ */
+export const APP_VERSION = '0.1.0';
+
 export const SESSION_TTL_HOURS = 12;
 export const DEFAULT_PORT = 3000;
 

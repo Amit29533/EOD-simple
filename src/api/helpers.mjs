@@ -9,6 +9,15 @@ export const unprocessable = (error, extra = {}) => ({ status: 422, body: { erro
 export const tooMany = (error) => ({ status: 429, body: { error } });
 
 export const str = (v, max = 500) => String(v ?? '').trim().slice(0, max);
+/**
+ * `str()` is deliberately forgiving, which is a hazard for the fields that
+ * identify a record: an object body used to become the literal string
+ * "[object Object]" and be stored as a question prompt. Validators use this to
+ * refuse structured values instead of laundering them into text. Numbers are
+ * still accepted (a form can post `points` where a string is expected, and a
+ * numeric prompt is caught by the length rules).
+ */
+export const isTextish = (v) => v === undefined || v === null || typeof v === 'string' || typeof v === 'number';
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 /**
  * Truthiness for values arriving over HTTP. Covers JSON booleans, HTML form
@@ -42,5 +51,20 @@ export async function bulkInsert(store, table, rows = []) {
   if (typeof store.insertMany === 'function') return store.insertMany(table, rows);
   const out = [];
   for (const data of rows) out.push(await store.insert(table, data));
+  return out;
+}
+
+/**
+ * Batch update over the storage contract, mirroring bulkInsert: `patches` is an
+ * ordered list of { id, patch } and the result keeps that order, with null where
+ * the id does not exist. Adapters that hold the whole table in one file/blob
+ * rewrite it once instead of once per row; others fall back to the loop, so a
+ * repair pass over hundreds of rows never becomes hundreds of full writes.
+ */
+export async function bulkUpdate(store, table, patches = []) {
+  if (!patches.length) return [];
+  if (typeof store.updateMany === 'function') return store.updateMany(table, patches);
+  const out = [];
+  for (const { id, patch } of patches) out.push(await store.update(table, id, patch));
   return out;
 }

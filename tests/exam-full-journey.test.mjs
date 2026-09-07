@@ -781,3 +781,87 @@ test('F4 · a legacy bank of silent open questions allocates a paper that requir
   const openFromLegacyBank = walk.find((q) => q.id === w.ids.open);
   assert.equal(openFromLegacyBank.audio_required, true, 'and the candidate is served the record control');
 });
+
+/* ============================== G. regressions: clock recovery + partial coverage ============================== */
+
+test('G1 · a stored quiz_state with no clock never rushes the candidate through the paper', async () => {
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const tok = await w.login('candidate.one', 'c1-pass-x');
+
+  // A legacy/partial state: an integer cursor, but no question_started_at.
+  await w.store.update('assessments', alloc.id, {
+    quiz_state: { index: 0, phase: 'answer', integrity: {}, events: [] },
+  });
+
+  const g = await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok });
+  assert.equal(g.status, 200);
+  assert.ok(g.body.exam.remaining_ms > 0, 'the question is not born already expired');
+  assert.equal(g.body.exam.index, 0);
+
+  const n = await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: {} });
+  assert.equal(n.status, 200);
+  assert.equal(n.body.index, 1, 'the cursor advances exactly one question');
+
+  const rows = await w.store.list('responses', { assessment_id: alloc.id });
+  assert.equal(rows.length, 0, 'no question is force-recorded as a blank');
+  const after = await w.store.get('assessments', alloc.id);
+  const flagged = Object.values(after.quiz_state.integrity || {}).reduce((s, v) => s + Number(v || 0), 0);
+  assert.equal(flagged, 0, 'no bogus time_expired entries in the proctoring trail');
+  assert.ok(Number.isFinite(Date.parse(after.quiz_state.question_started_at)), 'the clock is healed and persisted');
+});
+
+test('G2 · a paper that cannot cover every competency reports the gap as "untested", not as 0%', async () => {
+  // A role where two of the three competencies hold no questions at all: every
+  // served paper covers only the first. Those two used to be scored 0% — a
+  // fabricated critical gap that also dragged the weighted overall down.
+  const w = await makeWorld();
+  const admin = w.tokens.admin ||= await w.login('admin', 'admin-pass-x');
+  const role = await w.store.insert('roles', { key: 'partial', name: 'Partial Track', technology: 'X', active: true });
+  const [covered, bareA, bareB] = await Promise.all(['Covered', 'Bare A', 'Bare B'].map((name, i) => w.store.insert('competencies', {
+    role_id: role.id, key: `c${i}`, name, weight: [50, 30, 20][i], target_level: 4, order: i + 1, active: true,
+  })));
+  await w.store.insert('questions', {
+    role_id: role.id, competency_id: covered.id, type: 'mcq_single', prompt: 'Which design governs cross-workspace data sharing?',
+    options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], correct_option_ids: ['b'], points: 4, order: 1, active: true,
+  });
+  await w.store.insert('frameworks', { role_id: role.id, name: 'FW', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
+  const cand = await w.store.insert('candidates', { name: 'Partial Candidate', stage: 'assessment', target_role_id: role.id });
+  await w.store.insert('users', {
+    username: 'partial.candidate', name: 'Partial Candidate', role: 'candidate', email: '',
+    candidate_id: cand.id, password_hash: hashPassword('partial-pass-x'), active: true,
+  });
+  const assessor = w.tokens.a1 ||= await w.login('assessor.one', 'a1-pass-x');
+
+  const alloc = await w.call('POST', '/admin/assessments', {
+    token: admin, body: { candidate_id: cand.id, role_id: role.id, assessor_id: w.assessor1.id },
+  });
+  assert.equal(alloc.status, 201, JSON.stringify(alloc.body));
+  const id = alloc.body.id;
+  const served = alloc.body.snapshot_json.questions;
+  assert.equal(served.length, 1, 'the whole bank is the one covered question');
+
+  const ctok = await w.login('partial.candidate', 'partial-pass-x');
+  const submit = await w.call('POST', `/candidate/assessments/${id}/submit`, {
+    token: ctok, body: { answers: { [served[0].id]: 'b' } },
+  });
+  assert.equal(submit.status, 200, JSON.stringify(submit.body));
+
+  const fin = await w.call('POST', `/assessor/assessments/${id}/finalize`, { token: assessor });
+  assert.equal(fin.status, 200, JSON.stringify(fin.body));
+  const report = fin.body.report;
+  assert.equal(report.overall_pct, 100, 'a flawless paper is graded 100, not 50');
+  assert.equal(report.band.key, 'enterprise_ready');
+  assert.deepEqual(report.areas_to_improve, [], 'an untouched competency is not a gap');
+  assert.deepEqual(report.not_assessed.map((c) => c.competency), ['Bare A', 'Bare B']);
+  const byId = Object.fromEntries(report.competencies.map((c) => [c.competency_id, c]));
+  assert.equal(byId[bareA.id].status, 'untested');
+  assert.equal(byId[bareA.id].score_pct, null);
+  assert.equal(byId[covered.id].score_pct, 100);
+
+  // And the candidate-facing projection carries the same honest picture.
+  const card = await w.call('GET', `/candidate/reports/${id}`, { token: ctok });
+  assert.equal(card.status, 200);
+  assert.deepEqual(card.body.report.not_assessed.map((c) => c.competency), ['Bare A', 'Bare B']);
+  assert.equal(card.body.report.overall_pct, 100);
+});

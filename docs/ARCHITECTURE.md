@@ -11,7 +11,11 @@ Express/Fastify/Cloudflare/Hono or folded into a custom application with zero re
 
 ## 2. Storage adapter layer (Airtable now, database later)
 Every persistence call goes through five methods: `list/get/insert/update/remove`
-against named tables with *equality filters only*. Three adapters ship today:
+against named tables with *equality filters only*. Adapters may additionally expose
+`insertMany`/`updateMany` (one write per batch instead of one per row); handlers reach
+them through the `bulkInsert`/`bulkUpdate` helpers, which fall back to a loop when an
+adapter does not implement them — so batching is an optimization, never a requirement.
+Three adapters ship today:
 
 | Adapter            | Use for                                   | Env                                  |
 | ------------------ | ----------------------------------------- | ------------------------------------ |
@@ -237,6 +241,11 @@ assessments.
 - Overall % = competency-weighted blend → **readiness band** from framework thresholds.
 - Gap = `target_level − observed_level` per competency; severity cutoffs from the
   framework; report = band + per-competency table + ordered areas to improve + strengths.
+- A competency the paper never reached (allocations can be capped at 1–50 questions, so
+  this is normal) is **not** scored 0: it is reported `status: 'untested'` with null
+  score/level/gap, excluded from the weighted blend, and listed under `not_assessed`.
+  Absence of evidence is not evidence of absence, and a fabricated 0% would also drag
+  the overall band down for questions nobody was asked.
 
 ## 7. Intentional v1 limits (honest list)
 - JSON/blobs persistence is single-writer; fine at MVP scale, size up via Airtable/Postgres.

@@ -743,7 +743,12 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .report-section-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: 9px; font-weight: 800; }
 .report-section-icon.amber { color: var(--amber); background: var(--amber-bg); }
 .report-section-icon.green { color: var(--green); background: var(--green-bg); }
+.report-section-icon.grey { color: var(--grey); background: var(--grey-bg); }
 .report-improvement-card { border-left: 4px solid var(--amber); }
+/* Competencies a capped paper never reached: deliberately neutral, never red. */
+.report-untested-card { border-left: 4px solid var(--line-strong); }
+.report-untested-card .report-focus { background: var(--grey-bg); }
+.report-untested-card .report-focus b { color: var(--grey); }
 .report-improvement-row { padding: 14px 0; }
 .report-improvement-meta { margin: 5px 0 8px; }
 .report-focus { display: grid; gap: 3px; padding: 10px 12px; border-radius: 8px; color: var(--ink-2); background: var(--amber-bg); font-size: 10.5px; line-height: 1.5; }
