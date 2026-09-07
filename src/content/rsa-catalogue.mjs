@@ -16,7 +16,7 @@ export const RSA_ROLE = {
   name: 'Resident Solutions Architect (RSA)',
   technology: 'Databricks',
   description:
-    'Enterprise track forDatabricks Resident Solutions Architects. Validates lakehouse architecture, data engineering, governance, ML/GenAI delivery, cost & performance optimization, DevOps maturity and customer advisory skills required to embed with enterprise clients.',
+    'Enterprise track for Databricks Resident Solutions Architects. Validates lakehouse architecture, data engineering, governance, ML/GenAI delivery, cost & performance optimization, DevOps maturity and customer advisory skills required to embed with enterprise clients.',
 };
 
 // weight totals 100. target_level is the enterprise-ready bar on the 1-5 scale.

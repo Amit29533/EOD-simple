@@ -7,3 +7,6 @@ data/
 .env
 *.log
 .DS_Store
+# Python test/build helpers
+__pycache__/
+*.pyc
