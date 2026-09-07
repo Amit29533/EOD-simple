@@ -1,4 +1,3 @@
-import { newId } from '../core/ids.mjs';
 import { TABLES } from './schema.mjs';
 
 /**

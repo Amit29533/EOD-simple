@@ -23,6 +23,12 @@
 import { RSA_ORAL_IN_CAP, RSA_ORAL_SET } from './constants.mjs';
 import { interleave } from './paper-order.mjs';
 import { isOpenQuestion } from './spoken-answer.mjs';
+// The prompt-identity rule is shared with the authoring/import path and the
+// catalogue sync (see core/prompt-key.mjs) so "same question?" is answered the
+// same way everywhere. Re-exported for existing importers.
+import { promptKey, stripPromptLabel } from './prompt-key.mjs';
+
+export { promptKey, stripPromptLabel };
 
 /** Stable per-competency grouping, ordered by the competency configuration. */
 function groupByCompetency(questions, competencies) {
@@ -88,10 +94,11 @@ function apportion(groups, total) {
       leftover -= 1;
     }
     remaining = leftover;
-    const stillOpen = groups.filter((g) => quota.get(g.id) < g.items.length);
-    // No progress possible (everything full) — stop.
-    if (stillOpen.length === open.length && handed === 0 && leftover === remaining && remaining > 0 && !contenders.length) break;
-    open = stillOpen;
+    // Stop only when a pass seats nothing at all: a group with free capacity
+    // always yields either a floor seat or a remainder seat, so progress is
+    // otherwise guaranteed and the loop cannot spin.
+    if (!handed && !contenders.length) break;
+    open = groups.filter((g) => quota.get(g.id) < g.items.length);
   }
   return quota;
 }
@@ -131,45 +138,6 @@ function isPinFirst(q) { return q?.pin_first === true; }
 function isOralSet(q) { return q?.question_set === RSA_ORAL_SET; }
 
 /**
- * Strip a leading enumerator/label ("COMMON QUESTION —", "Q3:") from a prompt.
- * Labels are ALL-CAPS (or numeric) tags; the mixed-case lead-in of an ordinary
- * sentence ("A client gives you a vague requirement: …") is not a label, so it
- * is preserved. The body after the label is left exactly as typed, so healers
- * can compare it for equality against the published prompt. Shared by the
- * comparison key and the healers that de-label legacy rows copied before the
- * label was dropped from the published catalogue.
- */
-export function stripPromptLabel(prompt) {
-  return String(prompt ?? '')
-    .normalize('NFKC')
-    .trim()
-    .replace(/^[A-Z0-9][A-Z0-9 '/]{1,40}\s*[-\u2013\u2014\u2015\u2212:]\s+/, '')
-    .trim();
-}
-
-/**
- * Normalized comparison key for a question prompt.
- *
- * Legacy stores can hold two copies of the *same* published question whose
- * prompts differ only by typography — curly vs straight quotes, en/em dashes,
- * spacing, letter case, or a leading label that a later catalogue revision
- * added (or an admin retyped without it). Exact-match dedupe lets both
- * through, so the candidate was served the same question twice — once with
- * the microphone control, once without (the older copy predated
- * `audio_required`). Comparing normalized keys closes that gap; verified
- * collision-free across the published catalogue.
- */
-export function promptKey(prompt) {
-  return stripPromptLabel(String(prompt ?? ''))
-    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')
-    .replace(/[\u2013\u2014\u2015\u2212]/g, '-')
-    .replace(/\u2026/g, '...')
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-}
-
-/**
  * When two stored rows turn out to be the same question, the surviving row
  * keeps its own id (responses and scores are keyed by it) but must not lose
  * the metadata its duplicate carried: a legacy flag-less copy merged with the
@@ -201,7 +169,13 @@ function uniqueBy(questions) {
     if (!q) continue;
     const idKey = q.id ? `id:${q.id}` : '';
     const promptId = q.prompt ? promptKey(q.prompt) : '';
-    const keptAt = (idKey && ids.get(idKey)) ?? (promptId && prompts.get(promptId));
+    // Look the row up by id *only when it has one*; the previous
+    // `(idKey && ids.get(idKey)) ?? …` form short-circuits to `''` for an
+    // id-less row, and `'' ?? x` yields `''` (an empty string is not nullish),
+    // so the prompt index was never consulted and id-less duplicates of the
+    // same question were both served.
+    const keptAt = (idKey ? ids.get(idKey) : undefined)
+      ?? (promptId ? prompts.get(promptId) : undefined);
     if (Number.isInteger(keptAt)) {
       out[keptAt] = mergeDuplicateMetadata(out[keptAt], q);
       continue;

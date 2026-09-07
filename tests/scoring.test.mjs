@@ -175,3 +175,54 @@ test('validateFrameworkConfig catches bad input', () => {
   assert.ok(validateFrameworkConfig({ readiness_bands: [{ key: 'a', label: 'A', min: 80 }, { key: 'b', label: 'B', min: 0 }], level_thresholds: [5, 20, 40, 60, 80], gap_severity: { moderate: 1, critical: 2 } }).length > 0, 'thresholds must start at 0');
   assert.ok(validateFrameworkConfig({ readiness_bands: [{ key: 'a', label: 'A', min: 80 }, { key: 'b', label: 'B', min: 0 }], level_thresholds: [0, 20, 40, 60, 80], gap_severity: { moderate: 2, critical: 1 } }).length > 0);
 });
+
+test('computeReport: a competency the capped paper never reached is not scored 0%', () => {
+  // Regression: an allocation capped below the number of competencies (the
+  // admin dialog allows 1-50 questions) served only some of them. The others
+  // were reported at 0% with a fabricated "critical_gap", and their weights
+  // dragged the overall down — so a candidate who answered EVERY served
+  // question correctly was graded "Not Yet Ready".
+  const snapshot = {
+    role: { id: 'r1', name: 'RSA', key: 'rsa' },
+    framework: { name: 'FW', config: DEFAULT_FRAMEWORK_CONFIG },
+    competencies: [
+      { id: 'c1', name: 'Architecture', weight: 30, target_level: 4, active: true },
+      { id: 'c2', name: 'DevOps', weight: 10, target_level: 4, active: true },
+      { id: 'c3', name: 'Cost', weight: 10, target_level: 4, active: true },
+    ],
+    questions: [{ id: 'q1', competency_id: 'c1', points: 4, type: 'mcq_single', active: true }],
+  };
+  const perfect = computeReport(snapshot, { q1: { final_score: 4 } });
+  assert.equal(perfect.overall_pct, 100, 'graded on what was actually asked');
+  assert.equal(perfect.band.key, 'enterprise_ready');
+  assert.deepEqual(perfect.areas_to_improve, [], 'no invented gaps');
+  assert.deepEqual(perfect.strengths.map((s) => s.competency), ['Architecture']);
+
+  const untested = perfect.competencies.filter((c) => c.status === 'untested');
+  assert.deepEqual(untested.map((c) => c.name).sort(), ['Cost', 'DevOps']);
+  for (const c of untested) {
+    assert.equal(c.score_pct, null, 'never a fake 0%');
+    assert.equal(c.observed_level, null);
+    assert.equal(c.gap, null);
+    assert.deepEqual(c.breakdown, []);
+  }
+  assert.deepEqual(perfect.not_assessed.map((c) => c.competency).sort(), ['Cost', 'DevOps']);
+  assert.equal(perfect.not_assessed[0].weight, 10, 'the weight is still shown for context');
+
+  // A real failure on the one served question is still graded against it.
+  const failed = computeReport(snapshot, { q1: { final_score: 0 } });
+  assert.equal(failed.overall_pct, 0, 'an answered-wrong question still scores 0');
+  assert.equal(failed.areas_to_improve.length, 1);
+});
+
+test('computeReport: a paper with no questions at all still reports a number', () => {
+  const snapshot = {
+    role: null, framework: { config: DEFAULT_FRAMEWORK_CONFIG },
+    competencies: [{ id: 'c1', name: 'Alone', weight: 100, target_level: 4, active: true }],
+    questions: [],
+  };
+  const report = computeReport(snapshot, {});
+  assert.equal(report.overall_pct, 0);
+  assert.deepEqual(report.areas_to_improve, []);
+  assert.equal(report.competencies[0].status, 'untested');
+});

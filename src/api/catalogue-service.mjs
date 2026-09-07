@@ -1,7 +1,7 @@
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
-import { bulkInsert } from './helpers.mjs';
+import { bulkInsert, bulkUpdate } from './helpers.mjs';
 
 /**
  * Published-catalogue service.
@@ -185,8 +185,9 @@ export async function synchronizeBank(store, role) {
     const key = promptKey(q.prompt);
     if (key && !byPrompt.has(key)) byPrompt.set(key, q);
   }
-  let repaired = 0;
   const toAdd = [];
+  const toRepair = [];
+  let repaired = 0;
   for (const q of RSA_QUESTIONS) {
     const twin = byPrompt.get(promptKey(q.prompt));
     if (twin) {
@@ -195,15 +196,14 @@ export async function synchronizeBank(store, role) {
       // leave the exam serving the same prompt twice, once without its
       // microphone control).
       const patch = repairPatch(twin, q);
-      if (patch) {
-        await store.update('questions', twin.id, patch);
-        repaired += 1;
-      }
+      if (patch) toRepair.push({ id: twin.id, patch });
       continue;
     }
     if (!compIds[q.competency]) continue;
     toAdd.push(questionRecord(q, role.id, compIds));
   }
+  // Collected then flushed: a bank-wide repair is one write, not one per row.
+  if (toRepair.length) repaired = (await bulkUpdate(store, 'questions', toRepair)).filter(Boolean).length;
   if (toAdd.length) await bulkInsert(store, 'questions', toAdd);
   const added = toAdd.length;
 

@@ -52,7 +52,7 @@ const correctAnswer = (text) => {
  */
 function splitEmbeddedObjective(text) {
   const src = String(text || '').replace(/\r\n?/g, '\n');
-  const markers = [...src.matchAll(/\n\s*(?:[•▪●*·\-]\s*)?([A-H])[.)]\s*/g)];
+  const markers = [...src.matchAll(/\n\s*(?:[•▪●*·-]\s*)?([A-H])[.)]\s*/g)];
   if (markers.length < 2) return { prompt: src.trim(), options: {} };
 
   const prompt = src.slice(0, markers[0].index).replace(/\s+$/, '').trim();

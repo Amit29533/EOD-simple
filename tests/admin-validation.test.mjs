@@ -290,3 +290,29 @@ test('an open question cannot be stored or edited into a typed-only question', a
   });
   assert.equal(optedOut.body.audio_required, false, 'and opt out again');
 });
+
+test('competency PATCH caps every text field exactly like POST', async () => {
+  // POST capped name at 160, category and key at 60; PATCH capped all five of
+  // them at 1500, so an edit could store a value the create path refuses.
+  const long = (ch) => ch.repeat(2000);   // longer than every cap, so each is truncated
+  const created = await call('POST', '/admin/competencies', {
+    token: adminToken,
+    body: {
+      role_id: roleA.id, name: long('n'), key: long('k'), category: long('c'),
+      description: long('d'), enrichment_hint: long('e'), weight: 50, target_level: 4,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const patched = await call('PATCH', `/admin/competencies/${created.body.id}`, {
+    token: adminToken,
+    body: {
+      name: long('N'), key: long('K'), category: long('C'),
+      description: long('D'), enrichment_hint: long('E'),
+    },
+  });
+  assert.equal(patched.status, 200);
+  for (const [field, max] of Object.entries({ name: 160, key: 60, category: 60, description: 1500, enrichment_hint: 1500 })) {
+    assert.equal(patched.body[field].length, max, `${field} capped at ${max} by PATCH`);
+    assert.equal(patched.body[field].length, created.body[field].length, `${field} PATCH cap == POST cap`);
+  }
+});

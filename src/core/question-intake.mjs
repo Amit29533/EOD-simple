@@ -12,6 +12,15 @@
  * import can never corrupt the shipped catalogue.
  */
 
+// The duplicate check below and the serving-side allocator must agree on what
+// "the same question" means: this module used to keep its own copy of the key
+// function, which normalized dash and quote variants differently, so a prompt
+// could pass the import check and then be silently merged (never served) by
+// `uniqueBy`. Both now import the single rule from core/prompt-key.mjs.
+import { promptKey } from './prompt-key.mjs';
+
+export { promptKey };
+
 /** Answer modes the generator understands. */
 export const QUESTION_MODES = ['objective', 'open'];
 
@@ -45,7 +54,7 @@ const OPTION_PATTERNS = [
 ];
 
 const LETTERS = 'abcdefgh';
-const OPTION_MARKER = /\n\s*(?:[•▪●*·\-]\s*)?([A-H])[.)]\s*/g;
+const OPTION_MARKER = /\n\s*(?:[•▪●*·-]\s*)?([A-H])[.)]\s*/g;
 
 /**
  * Some worksheet exports embed an objective question's answer options inside
@@ -327,19 +336,4 @@ export function validateBatch(rows = [], { modules = [], families = [], existing
   });
 
   return { accepted, rejected, duplicates };
-}
-
-/** Comparison key for duplicate detection: typography-insensitive, label-insensitive. */
-export function promptKey(text) {
-  return String(text ?? '')
-    .normalize('NFKC')
-    // Strip a leading enumerator/label (\"COMMON QUESTION —\") so the same prompt
-    // with or without its historic label never slips past duplicate detection.
-    .replace(/^[A-Z0-9][A-Z0-9 '/]{1,40}\s*[-\u2013\u2014\u2015\u2212:]\s+/, '')
-    .replace(/[\u2018\u2019\u201b]/g, "'")
-    .replace(/[\u201c\u201d]/g, '"')
-    .replace(/[\u2010-\u2015]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
 }

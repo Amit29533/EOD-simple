@@ -9,10 +9,10 @@ const VALID_STORAGE = new Set(['json', 'airtable', 'blobs']);
 
 export async function createStore(env = process.env) {
   const raw = (env.STORAGE || 'json').toLowerCase();
-  const kind = VALID_STORAGE.has(raw) ? raw : 'json';
-  if (raw && !VALID_STORAGE.has(raw)) {
+  if (!VALID_STORAGE.has(raw)) {
     console.warn(`[storage] unknown STORAGE="${raw}", falling back to json`);
   }
+  const kind = VALID_STORAGE.has(raw) ? raw : 'json';
   // Validate required env early for production
   if (kind === 'airtable') {
     if (!env.AIRTABLE_API_KEY || !env.AIRTABLE_BASE_ID) {
@@ -31,12 +31,13 @@ export async function createStore(env = process.env) {
     case 'json':
     default: {
       const file = env.DATA_FILE || 'data/ecod.json';
-      // Prevent path traversal via DATA_FILE (should be relative or absolute within project)
+      // Guard against a traversal-shaped DATA_FILE; the json store is a local
+      // dev/demo file, so it should name a file, not walk the tree.
       if (file.includes('..') && !file.startsWith('/') && !file.startsWith('./')) {
         console.warn(`[storage] suspicious DATA_FILE path "${file}", using default`);
-        return (await import('./json-file.mjs')).createJsonStore('data/ecod.json');
+        return createJsonStore('data/ecod.json');
       }
-      return (await import('./json-file.mjs')).createJsonStore(file);
+      return createJsonStore(file);
     }
   }
 }

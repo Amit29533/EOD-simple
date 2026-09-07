@@ -1,12 +1,13 @@
 import http from 'node:http';
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
-import { DEFAULT_PORT, MAX_SPREADSHEET_BYTES } from './src/core/constants.mjs';
+import {
+  DEFAULT_PORT, MAX_SPREADSHEET_BYTES, APP_VERSION,
+} from './src/core/constants.mjs';
 
 /** Ordinary JSON payloads are capped tight (this is the 413 the feature suite pins).
  * Spreadsheet imports need more headroom: the app accepts files up to
@@ -154,8 +155,11 @@ async function serveStatic(req, res, url) {
     send(res, 405, { error: 'Method not allowed' });
     return;
   }
-  let filePath = path.normalize(path.join(PUBLIC, url.pathname === '/' ? 'index.html' : url.pathname));
-  if (!filePath.startsWith(PUBLIC)) {
+  let filePath = path.resolve(PUBLIC, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
+  // Containment, not a string prefix: `p.startsWith('/x/public')` is also true
+  // for '/x/public-archive/…', which would hand out files from a sibling
+  // directory of the web root.
+  if (filePath !== PUBLIC && !filePath.startsWith(PUBLIC + path.sep)) {
     send(res, 403, { error: 'Forbidden' });
     return;
   }
@@ -206,8 +210,19 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
   // Health check - fast, no auth
+  // Served directly (ahead of rate limiting) so a monitor can always get a
+  // verdict. The field set matches `GET /health` in the router — the Netlify
+  // function has no such short-circuit and reaches the router instead, so the
+  // two surfaces must agree or a check passes locally and fails in production.
   if (url.pathname === '/api/health' || url.pathname === '/health') {
-    send(res, 200, { ok: true, storage: store.kind, env: NODE_ENV, uptime: process.uptime() });
+    send(res, 200, {
+      ok: true,
+      version: APP_VERSION,
+      storage: store.kind,
+      env: NODE_ENV,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
     return;
   }
 

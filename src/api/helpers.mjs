@@ -44,3 +44,18 @@ export async function bulkInsert(store, table, rows = []) {
   for (const data of rows) out.push(await store.insert(table, data));
   return out;
 }
+
+/**
+ * Batch update over the storage contract, mirroring bulkInsert: `patches` is an
+ * ordered list of { id, patch } and the result keeps that order, with null where
+ * the id does not exist. Adapters that hold the whole table in one file/blob
+ * rewrite it once instead of once per row; others fall back to the loop, so a
+ * repair pass over hundreds of rows never becomes hundreds of full writes.
+ */
+export async function bulkUpdate(store, table, patches = []) {
+  if (!patches.length) return [];
+  if (typeof store.updateMany === 'function') return store.updateMany(table, patches);
+  const out = [];
+  for (const { id, patch } of patches) out.push(await store.update(table, id, patch));
+  return out;
+}

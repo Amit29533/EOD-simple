@@ -89,6 +89,12 @@ export function computeReport(snapshot, responsesByQid) {
     const qs = (snapshot.questions || []).filter(
       (q) => q.competency_id === comp.id && q.active !== false
     );
+    // A capped paper can leave a competency unserved (the apportionment only
+    // guarantees one question each when the cap allows it). Such a competency
+    // was never tested, so it must NOT be reported at 0%: that both invented a
+    // "critical gap" for it and dragged the weighted overall down, which could
+    // turn a flawless 3-question paper into a 30% "Not Yet Ready".
+    const assessed = qs.length > 0;
     let earned = 0;
     let max = 0;
     const breakdown = qs.map((q) => {
@@ -108,9 +114,30 @@ export function computeReport(snapshot, responsesByQid) {
         assessor_comment: r?.assessor_comment || '',
       };
     });
+    const target_level = Number(comp.target_level ?? 4);
+    // Nothing on this paper covered the competency: report it as untested rather
+    // than as a 0% failure. `score_pct`/`observed_level`/`gap` stay null so no
+    // caller can mistake "not asked" for "answered badly".
+    if (!assessed) {
+      return {
+        competency_id: comp.id,
+        name: comp.name,
+        category: comp.category || '',
+        description: comp.description || '',
+        weight: Number(comp.weight ?? 0),
+        target_level,
+        observed_level: null,
+        gap: null,
+        status: 'untested',
+        score_pct: null,
+        earned: 0,
+        max: 0,
+        recommended_focus: comp.enrichment_hint || comp.description || '',
+        breakdown: [],
+      };
+    }
     const score_pct = max > 0 ? Math.round((earned / max) * 1000) / 10 : 0;
     const observed_level = pctToLevel(score_pct, config.level_thresholds);
-    const target_level = Number(comp.target_level ?? 4);
     const gap = target_level - observed_level;
     let status = 'met';
     if (gap >= (severity.critical ?? 2)) status = 'critical_gap';
@@ -134,14 +161,18 @@ export function computeReport(snapshot, responsesByQid) {
     };
   });
 
-  const weightTotal = perCompetency.reduce((s, c) => s + c.weight, 0) || 1;
+  // The weighted blend runs over what was actually served, so a short paper is
+  // read as a sample of the competencies it covered — never as a penalty for
+  // the ones it did not.
+  const assessedComps = perCompetency.filter((c) => c.status !== 'untested');
+  const weightTotal = assessedComps.reduce((s, c) => s + c.weight, 0) || 1;
   const overall_pct =
     Math.round(
-      (perCompetency.reduce((s, c) => s + c.score_pct * c.weight, 0) / weightTotal) * 10
+      (assessedComps.reduce((s, c) => s + c.score_pct * c.weight, 0) / weightTotal) * 10
     ) / 10;
   const band = readinessBand(overall_pct, config);
 
-  const gaps = perCompetency
+  const gaps = assessedComps
     .filter((c) => c.gap > 0)
     .sort((a, b) => b.gap - a.gap || b.weight - a.weight)
     .map((c) => ({
@@ -156,7 +187,7 @@ export function computeReport(snapshot, responsesByQid) {
       recommended_focus: c.recommended_focus,
     }));
 
-  const strengths = perCompetency
+  const strengths = assessedComps
     .filter((c) => c.gap <= 0)
     .sort((a, b) => b.score_pct - a.score_pct)
     .map((c) => ({
@@ -164,6 +195,18 @@ export function computeReport(snapshot, responsesByQid) {
       score_pct: c.score_pct,
       observed_level: c.observed_level,
       target_level: c.target_level,
+    }));
+
+  // Reported separately so a reader of a capped paper knows which parts of the
+  // role this sitting simply did not cover.
+  const not_assessed = perCompetency
+    .filter((c) => c.status === 'untested')
+    .map((c) => ({
+      competency_id: c.competency_id,
+      competency: c.name,
+      weight: c.weight,
+      target_level: c.target_level,
+      recommended_focus: c.recommended_focus,
     }));
 
   return {
@@ -174,6 +217,7 @@ export function computeReport(snapshot, responsesByQid) {
     competencies: perCompetency,
     areas_to_improve: gaps,
     strengths,
+    not_assessed,
     generated_at: new Date().toISOString(),
   };
 }

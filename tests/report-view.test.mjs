@@ -54,3 +54,48 @@ test('report view includes Anthroprime branding and print-safe SVG charts', { sk
     delete globalThis.document;
   }
 });
+
+test('a competency the capped paper never reached renders as "not assessed", never as 0%', { skip: SKIP }, async () => {
+  const partial = JSON.parse(JSON.stringify(REPORT));
+  partial.overall_pct = 100;
+  partial.competencies.push({
+    name: 'Cost Governance', category: 'finops', weight: 20, score_pct: null,
+    observed_level: null, target_level: 4, gap: null, status: 'untested', earned: 0, max: 0,
+    breakdown: [], recommended_focus: 'Unit economics of compute.',
+  });
+  partial.not_assessed = [{ competency: 'Cost Governance', competency_id: 'c3', weight: 20, target_level: 4, recommended_focus: 'Unit economics of compute.' }];
+  partial.strengths = [{ competency: 'Architecture', score_pct: 84 }, { competency: 'Advisory', score_pct: 80 }];
+
+  const dom = new JSDOM('<!doctype html><html><body><main id="view"></main></body></html>', {
+    url: 'http://localhost:3000/', pretendToBeVisual: true,
+  });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document });
+  try {
+    const { renderReport } = await import(`../public/js/views/report.js?report-test=${Date.now()}`);
+    renderReport(document.getElementById('view'), {
+      candidate: { name: 'Capped Candidate', current_title: 'Engineer' },
+      report: partial, assessor_name: 'Priya Nair', audience: 'admin',
+    });
+
+    const text = document.getElementById('view').textContent;
+    assert.match(text, /Not covered by this paper/, 'the coverage section is shown');
+    assert.match(text, /Competency weight 20/);
+    assert.equal(document.querySelectorAll('.report-bar-row').length, 3, 'still one row per competency');
+    const untestedRow = [...document.querySelectorAll('.report-bar-row')].find((r) => /Cost Governance/.test(r.textContent));
+    assert.ok(untestedRow.querySelector('.report-bar-fill') === null, 'no filled bar for an untested competency');
+    assert.match(untestedRow.textContent, /not covered by this paper/i);
+    assert.match(document.querySelector('.report-stat-strip').textContent, /2 of 3/, 'the stat strip states the coverage');
+
+    // The breakdown table keeps a neutral cell rather than a red zero, for the
+    // same reason: an unasked question is not a failed one.
+    const row = [...document.querySelectorAll('tbody tr')].find((r) => /Cost Governance/.test(r.textContent));
+    assert.ok(row, 'the competency still appears in the breakdown table');
+    assert.match(row.textContent, /not assessed/i);
+    assert.doesNotMatch(row.textContent, /\b0%/, 'no fabricated 0% score in its row');
+    assert.match(row.cells[3].textContent.trim(), /—/, 'observed level is an em dash, never level 0');
+  } finally {
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

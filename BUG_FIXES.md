@@ -1,9 +1,92 @@
 # Bug Fixes & UI Improvements Report
 
 ## Summary
-The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
+The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers. A full-codebase bug
+hunt then fixed the two most severe defects in the product — an exam timer that expired every
+question on arrival, and a report that graded untested competencies as 0% critical gaps — plus
+10 further correctness, integrity and performance findings, all pinned with regression tests.
 
-Current verification: **278/278 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+Current verification: **292/292 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+
+## 🔍 Whole-project bug hunt & cleanup pass (latest)
+
+Every JS/MJS/PY source file (~26K lines, excluding the generated question bank) was
+re-read line by line, cross-checked with ESLint and AST scans, and every finding that
+could be reproduced was fixed and pinned with a regression test.
+
+**Correctness — user-visible:**
+
+1. **The exam timer was broken on every question.** `remainingTimeMs` computed
+   `Date.parse(state.question_started_at || 0) || now`. `Date.parse(0)` parses the
+   *string* `"0"` as 2000-01-01 — a truthy number — so the `|| now` fallback never
+   ran and any state without a timestamp read as ~26 years overdue. Every question
+   came back `remaining_ms: 0`, the client's `timeExpired` guard force-clicked
+   Next, and a candidate could be walked through the whole paper leaving blanks,
+   with `time_expired` filled across the proctoring trail. Now: one `questionStartedAt()`
+   helper (empty/garbage/legacy numbers all fall back to "now"), the missing timestamp
+   is backfilled and persisted on read, and the clamped (`remainingMs`) and raw
+   (`remainingTimeMs`) values are separate on purpose — the submit path needs the raw one.
+2. **A capped paper invented "critical gaps" for questions nobody was asked.**
+   `computeReport` blended weights across *all* active competencies, so an allocation of
+   3 questions on a 7-competency role graded the 4 untouched ones at 0%: answering
+   everything correctly scored **30% "Not Yet Ready"** with 6 fabricated
+   `areas_to_improve` entries. Untested competencies are now `status: 'untested'` with
+   null score/level/gap, the blend uses only the weights that were actually measured,
+   and `not_assessed` flows through the API to a new report section. The UI (badge,
+   bars, table) renders "Not assessed" instead of a red 0%.
+
+**Correctness — data integrity:**
+
+3. **Two definitions of "the same question" diverged.** The authoring duplicate-check and
+   the serving dedupe each had their own `promptKey`; one normalized dash/quote variants
+   the other did not, so a prompt could pass the import check and then be silently merged
+   (and never served) by the allocator. Both now import one `core/prompt-key.mjs`, with a
+   test asserting they are literally the same function.
+4. **`uniqueBy` never fell back to the prompt key for id-less rows.**
+   `(idKey && ids.get(idKey)) ?? prompt…` yields `''` (not nullish) when a row has no id,
+   so the fallback was unreachable and duplicated id-less prompts were both served.
+   `sortedQuestions` also had its own copy of the same dedupe loop — it now calls
+   `dedupeQuestions`, so the two paths cannot drift again.
+5. **Integrity event names could escape the registry.** `INTEGRITY_EVENT_KEYS` was a plain
+   object literal, so an event named `constructor`/`toString`/`hasOwnProperty` resolved an
+   inherited member and the counter landed under a key like
+   `"function Object() { [native code] }"`. Now a `Set` plus a null-prototype counter object.
+6. **The integrity event log grew without bound.** Each append rewrote the whole assessment
+   record — quadratic write amplification on the hot endpoint. Counters stay exact; the
+   retained trail is a ring of the newest `MAX_INTEGRITY_EVENTS` (200) with `events_dropped`,
+   and the admin endpoint reports the true `events_count` rather than a truncated tail.
+7. **`PATCH /admin/competencies/:id` had different field caps than `POST`** (1500 for all
+   five text fields vs 160/60/60/1500/1500), letting an edit store what a create refuses.
+   One shared `COMPETENCY_TEXT_FIELDS` map now drives both.
+8. **The audit-log cap leaked on bulk writes.** Rotation lived in `insert()` only, so
+   `insertMany()` could push `audit_log` past its ceiling — in the one table whose size
+   costs every other write. The policy is now a single `storage/audit-rotation.mjs` shared
+   by both paths in both local adapters.
+
+**Robustness & performance:**
+
+9. `serveStatic` containment used `filePath.startsWith(PUBLIC)`, which also admits the
+   sibling `public-archive/`. Paths are now resolved and compared against `PUBLIC + path.sep`.
+10. `synchronizeBank` repaired flags with one `store.update` per row — on the JSON/blobs
+    stores that is one full-file rewrite per question. Added the batched counterpart to
+    `insertMany` (`updateMany` + a `bulkUpdate` helper that degrades to a loop on adapters
+    without it): a bank-wide repair is now one write. Verified lossless — stripping all 38
+    spoken-contract flags and re-running the idempotent seed reproduces a fresh seed exactly.
+11. `/health` reported `version: '1.0.0'` while `package.json` said `0.1.0`, and the
+    standalone server and the Netlify function returned *different shapes* for the same
+    path (the router's `GET /health` is shadowed locally). `APP_VERSION` in `constants.mjs`
+    is now the single source and both surfaces return a compatible payload.
+12. Dead/duplicated code removed: the unreachable `cur === -1` branch in `advanceStage`
+    (already covered by `next > cur`), no-op `onPointerMove`/`onPointerLeave` stubs in
+    `login.js`, unused `num`/`pct`/`newId`/`fs` imports, an `audit: _a` alias, a redundant
+    dynamic `import('./json-file.mjs')` duplicating a static one, a repeated `STORAGE`
+    validation warning, and a mid-file `import` in `projections.mjs`. The
+    `apportion()` no-progress guard compared `leftover === remaining` *after* assigning
+    `remaining = leftover` — a tautology; it now tests the real condition.
+
+Regression: **292/292 Node** (11 new tests pinning items 1-8 and 10), **39/39 smoke**,
+**216/216 feature**, and ESLint reports no unused imports, unused locals or shadowing in
+`src/`, `public/`, `server.mjs`, `netlify/` or `scripts/`.
 
 ## 🔒 Production hardening pass (latest)
 

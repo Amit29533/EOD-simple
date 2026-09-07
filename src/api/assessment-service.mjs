@@ -243,10 +243,11 @@ export async function planBulkAutoAllocation(store, accepted = [], { roles = [],
 export async function advanceStage(store, candidateId, targetStage) {
   const candidate = await store.get('candidates', candidateId);
   if (!candidate) return;
+  // An unknown current stage indexes to -1, which every real stage beats, so a
+  // single forward-only comparison covers both cases.
   const cur = STAGE_KEYS.indexOf(candidate.stage || 'intake');
   const next = STAGE_KEYS.indexOf(targetStage);
   if (next > cur) await store.update('candidates', candidateId, { stage: targetStage });
-  else if (cur === -1) await store.update('candidates', candidateId, { stage: targetStage });
 }
 
 /**

@@ -1,3 +1,5 @@
+import { requiresSpokenAnswer } from '../core/spoken-answer.mjs';
+
 /**
  * Response projections - the heart of compartmentalization.
  * Each audience only ever receives what its function requires; these are the
@@ -21,8 +23,6 @@ export const candidateForAssessor = (c) => c && ({
 
 /** Full candidate (admin only). */
 export const candidateForAdmin = (c) => c && ({ ...c });
-
-import { requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 
 /**
  * Question as seen by a CANDIDATE: prompt + options only.
@@ -67,6 +67,9 @@ export function reportForCandidate(report, assessment) {
     })),
     areas_to_improve: report.areas_to_improve || [],
     strengths: report.strengths || [],
+    // Competencies the capped paper never reached. Shown as "not covered" so a
+    // short sitting is never read as a zero on the parts it did not ask about.
+    not_assessed: report.not_assessed || [],
     // Safe aggregate metrics for the candidate's printable report. The
     // question-level answers and assessor feedback remain excluded.
     questions_evaluated: (report.competencies || []).reduce((sum, c) => sum + (c.breakdown?.length || 0), 0),

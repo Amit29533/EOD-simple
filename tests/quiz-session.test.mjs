@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sortedQuestions, budgetsFor, remainingMs, ensureQuizState, integrityPatch, isOpenQuestion,
+  MAX_INTEGRITY_EVENTS,
 } from '../src/api/quiz-session.mjs';
 import { questionForCandidate } from '../src/api/projections.mjs';
 import { requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent } from '../src/core/spoken-answer.mjs';
@@ -171,4 +172,58 @@ test('a frozen paper whose oral rows lost every flag still pins first and demand
   // ...but it still demands the microphone: the open-question contract is a rule
   // of the type, applied to every served row.
   assert.equal(std.audio_required, true);
+});
+
+test('a state with no question_started_at starts a fresh clock instead of reading as expired', () => {
+  // Regression: `Date.parse(state.question_started_at || 0)` parsed the number
+  // 0 as the STRING "0" -> 2000-01-01, so the fallback `|| now` never fired and
+  // every question came back with remaining_ms 0 (which the exam UI treats as
+  // "time up", auto-advancing the candidate through the paper with blanks).
+  const q = { type: 'mcq_single' };
+  for (const state of [{ phase: 'answer' }, { phase: 'answer', question_started_at: '' },
+    { phase: 'answer', question_started_at: null }, { phase: 'answer', question_started_at: 'not-a-date' },
+    // The exact legacy shape that broke it: Date.parse(0) is 2000-01-01, a
+    // truthy number, so the old `|| now` fallback never fired.
+    { phase: 'answer', question_started_at: 0 },
+    { phase: 'review', question_started_at: 0 },
+    { phase: 'answer', question_started_at: false }]) {
+    assert.equal(remainingMs(q, state), EXAM_MCQ_SECONDS * 1000, `full budget for ${JSON.stringify(state)}`);
+  }
+  assert.ok(remainingMs(q, { phase: 'answer', question_started_at: undefined }) > 29_000);
+});
+
+test('ensureQuizState backfills a missing question_started_at on a legacy state', () => {
+  const qs = sortedQuestions({ questions: [{ id: 'a', order: 1, type: 'mcq_single', prompt: 'A?' }] });
+  const healed = ensureQuizState({ snapshot_json: { questions: qs }, quiz_state: { index: 0, phase: 'answer' } }, qs);
+  assert.ok(Number.isFinite(Date.parse(healed.question_started_at)), 'a real timestamp is restored');
+  const numeric = ensureQuizState({ snapshot_json: { questions: qs }, quiz_state: { index: 0, phase: 'answer', question_started_at: 0 } }, qs);
+  assert.ok(Date.parse(numeric.question_started_at) > Date.now() - 5_000, 'a numeric 0 clock is replaced, not trusted');
+  const preserved = ensureQuizState({ snapshot_json: { questions: qs }, quiz_state: { index: 0, phase: 'answer', question_started_at: '2026-01-01T00:00:00.000Z' } }, qs);
+  assert.equal(preserved.question_started_at, '2026-01-01T00:00:00.000Z', 'an existing clock is never reset');
+});
+
+test('integrity events named like Object.prototype members still file under other', () => {
+  // The registry used to be a plain object literal, so KEYS['constructor']
+  // found an inherited function and the counter was written under a key like
+  // "function Object() { [native code] }" instead of `other`.
+  for (const event of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']) {
+    const s = integrityPatch({ integrity: {}, events: [] }, event, 'x');
+    assert.deepEqual(Object.keys(s.integrity), ['other'], `${event} is an unknown event name`);
+    assert.equal(s.integrity.other, 1);
+    assert.equal(s.events.length, 1, 'the raw event is still kept in the trail');
+    assert.equal(s.events[0].event, event);
+  }
+  assert.equal(({}).other, undefined, 'Object.prototype was never touched');
+});
+
+test('the retained integrity log is capped while the counters stay exact', () => {
+  let state = { integrity: {}, events: [] };
+  for (let i = 0; i < MAX_INTEGRITY_EVENTS + 40; i += 1) {
+    state = integrityPatch(state, 'copy', `event ${i}`);
+  }
+  assert.equal(state.integrity.copy, MAX_INTEGRITY_EVENTS + 40, 'counters are never trimmed');
+  assert.equal(state.events.length, MAX_INTEGRITY_EVENTS, 'the stored trail is a ring');
+  assert.equal(state.events_dropped, 40, 'the reader can see how much was trimmed');
+  assert.equal(state.events[state.events.length - 1].detail, `event ${MAX_INTEGRITY_EVENTS + 39}`, 'the newest events are the ones kept');
+  assert.equal(state.events[0].detail, 'event 40', 'oldest retained event');
 });

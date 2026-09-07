@@ -204,10 +204,6 @@ export function loginView(view, onSuccess) {
     themeSwitch.querySelector(`[data-theme-opt="${next.value}"]`)?.focus();
   });
 
-  /* ------------------------------------------------- card spotlight + tilt */
-  const onPointerMove = () => {};
-  const onPointerLeave = () => {};
-
   /* ------------------------------------------------- field interactivity */
   const markFilled = (input) => input.closest('.login-field')?.classList.toggle('filled', input.value.trim() !== '');
   [usernameInput, passwordInput].forEach((input) => {

@@ -1,4 +1,5 @@
 import { newId } from '../core/ids.mjs';
+import { AUDIT_TABLE, trimAuditRows } from './audit-rotation.mjs';
 
 /**
  * Zero-external-dependency store for the Netlify runtime (uses Netlify Blobs).
@@ -70,13 +71,7 @@ export async function createBlobsStore() {
         const id = data.id || newId();
         const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
         rows[id] = rec;
-        if (t === 'audit_log') {
-          const all = Object.values(rows);
-          if (all.length > 2000) {
-            all.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-            for (const r of all.slice(0, 500)) delete rows[r.id];
-          }
-        }
+        if (t === AUDIT_TABLE) trimAuditRows(rows);
         await writeTable(t, rows);
         return { ...rec };
       });
@@ -90,7 +85,10 @@ export async function createBlobsStore() {
           all[id] = rec;
           return rec;
         });
-        if (recs.length) await writeTable(t, all);
+        if (recs.length) {
+          if (t === AUDIT_TABLE) trimAuditRows(all);
+          await writeTable(t, all);
+        }
         return recs.map((r) => ({ ...r }));
       });
     },
@@ -101,6 +99,21 @@ export async function createBlobsStore() {
         rows[id] = { ...rows[id], ...patch, id, updated_at: new Date().toISOString() };
         await writeTable(t, rows);
         return { ...rows[id] };
+      });
+    },
+    /** Batch update in one blob write; see the json-file adapter for the contract. */
+    async updateMany(t, patches = []) {
+      return withLock(t, async () => {
+        const rows = await readTable(t);
+        let touched = 0;
+        const out = patches.map(({ id, patch }) => {
+          if (!rows[id]) return null;
+          rows[id] = { ...rows[id], ...patch, id, updated_at: new Date().toISOString() };
+          touched += 1;
+          return { ...rows[id] };
+        });
+        if (touched) await writeTable(t, rows);
+        return out;
       });
     },
     async remove(t, id) {
