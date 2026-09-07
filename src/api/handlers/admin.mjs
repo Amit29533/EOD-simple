@@ -10,7 +10,9 @@ import {
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
-import { buildSnapshot, roleBank, advanceStage } from '../assessment-service.mjs';
+import {
+  buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation,
+} from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
 import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
@@ -281,10 +283,30 @@ export function adminHandlers(route) {
       existingUsernames: existingUsers.map((u) => u.username),
     });
 
+    // Bulk imports auto-allocate the same default 50-question assessment each
+    // single candidate user gets — the whole point is that onboarding 2000
+    // candidates must not need 2000 manual Allocate clicks. The plan is built
+    // before anything is written, so the dry run previews exactly what the
+    // commit will allocate, and imported rows land with the right target
+    // track and pipeline stage in the same batched write. Pass
+    // `{ auto_allocate: false }` for logins without assessments.
+    const autoAllocate = createUsers
+      && body.auto_allocate !== false && body.auto_allocate !== 'false'
+      && body.skip_auto_allocation !== true && body.skip_auto_allocation !== 'true';
+    const plans = autoAllocate && report.accepted.length
+      ? await planBulkAutoAllocation(store, report.accepted, {
+        roles, questionCount: body.question_count ?? MAX_ASSESSMENT_QUESTIONS,
+      })
+      : [];
+    const plannedCount = plans.filter((p) => p.ok).length;
+
     const dryRun = bool(body.dry_run);
     const summary = {
       headers: parsed.headers,
       create_users: createUsers,
+      auto_allocate: autoAllocate,
+      would_auto_allocate: plannedCount,
+      auto_skipped: plans.length - plannedCount,
       total: parsed.rows.length,
       accepted: report.accepted.length,
       rejected: report.rejected.length,
@@ -303,21 +325,29 @@ export function adminHandlers(route) {
     if (dryRun) return ok({ ...summary, imported: 0, users_created: 0, credentials: [] });
 
     // One batched write per table (the adapters' `insertMany`; a plain loop
-    // as a fallback), so a 2000-row onboarding is one store write instead of
-    // thousands of full-file rewrites.
-    const batch = report.accepted.map(({ candidate }) => ({
-      name: candidate.name,
-      email: candidate.email,
-      phone: candidate.phone,
-      current_title: candidate.current_title,
-      years_experience: candidate.years_experience ?? null,
-      location: candidate.location,
-      source: candidate.source,
-      notes: candidate.notes,
-      target_role_id: candidate.target_role_id || null,
-      stage: candidate.stage || (candidate.target_role_id ? 'role_mapped' : 'intake'),
-      created_by: auth.user.id,
-    }));
+    // as a fallback), so a 2000-row onboarding is a handful of store writes
+    // instead of thousands of full-file rewrites. Rows with a planned
+    // assessment land with their target track filled in (when the sheet left
+    // it blank) and their stage already at Assessment.
+    const batch = report.accepted.map(({ candidate }, i) => {
+      const plan = plans[i];
+      const target_role_id = candidate.target_role_id || (plan?.ok ? plan.role.id : null) || null;
+      let stage = candidate.stage || (target_role_id ? 'role_mapped' : 'intake');
+      if (plan?.ok && STAGE_KEYS.indexOf(stage) < STAGE_KEYS.indexOf('assessment')) stage = 'assessment';
+      return {
+        name: candidate.name,
+        email: candidate.email,
+        phone: candidate.phone,
+        current_title: candidate.current_title,
+        years_experience: candidate.years_experience ?? null,
+        location: candidate.location,
+        source: candidate.source,
+        notes: candidate.notes,
+        target_role_id,
+        stage,
+        created_by: auth.user.id,
+      };
+    });
     const importedRecords = batch.length ? await bulkInsert(store, 'candidates', batch) : [];
     const imported = importedRecords.length;
 
@@ -342,12 +372,65 @@ export function adminHandlers(route) {
         password: report.accepted[i].candidate.password,
       }));
     }
+
+    // The planned assessments land in one more batched write, with one audit
+    // row each (also batched) so the trail matches single-user onboarding.
+    let auto_allocated = 0;
+    let auto_allocations = [];
+    if (autoAllocate && importedRecords.length && usersCreated) {
+      let bulkAssessorId = null;
+      if (body.assessor_id) {
+        const assessor = await store.get('users', body.assessor_id);
+        if (assessor && assessor.role === 'assessor' && assessor.active !== false) bulkAssessorId = assessor.id;
+      }
+      const assessmentBatch = [];
+      const allocatedIdx = [];
+      auto_allocations = importedRecords.map((rec, i) => {
+        const plan = plans[i];
+        const username = credentials[i]?.username || '';
+        if (!plan?.ok) {
+          return { username, name: rec.name, allocated: false, reason: plan?.reason || 'No assessment track available.' };
+        }
+        const scope = plan.snapshot.question_limit
+          ? `${plan.question_count} of ${plan.snapshot.bank_total} questions`
+          : `all ${plan.question_count} questions`;
+        assessmentBatch.push({
+          candidate_id: rec.id, role_id: plan.role.id, assessor_id: bulkAssessorId,
+          status: 'assigned', snapshot_json: plan.snapshot, report_json: null,
+          question_count: plan.question_count,
+          overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
+        });
+        allocatedIdx.push(i);
+        return {
+          username, name: rec.name, allocated: true,
+          role_id: plan.role.id, role_name: plan.role.name,
+          question_count: plan.question_count,
+          detail: `${scope} · ${plan.role.name}`,
+        };
+      });
+      if (assessmentBatch.length) {
+        const inserted = await bulkInsert(store, 'assessments', assessmentBatch);
+        inserted.forEach((a, k) => { auto_allocations[allocatedIdx[k]].assessment_id = a.id; });
+        auto_allocated = inserted.length;
+        try {
+          await bulkInsert(store, 'audit_log', inserted.map((a, k) => {
+            const row = auto_allocations[allocatedIdx[k]];
+            return {
+              actor_id: auth.user.id, actor_name: auth.user.name || 'admin',
+              action: 'assessment_allocated', entity: 'assessments', entity_id: a.id,
+              message: `Assessment auto-allocated to “${row.name}” (${row.detail})${bulkAssessorId ? '' : ' — assessor to be assigned'}`,
+            };
+          }));
+        } catch { /* audit must never break the request */ }
+      }
+    }
     if (imported) {
       await audit(store, auth.user, 'candidates_bulk_imported', 'candidates', '',
         `${imported} candidate(s) imported from a spreadsheet`
-        + (usersCreated ? ` (${usersCreated} portal user(s) created)` : ''));
+        + (usersCreated ? ` (${usersCreated} portal user(s) created)` : '')
+        + (auto_allocated ? ` (${auto_allocated} assessment(s) auto-allocated)` : ''));
     }
-    return ok({ ...summary, imported, users_created: usersCreated, credentials });
+    return ok({ ...summary, imported, users_created: usersCreated, credentials, auto_allocated, auto_allocations });
   });
 
   route('GET', '/admin/candidates/:id', A, async ({ store, params }) => {
@@ -476,7 +559,49 @@ export function adminHandlers(route) {
       password_hash: hashPassword(body.password), candidate_id, active: true, created_by: auth.user.id,
     });
     await audit(store, auth.user, 'user_created', 'users', rec.id, `User "${username}" (${body.role}) created`);
-    return created(publicUser(rec));
+
+    // Every candidate-role user is auto-allocated the default 50-question
+    // assessment for their track, so onboarding never needs a manual Allocate
+    // step per candidate. Best-effort: a skip (no track, empty bank, or an
+    // open assessment already on that track) is reported in the response, and
+    // provisioning itself never fails because of it. Pass
+    // `{ auto_allocate: false }` (or `{ skip_auto_allocation: true }`) to
+    // provision the login only; `role_id` / `assessor_id` / `question_count`
+    // optionally steer the automatic paper.
+    let auto_allocation = null;
+    if (rec.role === 'candidate') {
+      const enabled = body.auto_allocate !== false && body.auto_allocate !== 'false'
+        && body.skip_auto_allocation !== true && body.skip_auto_allocation !== 'true';
+      if (!enabled) {
+        auto_allocation = { allocated: false, skipped: true, reason: 'Automatic allocation was switched off for this user.' };
+      } else {
+        try {
+          const candidate = await store.get('candidates', candidate_id);
+          const result = await autoAllocateAssessment(store, candidate, {
+            actor: auth.user,
+            roleId: body.role_id || null,
+            assessorId: body.assessor_id || null,
+            questionCount: body.question_count ?? MAX_ASSESSMENT_QUESTIONS,
+            auditFn: (action, entity, entity_id, message) => audit(store, auth.user, action, entity, entity_id, message),
+          });
+          auto_allocation = result.allocated
+            ? {
+              allocated: true, assessment_id: result.assessment.id,
+              role_id: result.role.id, role_name: result.role.name,
+              question_count: result.question_count,
+              assessor_id: result.assessment.assessor_id || null,
+            }
+            : {
+              allocated: false, reason: result.reason,
+              ...(result.role ? { role_id: result.role.id, role_name: result.role.name } : {}),
+              ...(result.assessment_id ? { assessment_id: result.assessment_id } : {}),
+            };
+        } catch {
+          auto_allocation = { allocated: false, reason: 'Automatic allocation failed unexpectedly — allocate manually from the candidate record.' };
+        }
+      }
+    }
+    return created(auto_allocation ? { ...publicUser(rec), auto_allocation } : publicUser(rec));
   });
 
   route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => {

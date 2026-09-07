@@ -87,7 +87,7 @@ check('unknown role rejected', call('POST', '/admin/users', AT, {'username': 'r.
 check('candidate user without linked candidate -> 400', call('POST', '/admin/users', AT, {'username': 'c.nolink', 'name': 'X', 'role': 'candidate', 'password': '12345678'})[0] == 400)
 st, cand2 = call('POST', '/admin/candidates', AT, {'name': 'Feature Candidate Two', 'current_title': 'Consultant', 'stage': 'intake'})
 C2 = cand2['id']; check('scratch candidate created', st == 201)
-st, b = call('POST', '/admin/users', AT, {'username': 'feat.cand2', 'name': 'FC2', 'role': 'candidate', 'password': 'cand2-pass', 'candidate_id': C2})
+st, b = call('POST', '/admin/users', AT, {'username': 'feat.cand2', 'name': 'FC2', 'role': 'candidate', 'password': 'cand2-pass', 'candidate_id': C2, 'auto_allocate': False})
 check('candidate user with linkage -> 201', st == 201); U_C2 = b['id']
 check('second user for same candidate -> 409', call('POST', '/admin/users', AT, {'username': 'feat.cand2b', 'name': 'Y', 'role': 'candidate', 'password': 'cand2-pass', 'candidate_id': C2})[0] == 409)
 st, b = call('POST', '/admin/users', AT, {'username': 'feat.validator', 'name': 'Val', 'role': 'validator', 'password': 'val-pass-1'})
@@ -151,7 +151,7 @@ check('candidate untouched after failed deletes', call('GET', f'/admin/candidate
 st, cdel = call('POST', '/admin/candidates', AT, {'name': 'Delete Cascade Probe', 'target_role_id': RSA})
 CD = cdel['id']
 check('probe candidate created', st == 201)
-check('probe portal user created', call('POST', '/admin/users', AT, {'username': 'feat.delprobe', 'name': 'DP', 'role': 'candidate', 'password': 'del-probe-1', 'candidate_id': CD})[0] == 201)
+check('probe portal user created', call('POST', '/admin/users', AT, {'username': 'feat.delprobe', 'name': 'DP', 'role': 'candidate', 'password': 'del-probe-1', 'candidate_id': CD, 'auto_allocate': False})[0] == 201)
 check('probe portal login works before delete', call('POST', '/auth/login', body={'username': 'feat.delprobe', 'password': 'del-probe-1'})[0] == 200)
 check('probe open assessment allocated', call('POST', '/admin/assessments', AT, {'candidate_id': CD, 'role_id': RSA})[0] == 201)
 st, b = call('DELETE', f'/admin/candidates/{CD}', AT, {'password': 'ECOD-admin-2026'})
@@ -217,7 +217,7 @@ check('role PATCH', st == 200 and b['description'] == 'temp v2')
 # ================================ S5 assessment lifecycle & immutability
 section('S5 · assessment allocation, snapshot immutability, lifecycle transitions')
 # scratch candidate user for C3
-call('POST', '/admin/users', AT, {'username': 'feat.cand3', 'name': 'FC3', 'role': 'candidate', 'password': 'cand3-pass', 'candidate_id': C3})
+call('POST', '/admin/users', AT, {'username': 'feat.cand3', 'name': 'FC3', 'role': 'candidate', 'password': 'cand3-pass', 'candidate_id': C3, 'auto_allocate': False})
 _, fc3 = call('POST', '/auth/login', body={'username': 'feat.cand3', 'password': 'cand3-pass'})
 T3 = fc3['token']
 _, meP = call('GET', '/auth/me', PT)
@@ -244,7 +244,7 @@ check('snapshot frozen: served prompt is not the edited one', _cur['prompt'] != 
 # new allocation for a different candidate picks up the NEW config
 st, c4 = call('POST', '/admin/candidates', AT, {'name': 'Feature Candidate Four'})
 C4 = c4['id']
-call('POST', '/admin/users', AT, {'username': 'feat.cand4', 'name': 'FC4', 'role': 'candidate', 'password': 'cand4-pass', 'candidate_id': C4})
+call('POST', '/admin/users', AT, {'username': 'feat.cand4', 'name': 'FC4', 'role': 'candidate', 'password': 'cand4-pass', 'candidate_id': C4, 'auto_allocate': False})
 _, fc4 = call('POST', '/auth/login', body={'username': 'feat.cand4', 'password': 'cand4-pass'})
 T4 = fc4['token']
 st, asg2 = call('POST', '/admin/assessments', AT, {'candidate_id': C4, 'role_id': SR, 'assessor_id': None})
@@ -420,7 +420,7 @@ check('question-plan is admin-only', call('GET', f'/admin/roles/{RSA}/question-p
 st, cx = call('POST', '/admin/candidates', AT, {'name': 'Question Cap Probe', 'target_role_id': RSA})
 CX = cx['id']
 st, ux = call('POST', '/admin/users', AT, {'username': f'cap.probe.{uuid.uuid4().hex[:6]}', 'name': 'Cap Probe',
-                                           'role': 'candidate', 'password': 'cap-pass-1', 'candidate_id': CX})
+                                           'role': 'candidate', 'password': 'cap-pass-1', 'candidate_id': CX, 'auto_allocate': False})
 _, capl = call('POST', '/auth/login', body={'username': ux['username'], 'password': 'cap-pass-1'})
 CXT = capl['token']
 
@@ -504,7 +504,7 @@ check('default allocation serves standard bank + at most five spoken prompts',
 # The reported bug: every open question arrived together, then every MCQ.
 st, mixc = call('POST', '/admin/candidates', AT, {'name': 'Order Probe'})
 call('POST', '/admin/users', AT, {'username': 'order.probe', 'name': 'OP', 'role': 'candidate',
-                                  'password': 'op-pass-1234', 'candidate_id': mixc['id']})
+                                  'password': 'op-pass-1234', 'candidate_id': mixc['id'], 'auto_allocate': False})
 st, mixa = call('POST', '/admin/assessments', AT, {'candidate_id': mixc['id'], 'role_id': RSA, 'assessor_id': None})
 ordered = sorted(mixa['snapshot_json']['questions'], key=lambda q: q['position'])
 seq = ''.join('O' if q['type'] == 'text' else 'X' for q in ordered)
@@ -562,6 +562,52 @@ check('allocate the full 50-question cap -> 201',
       st == 201 and len(full['snapshot_json']['questions']) == 50
       and full['snapshot_json']['question_limit'] == 50
       and full['snapshot_json']['bank_total'] == CAT_TOTAL)
+
+# ================================ S10 automatic allotment (50 questions per candidate user)
+section('S10 · candidate users are auto-allocated 50 questions — no manual Allocate per head')
+
+st, ac = call('POST', '/admin/candidates', AT, {'name': 'Auto Allot Probe', 'target_role_id': RSA})
+AC = ac['id']
+st, au = call('POST', '/admin/users', AT, {'username': f'auto.probe.{uuid.uuid4().hex[:6]}', 'name': 'Auto Probe',
+                                           'role': 'candidate', 'password': 'auto-pass-1', 'candidate_id': AC})
+check('candidate user creation reports its automatic allocation',
+      st == 201 and au.get('auto_allocation', {}).get('allocated') is True)
+AA = au.get('auto_allocation', {})
+check('automatic paper is 50 questions on the candidate track, assessor unassigned',
+      AA.get('question_count') == 50 and AA.get('role_id') == RSA and AA.get('assessor_id') is None)
+_, autol = call('POST', '/auth/login', body={'username': au['username'], 'password': 'auto-pass-1'})
+st, alst = call('GET', '/candidate/assessments', autol['token'])
+check('candidate sees the auto-allocated assessment with 50 questions',
+      st == 200 and len(alst['assessments']) == 1 and alst['assessments'][0]['question_count'] == 50)
+check('auto-allocation advances the pipeline to assessment',
+      call('GET', f'/admin/candidates/{AC}', AT)[1]['candidate']['stage'] == 'assessment')
+check('manual re-allocation of the same track conflicts with the automatic one',
+      call('POST', '/admin/assessments', AT, {'candidate_id': AC, 'role_id': RSA})[0] == 409)
+st, aud = call('GET', '/admin/audit', AT)
+check('automatic allocation is audited',
+      any(e['action'] == 'assessment_allocated' and e['entity_id'] == AA.get('assessment_id') for e in aud['events']))
+
+st, oc = call('POST', '/admin/candidates', AT, {'name': 'Opt Out Probe', 'target_role_id': RSA})
+st, ou = call('POST', '/admin/users', AT, {'username': f'optout.probe.{uuid.uuid4().hex[:6]}', 'name': 'Opt Out',
+                                           'role': 'candidate', 'password': 'opt-pass-12', 'candidate_id': oc['id'],
+                                           'auto_allocate': False})
+check('auto_allocate:false provisions the login with no assessment',
+      st == 201 and ou.get('auto_allocation', {}).get('allocated') is False
+      and call('GET', f"/admin/candidates/{oc['id']}", AT)[1]['assessments'] == [])
+
+tag = uuid.uuid4().hex[:6]
+bulk_csv = ('Name,Email,Target role,Username,Password\n'
+            f'Bulk Auto A,bulka.{tag}@example.com,databricks-rsa,bulk.auto.a.{tag},BulkA-pass-1\n'
+            f'Bulk Auto B,bulkb.{tag}@example.com,,bulk.auto.b.{tag},BulkB-pass-1\n')
+st, bdry = call('POST', '/admin/candidates/import', AT, {'csv': bulk_csv, 'dry_run': True, 'create_users': True})
+check('bulk dry run previews the automatic allocations',
+      st == 200 and bdry.get('auto_allocate') is True and bdry.get('would_auto_allocate') == 2)
+st, bcom = call('POST', '/admin/candidates/import', AT, {'csv': bulk_csv, 'dry_run': False, 'create_users': True})
+check('bulk commit auto-allocates every new portal user',
+      st == 200 and bcom.get('imported') == 2 and bcom.get('users_created') == 2
+      and bcom.get('auto_allocated') == 2)
+check('bulk automatic papers are 50 questions each (explicit target + workspace default)',
+      all(a.get('allocated') and a.get('question_count') == 50 for a in bcom.get('auto_allocations', [])))
 
 print()
 print(f'PASSED {PASSED} / {PASSED + len(FAILS)}')
