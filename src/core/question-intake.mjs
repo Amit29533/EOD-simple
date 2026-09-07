@@ -329,10 +329,13 @@ export function validateBatch(rows = [], { modules = [], families = [], existing
   return { accepted, rejected, duplicates };
 }
 
-/** Comparison key for duplicate detection: typography-insensitive. */
+/** Comparison key for duplicate detection: typography-insensitive, label-insensitive. */
 export function promptKey(text) {
   return String(text ?? '')
     .normalize('NFKC')
+    // Strip a leading enumerator/label (\"COMMON QUESTION —\") so the same prompt
+    // with or without its historic label never slips past duplicate detection.
+    .replace(/^[A-Z0-9][A-Z0-9 '/]{1,40}\s*[-\u2013\u2014\u2015\u2212:]\s+/, '')
     .replace(/[\u2018\u2019\u201b]/g, "'")
     .replace(/[\u201c\u201d]/g, '"')
     .replace(/[\u2010-\u2015]/g, '-')

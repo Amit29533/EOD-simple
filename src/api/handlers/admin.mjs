@@ -570,16 +570,16 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ competencies
-  const validateCompetency = (body, store, roleId) => (async () => {
+  function validateCompetency(body) {
     if (!str(body.name)) return 'Competency name is required.';
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return 'Weight must be 0-100.';
     if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return 'Target level must be 1-5.';
     return null;
-  })();
+  }
 
   route('POST', '/admin/competencies', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
-    const problem = await validateCompetency(body, store, body.role_id);
+    const problem = validateCompetency(body);
     if (problem) return bad(problem);
     const rec = await store.insert('competencies', {
       role_id: body.role_id,

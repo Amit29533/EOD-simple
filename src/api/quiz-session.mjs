@@ -90,7 +90,7 @@ export function ensureQuizState(a, questions) {
       tab_switch: 0, tab_return: 0, window_blur: 0, browser_close: 0, exam_exit: 0,
       exam_reopen: 0, exam_start: 0, multi_window: 0, devtools_key: 0,
       devtools_resize: 0, copy_attempt: 0, cut_attempt: 0, paste_attempt: 0,
-      screenshot: 0, other: 0,
+      screenshot: 0, spoken_answer_missing: 0, other: 0,
     },
     events: [],
   };
