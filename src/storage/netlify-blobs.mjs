@@ -24,6 +24,15 @@ export async function createBlobsStore() {
   const CACHE_TTL_MS = 5000;
   const UNCACHED = new Set(['sessions']);
 
+  // Per-table write lock to avoid concurrent read-modify-write races
+  const locks = new Map();
+  const withLock = (t, fn) => {
+    const prev = locks.get(t) || Promise.resolve();
+    const next = prev.then(fn, fn);
+    locks.set(t, next.catch(() => {}));
+    return next;
+  };
+
   const readTable = async (t) => {
     if (UNCACHED.has(t)) {
       let rows = {};
@@ -56,41 +65,52 @@ export async function createBlobsStore() {
       return rows[id] ? { ...rows[id] } : null;
     },
     async insert(t, data) {
-      const rows = await readTable(t);
-      const id = data.id || newId();
-      const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
-      rows[id] = rec;
-      await writeTable(t, rows);
-      return { ...rec };
-    },
-    /**
-     * Batch insert: one read + one blob write for the whole batch (per-row
-     * writes would burn a blob round-trip per record during bulk onboarding).
-     */
-    async insertMany(t, rows = []) {
-      const all = await readTable(t);
-      const recs = rows.map((data) => {
+      return withLock(t, async () => {
+        const rows = await readTable(t);
         const id = data.id || newId();
         const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
-        all[id] = rec;
-        return rec;
+        rows[id] = rec;
+        if (t === 'audit_log') {
+          const all = Object.values(rows);
+          if (all.length > 2000) {
+            all.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+            for (const r of all.slice(0, 500)) delete rows[r.id];
+          }
+        }
+        await writeTable(t, rows);
+        return { ...rec };
       });
-      if (recs.length) await writeTable(t, all);
-      return recs.map((r) => ({ ...r }));
+    },
+    async insertMany(t, rows = []) {
+      return withLock(t, async () => {
+        const all = await readTable(t);
+        const recs = rows.map((data) => {
+          const id = data.id || newId();
+          const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
+          all[id] = rec;
+          return rec;
+        });
+        if (recs.length) await writeTable(t, all);
+        return recs.map((r) => ({ ...r }));
+      });
     },
     async update(t, id, patch) {
-      const rows = await readTable(t);
-      if (!rows[id]) return null;
-      rows[id] = { ...rows[id], ...patch, id, updated_at: new Date().toISOString() };
-      await writeTable(t, rows);
-      return { ...rows[id] };
+      return withLock(t, async () => {
+        const rows = await readTable(t);
+        if (!rows[id]) return null;
+        rows[id] = { ...rows[id], ...patch, id, updated_at: new Date().toISOString() };
+        await writeTable(t, rows);
+        return { ...rows[id] };
+      });
     },
     async remove(t, id) {
-      const rows = await readTable(t);
-      if (!rows[id]) return false;
-      delete rows[id];
-      await writeTable(t, rows);
-      return true;
+      return withLock(t, async () => {
+        const rows = await readTable(t);
+        if (!rows[id]) return false;
+        delete rows[id];
+        await writeTable(t, rows);
+        return true;
+      });
     },
   };
 }

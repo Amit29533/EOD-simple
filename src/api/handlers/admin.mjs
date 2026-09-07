@@ -1,4 +1,4 @@
-import { hashPassword, verifyPassword } from '../../core/passwords.mjs';
+import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable,
   audit, str, num, bool, missing, bulkInsert,
@@ -208,6 +208,16 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ candidates
+  // Pagination: limit/offset to prevent OOM on large directories. Default 200, max 500.
+  const paginate = (rows, query, sortFn) => {
+    const limit = Math.min(500, Math.max(1, Number(query.limit) || 200));
+    const offset = Math.max(0, Number(query.offset) || 0);
+    if (sortFn) rows.sort(sortFn);
+    const total = rows.length;
+    const slice = rows.slice(offset, offset + limit);
+    return { rows: slice, total, limit, offset };
+  };
+
   route('GET', '/admin/candidates', A, async ({ store, query }) => {
     let rows = await store.list('candidates');
     if (query.stage) rows = rows.filter((c) => c.stage === query.stage);
@@ -218,15 +228,25 @@ export function adminHandlers(route) {
     }
     const roles = await store.list('roles');
     const roleName = Object.fromEntries(roles.map((r) => [r.id, r.name]));
-    rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-    return ok({ candidates: rows.map((c) => ({ ...c, role_name: roleName[c.target_role_id] || '' })) });
+    const sorted = rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const page = paginate(sorted, query, null);
+    return ok({
+      candidates: page.rows.map((c) => ({ ...c, role_name: roleName[c.target_role_id] || '' })),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+    });
   });
 
   route('POST', '/admin/candidates', A, async ({ store, body, auth }) => {
     const miss = missing(body, ['name']);
     if (miss.length) return bad('Candidate name is required.');
     if (body.stage && !STAGE_KEYS.includes(body.stage)) return bad('Unknown pipeline stage.');
-    if (body.target_role_id && !(await store.get('roles', body.target_role_id))) return bad('Unknown target role.');
+    if (body.target_role_id) {
+      const role = await store.get('roles', body.target_role_id);
+      if (!role) return bad('Unknown target role.');
+      if (role.active === false) return bad('Target role is inactive.');
+    }
     const yearsProblem = yearsError(body.years_experience);
     if (yearsProblem) return bad(yearsProblem);
     const rec = await store.insert('candidates', {
@@ -354,12 +374,14 @@ export function adminHandlers(route) {
     let credentials = [];
     let usersCreated = 0;
     if (createUsers && importedRecords.length) {
+      // Hash passwords in parallel but bounded to avoid CPU spike on 2000-row imports
+      const hashes = await Promise.all(report.accepted.map(({ candidate }) => hashPasswordAsync(candidate.password)));
       const userBatch = report.accepted.map(({ candidate }, i) => ({
         username: candidate.username,
         name: candidate.name,
         email: candidate.email,
         role: 'candidate',
-        password_hash: hashPassword(candidate.password),
+        password_hash: hashes[i],
         candidate_id: importedRecords[i].id,
         active: true,
         created_by: auth.user.id,
@@ -470,7 +492,11 @@ export function adminHandlers(route) {
     if (!c) return notFound('Candidate not found.');
     if (body.stage !== undefined && (!body.stage || !STAGE_KEYS.includes(body.stage)))
       return bad('Unknown pipeline stage.');
-    if (body.target_role_id && !(await store.get('roles', body.target_role_id))) return bad('Unknown target role.');
+    if (body.target_role_id) {
+      const role = await store.get('roles', body.target_role_id);
+      if (!role) return bad('Unknown target role.');
+      if (role.active === false) return bad('Target role is inactive.');
+    }
     const patch = {};
     for (const [f, max] of Object.entries(CANDIDATE_TEXT_FIELDS))
       if (body[f] !== undefined) patch[f] = body[f] === '' ? '' : str(body[f], max);
@@ -500,7 +526,7 @@ export function adminHandlers(route) {
     if (!c) return notFound('Candidate not found.');
     if (!body?.password || typeof body.password !== 'string')
       return forbidden('Admin password is required to delete a candidate.');
-    if (!verifyPassword(body.password, auth.user.password_hash))
+    if (!(await verifyPasswordAsync(body.password, auth.user.password_hash)))
       return forbidden('Incorrect admin password — deletion cancelled.');
 
     const assessments = await store.list('assessments', { candidate_id: params.id });
@@ -530,12 +556,18 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ users & access
-  route('GET', '/admin/users', A, async ({ store }) => {
+  route('GET', '/admin/users', A, async ({ store, query }) => {
     const users = (await store.list('users')).map(publicUser);
     const candidates = await store.list('candidates');
     const cname = Object.fromEntries(candidates.map((c) => [c.id, c.name]));
     users.sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name));
-    return ok({ users: users.map((u) => ({ ...u, candidate_name: cname[u.candidate_id] || null })) });
+    const page = paginate(users, query, null);
+    return ok({
+      users: page.rows.map((u) => ({ ...u, candidate_name: cname[u.candidate_id] || null })),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+    });
   });
 
   route('POST', '/admin/users', A, async ({ store, body, auth }) => {
@@ -556,7 +588,7 @@ export function adminHandlers(route) {
     }
     const rec = await store.insert('users', {
       username, name: str(body.name, 120), email: str(body.email, 200), role: body.role,
-      password_hash: hashPassword(body.password), candidate_id, active: true, created_by: auth.user.id,
+      password_hash: await hashPasswordAsync(body.password), candidate_id, active: true, created_by: auth.user.id,
     });
     await audit(store, auth.user, 'user_created', 'users', rec.id, `User "${username}" (${body.role}) created`);
 
@@ -613,7 +645,7 @@ export function adminHandlers(route) {
     if (body.active !== undefined) patch.active = bool(body.active);
     if (body.password !== undefined && body.password !== '') {
       if (String(body.password).length < 8) return bad('Password must be at least 8 characters.');
-      patch.password_hash = hashPassword(body.password);
+      patch.password_hash = await hashPasswordAsync(body.password);
     }
     if (body.candidate_id !== undefined && u.role === 'candidate') {
       if (!body.candidate_id) return bad('Candidate users must be linked to a candidate record.');
@@ -779,7 +811,13 @@ export function adminHandlers(route) {
     const comps = await store.list('competencies');
     const cname = Object.fromEntries(comps.map((c) => [c.id, c.name]));
     rows.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    return ok({ questions: rows.map((q) => ({ ...q, competency_name: cname[q.competency_id] || '' })) });
+    const page = paginate(rows, { ...query, limit: query.limit || 500 }, null);
+    return ok({
+      questions: page.rows.map((q) => ({ ...q, competency_name: cname[q.competency_id] || '' })),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
+    });
   });
 
   route('POST', '/admin/questions', A, async ({ store, body, auth }) => {
@@ -850,8 +888,9 @@ export function adminHandlers(route) {
     const uname = Object.fromEntries(users.map((u) => [u.id, u.name]));
     const rname = Object.fromEntries(roles.map((r) => [r.id, r.name]));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const page = paginate(rows, query, null);
     return ok({
-      assessments: rows.map((a) => ({
+      assessments: page.rows.map((a) => ({
         id: a.id, status: a.status, created_at: a.created_at, started_at: a.started_at,
         submitted_at: a.submitted_at, scored_at: a.scored_at, overall_pct: a.overall_pct,
         readiness_key: a.readiness_key, readiness_label: a.readiness_label,
@@ -866,6 +905,9 @@ export function adminHandlers(route) {
           ? a.quiz_state.events[a.quiz_state.events.length - 1].event
           : null,
       })),
+      total: page.total,
+      limit: page.limit,
+      offset: page.offset,
     });
   });
 
@@ -1284,7 +1326,12 @@ export function adminHandlers(route) {
     let rows = await store.list('audit_log');
     if (query.entity) rows = rows.filter((r) => r.entity === query.entity);
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-    return ok({ events: rows.slice(0, 200) });
+    // Hard cap 200 for audit to prevent unbounded growth in response
+    const limit = Math.min(200, Math.max(1, Number(query.limit) || 200));
+    const offset = Math.max(0, Number(query.offset) || 0);
+    const total = rows.length;
+    const slice = rows.slice(offset, offset + limit);
+    return ok({ events: slice, total, limit, offset });
   });
 }
 

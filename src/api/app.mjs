@@ -17,6 +17,8 @@ export async function createApp(store) {
     const m = /^Bearer\s+(.+)$/i.exec(raw);
     if (!m) return null;
     const token = m[1].trim();
+    // Basic token format validation (hex, 64 chars)
+    if (!/^[a-f0-9]{32,128}$/i.test(token)) return null;
     const sessions = await store.list('sessions', { token });
     const session = sessions[0];
     if (!session) return null;
@@ -31,6 +33,10 @@ export async function createApp(store) {
 
   return async function app({ method, path, query = {}, headers = {}, body }) {
     try {
+      // Basic path sanitization
+      if (typeof path !== 'string' || path.length > 2000 || path.includes('\0')) {
+        return { status: 400, body: { error: 'Invalid request path' } };
+      }
       const auth = await resolveAuth(headers);
       const result = await dispatch(routes, {
         store, method, path, query, body: body || {}, auth,
@@ -38,7 +44,8 @@ export async function createApp(store) {
       });
       return result;
     } catch (err) {
-      console.error(`[api] ${method} ${path} failed:`, err);
+      // Never leak internal details to client
+      console.error(`[api] ${method} ${path} failed:`, err.message, err.stack?.slice(0, 500));
       return { status: 500, body: { error: 'Internal error. Please try again.' } };
     }
   };

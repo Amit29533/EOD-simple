@@ -52,15 +52,26 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
     return res.json();
   }
 
-  const formulaValue = (v) =>
-    typeof v === 'number' ? String(v)
-    : typeof v === 'boolean' ? (v ? 'TRUE()' : 'FALSE()')
-    : `'${String(v).replace(/'/g, "\\'")}'`;
+  // Airtable formula injection hardening:
+  // - field names are allowlisted to alphanumeric + underscore, dash
+  // - string values escaped for single quotes and backslashes
+  const SAFE_FIELD_RE = /^[a-zA-Z0-9_$-]{1,100}$/;
+  const sanitizeField = (k) => {
+    if (!SAFE_FIELD_RE.test(k)) throw new Error(`Unsafe field name: ${k}`);
+    return k;
+  };
+  const formulaValue = (v) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    if (typeof v === 'boolean') return v ? 'TRUE()' : 'FALSE()';
+    // Escape backslash and single quote, truncate to prevent abuse
+    const s = String(v).slice(0, 1000).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `'${s}'`;
+  };
 
   const toFormula = (filter) => {
     const parts = Object.entries(filter)
       .filter(([, v]) => v !== undefined && v !== null && v !== '')
-      .map(([k, v]) => `{${k}} = ${formulaValue(v)}`);
+      .map(([k, v]) => `{${sanitizeField(k)}} = ${formulaValue(v)}`);
     if (!parts.length) return undefined;
     return parts.length === 1 ? parts[0] : `AND(${parts.join(', ')})`;
   };
