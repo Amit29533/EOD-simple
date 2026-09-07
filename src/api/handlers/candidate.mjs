@@ -63,12 +63,12 @@ function persistableAnswer(q, value) {
 function validateAnswerShape(q, value) {
   switch (q.type) {
     case 'mcq_single': {
-      const ids = new Set((q.options || []).map((o) => o.id));
-      return typeof value === 'string' && ids.has(value);
+      const ids = new Set((q.options || []).map((o) => String(o.id)));
+      return (typeof value === 'string' || typeof value === 'number') && ids.has(String(value));
     }
     case 'mcq_multi': {
-      const ids = new Set((q.options || []).map((o) => o.id));
-      return Array.isArray(value) && value.every((v) => ids.has(v));
+      const ids = new Set((q.options || []).map((o) => String(o.id)));
+      return Array.isArray(value) && value.every((v) => ids.has(String(v)));
     }
     case 'scale': {
       const n = Number(value);

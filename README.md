@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 259 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 265 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, full exam
                     #           lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom), admin validation, question-bank
@@ -111,7 +111,7 @@ python3 tests/features.py     # 202 checks: every feature — CRUD, validation, 
   in the proctoring trail, the audit log and the assessor's paper.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario answered by microphone recording), autosaving quiz, strict submission validation, optional per-assessment question count.
-- **Automated scoring** — objective items auto-scored at submit; open items assessor-scored against rubrics; competency-weighted blend.
+- **Automated scoring** — objective items auto-scored at submit (multi-select MCQs are all-or-nothing: any incorrect choice, or a missing correct option, scores the question at zero — no partial credit); open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
 - **Brand mark** — the AP monogram whose crossbar is a handshake, as a scalable SVG.

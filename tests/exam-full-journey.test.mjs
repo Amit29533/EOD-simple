@@ -411,6 +411,50 @@ test('B1 · full walk, submit, score and finalize produce the exact weighted rep
   assert.ok(!leak.includes('breakdown'), 'candidate report has no per-question breakdown');
 });
 
+test('B3 · multi-select is all-or-nothing: extra wrong or incomplete set scores 0', async () => {
+  // The previous proportional rule awarded (hits − wrong) / |correct| of the
+  // points, so picking A+C+B on a 2-correct item still earned half marks, and
+  // picking only A did too. Any incorrect choice — or a missing correct one —
+  // must now zero the question.
+  const cases = [
+    { name: 'all correct plus one extra wrong', pick: ['a', 'c', 'b'], score: 0 },
+    { name: 'incomplete correct set', pick: ['a'], score: 0 },
+    { name: 'exact match, any order', pick: ['c', 'a'], score: 4 },
+  ];
+
+  for (const { name, pick, score } of cases) {
+    const w = await makeWorld();
+    const cand = await w.store.insert('candidates', {
+      name: `Multi ${name}`, stage: 'assessment', target_role_id: w.role.id,
+    });
+    const uname = `multi.${name.replace(/[^a-z0-9]+/g, '').slice(0, 18)}`;
+    await w.store.insert('users', {
+      username: uname, name: cand.name, role: 'candidate', email: '',
+      candidate_id: cand.id, password_hash: hashPassword(`${uname}-pass-x`), active: true,
+    });
+    const alloc = await w.allocate(cand.id, w.assessor1.id);
+    const tok = await w.login(uname, `${uname}-pass-x`);
+    const served = await servedPaper(w, alloc.id);
+    const intended = {
+      [w.ids.pin]: { text: '', transcript: 'spoken', audio_b64: B64, audio_mime: 'audio/webm', source: 'audio' },
+      [w.ids.oral2]: 'Second spoken answer.',
+      [w.ids.single]: 'b',
+      [w.ids.multi]: pick,
+      [w.ids.scale]: 4,
+      [w.ids.open]: 'Standard open answer.',
+    };
+    await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
+    for (const q of served) {
+      await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: intended[q.id] } });
+    }
+    const submit = await w.call('POST', `/candidate/assessments/${alloc.id}/submit`, { token: tok, body: { answers: {} } });
+    assert.equal(submit.status, 200, `${name}: submit ${JSON.stringify(submit.body)}`);
+    const rows = await w.store.list('responses', { assessment_id: alloc.id });
+    const multi = rows.find((r) => r.question_id === w.ids.multi);
+    assert.equal(multi.auto_score, score, `${name}: auto_score should be ${score}, got ${multi.auto_score}`);
+  }
+});
+
 test('B2 · compartmentalization: other assessors and candidates get existence-hiding 404s', async () => {
   const w = await makeWorld();
   const alloc = await w.allocate(w.cand1.id, w.assessor1.id);

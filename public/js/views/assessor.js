@@ -136,11 +136,14 @@ function scoreCard(q, n, r) {
 
   let answerBlock = '';
   if (q.type === 'mcq_single' || q.type === 'mcq_multi') {
-    const picked = q.type === 'mcq_multi'
+    const pickedRaw = q.type === 'mcq_multi'
       ? (Array.isArray(answer) ? answer.map(String) : (answer ? [String(answer)] : []))
-      : [answer].filter((v) => v !== undefined && v !== null && v !== '');
-    const correct = (q.correct_option_ids || []).map(String);
+      : [answer].filter((v) => v !== undefined && v !== null && v !== '').map(String);
+    const picked = [...new Set(pickedRaw.filter(Boolean))];
+    const correct = [...new Set((q.correct_option_ids || []).map(String).filter(Boolean))];
     const hits = picked.filter((id) => correct.includes(id)).length;
+    const extras = picked.filter((id) => !correct.includes(id)).length;
+    const exact = extras === 0 && hits === correct.length && correct.length > 0;
     answerBlock = (q.options || []).map((o) => {
       const isPicked = picked.includes(String(o.id));
       const isCorrect = correct.includes(String(o.id));
@@ -150,10 +153,12 @@ function scoreCard(q, n, r) {
     }).join('');
     const auto = Number(r?.auto_score ?? 0);
     const tone = auto >= Number(q.points) ? 'green' : auto > 0 ? 'amber' : 'red';
-    const partial = q.type === 'mcq_multi' && correct.length
-      ? ` · ${hits}/${correct.length} correct options`
+    const multiNote = q.type === 'mcq_multi' && correct.length
+      ? (exact
+        ? ' · exact match'
+        : ` · not an exact match (${hits}/${correct.length} correct${extras ? `, ${extras} incorrect` : ''})`)
       : '';
-    answerBlock += `<div class="row" style="margin-top:8px">${badge(`Auto score: ${fmtPts(auto)}/${q.points}${partial}`, tone)}</div>`;
+    answerBlock += `<div class="row" style="margin-top:8px">${badge(`Auto score: ${fmtPts(auto)}/${q.points}${multiNote}`, tone)}</div>`;
   } else if (q.type === 'scale') {
     answerBlock = `<div class="row"><b style="font-size:22px">${answer ?? '—'}</b><span class="muted">/5 self-rated</span>${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, 'blue')}</div>`;
   } else {
