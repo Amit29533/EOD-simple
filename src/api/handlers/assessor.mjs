@@ -21,7 +21,8 @@ export function assessorHandlers(route) {
     return ok({
       assessments: rows.map((a) => ({
         id: a.id, status: a.status, created_at: a.created_at, submitted_at: a.submitted_at,
-        scored_at: a.scored_at, overall_pct: a.overall_pct, readiness_label: a.readiness_label,
+        scored_at: a.scored_at, overall_pct: a.overall_pct,
+        readiness_key: a.readiness_key, readiness_label: a.readiness_label,
         role_name: a.snapshot_json?.role?.name || 'Assessment',
         question_count: (a.snapshot_json?.questions || []).length,
         candidate: candidateForAssessor(cmap[a.candidate_id]),
@@ -45,7 +46,7 @@ export function assessorHandlers(route) {
     return ok({
       assessment: {
         id: a.id, status: a.status, submitted_at: a.submitted_at, scored_at: a.scored_at,
-        overall_pct: a.overall_pct, readiness_label: a.readiness_label,
+        overall_pct: a.overall_pct, readiness_key: a.readiness_key, readiness_label: a.readiness_label,
         role: a.snapshot_json.role,
       },
       candidate: candidateForAssessor(candidate),

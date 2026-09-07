@@ -19,7 +19,7 @@ before(async () => {
   store = createJsonStore(path.join(tmp, 'db.json'));
   app = await createApp(store);
   const admin = await store.insert('users', {
-    username: 'admin', name: 'Admin', role: 'admin', email: '',
+    username: 'admin', name: 'Admin', role: 'admin', email: 'admin@anthroprime.com',
     password_hash: hashPassword('admin-pw-123'), active: true,
   });
   adminId = admin.id;
@@ -61,4 +61,16 @@ test('login caps concurrent sessions per user and drops expired ones', async () 
   });
   await login('admin', 'admin-pw-123');
   assert.equal((await store.list('sessions', { token: 'other-expired' })).length, 1);
+});
+
+test('login accepts the account email as well as the username', async () => {
+  const byEmail = await login('admin@anthroprime.com', 'admin-pw-123');
+  assert.equal(byEmail.status, 200, JSON.stringify(byEmail.body));
+  assert.equal(byEmail.body.user.username, 'admin');
+
+  const mixedCase = await login('Admin@Anthroprime.com', 'admin-pw-123');
+  assert.equal(mixedCase.status, 200);
+
+  const unknown = await login('nobody@anthroprime.com', 'admin-pw-123');
+  assert.equal(unknown.status, 401, 'unknown email is the same 401 as a bad username');
 });

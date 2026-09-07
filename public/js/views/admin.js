@@ -451,7 +451,11 @@ export async function candidateDetailView(view, { id }) {
 export async function assessmentsView(view) {
   view.innerHTML = loading();
   const urlStatus = new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '';
-  const [d, { users }] = await Promise.all([api(`/admin/assessments${urlStatus ? `?status=${urlStatus}` : ''}`), api('/admin/users')]);
+  // Always fetch the full list so the status pills keep truthful counts while a
+  // filter is active (filtering server-side made every other pill read 0).
+  const [d, { users }] = await Promise.all([api('/admin/assessments'), api('/admin/users')]);
+  const all = d.assessments;
+  const assessments = urlStatus ? all.filter((a) => a.status === urlStatus) : all;
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   view.innerHTML = `
     <div class="page-heading">
@@ -460,12 +464,12 @@ export async function assessmentsView(view) {
     <div class="card flat toolbar-card">
       <div class="toolbar-label"><span class="toolbar-icon">◷</span><span>Assessment status</span></div>
       <div class="pill-row filter-pills">
-        <a href="#/assessments" class="chip ${!urlStatus ? 'selected' : ''}">All <b>${d.assessments.length}</b></a>
-        ${M().assessmentStatuses.map((s) => `<a href="#/assessments?status=${s.key}" class="chip ${urlStatus === s.key ? 'selected' : ''}">${esc(s.label)} <b>${d.assessments.filter((a) => a.status === s.key).length}</b></a>`).join('')}
+        <a href="#/assessments" class="chip ${!urlStatus ? 'selected' : ''}">All <b>${all.length}</b></a>
+        ${M().assessmentStatuses.map((s) => `<a href="#/assessments?status=${s.key}" class="chip ${urlStatus === s.key ? 'selected' : ''}">${esc(s.label)} <b>${all.filter((a) => a.status === s.key).length}</b></a>`).join('')}
       </div>
     </div>
     <div class="card table-card">
-      ${d.assessments.length ? dataTable([
+      ${assessments.length ? dataTable([
         { label: 'Candidate', render: (a) => `<a href="#/candidates/${a.candidate_id}"><b>${esc(a.candidate_name)}</b></a>` },
         { label: 'Role', render: (a) => esc(a.role_name) },
         { label: 'Assessor', render: (a) => a.assessor_name ? esc(a.assessor_name) : '<span class="muted">unassigned</span>' },
@@ -479,7 +483,7 @@ export async function assessmentsView(view) {
             ${['scored', 'validated'].includes(a.status) ? `<a class="btn ghost sm" href="#/assessments/${a.id}/report">Report</a>` : ''}
             ${['assigned', 'in_progress', 'submitted'].includes(a.status) ? `<button class="btn ghost sm" data-re="${a.id}">Reassign</button>` : ''}
             ${['assigned', 'in_progress'].includes(a.status) ? `<button class="btn ghost sm" style="color:var(--red)" data-del="${a.id}">Delete</button>` : ''}` },
-      ], d.assessments) : emptyState('No assessments', 'Allocate an assessment from a candidate or the Candidates page.')}
+      ], assessments) : emptyState('No assessments', 'Allocate an assessment from a candidate or the Candidates page.')}
     </div>`;
   view.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
     const yes = await confirmModal('Delete assessment', 'Delete this not-yet-submitted assessment and its draft answers?', 'Delete', true);
@@ -488,7 +492,7 @@ export async function assessmentsView(view) {
     assessmentsView(view);
   }));
   view.querySelectorAll('[data-re]').forEach((b) => (b.onclick = async () => {
-    const a = d.assessments.find((x) => x.id === b.dataset.re);
+    const a = all.find((x) => x.id === b.dataset.re);
     const vals = await formModal({
       title: `Reassign assessor · ${a.candidate_name}`,
       fields: [{ name: 'assessor_id', label: 'Assessor', type: 'select', allowEmpty: false, options: assessors.map((u) => ({ value: u.id, label: u.name })) }],
@@ -852,7 +856,13 @@ function questionEditorModal(existing, competencies) {
         const refreshOpts = () => { el.querySelector('#qe-opts').innerHTML = optionRows(); wireOpts(); };
         wireOpts();
         el.querySelector('#qe-add-opt').onclick = () => {
-          const next = String.fromCharCode(97 + options.length);
+          const used = new Set(options.map((o) => o.id));
+          let next = '';
+          for (let i = 0; i < 26; i += 1) {
+            const id = String.fromCharCode(97 + i);
+            if (!used.has(id)) { next = id; break; }
+          }
+          if (!next) next = `o${options.length + 1}`;
           options.push({ id: next, label: '' });
           refreshOpts();
         };

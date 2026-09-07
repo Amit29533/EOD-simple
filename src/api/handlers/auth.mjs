@@ -32,7 +32,14 @@ export function authHandlers(route) {
     if (throttled(username)) return tooMany('Too many failed attempts. Please wait a few minutes and try again.');
 
     const users = await store.list('users', { username });
-    const user = users[0];
+    let user = users[0];
+    // The sign-in form accepts "username or email". Usernames are unique; emails
+    // are not, so an email match is only used when it is unambiguous.
+    if (!user && username.includes('@')) {
+      const matches = (await store.list('users'))
+        .filter((u) => String(u.email || '').trim().toLowerCase() === username);
+      if (matches.length === 1) user = matches[0];
+    }
     if (!user || user.active === false || !verifyPassword(body.password, user.password_hash)) {
       recordFailure(username);
       return unauthorized('Invalid username or password.');

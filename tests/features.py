@@ -64,6 +64,7 @@ _, arjun = call('POST', '/auth/login', body={'username': 'arjun.mehta', 'passwor
 _, rohit = call('POST', '/auth/login', body={'username': 'rohit.verma', 'password': 'ECOD-candidate-2026'})
 AT, PT, AJ, RT = admin['token'], priya['token'], arjun['token'], rohit['token']
 check('all seeded logins ok', all([AT, PT, AJ, RT]))
+check('login by email works', call('POST', '/auth/login', body={'username': 'admin@anthroprime.com', 'password': 'ECOD-admin-2026'})[0] == 200)
 check('login response carries no hash', 'password_hash' not in json.dumps(admin))
 st, me = call('GET', '/auth/me', RT)
 check('/auth/me returns user+linked candidate', st == 200 and me['candidate']['name'] == 'Rohit Verma')
@@ -134,6 +135,12 @@ check('rohit detail shows linked portal user', detR['linked_user']['username'] =
 st, b = call('PATCH', f'/admin/candidates/{C3}', AT, {'name': 'Feature C3 Renamed', 'years_experience': 7, 'notes': 'note'})
 check('PATCH candidate fields', st == 200 and b['name'] == 'Feature C3 Renamed' and b['years_experience'] == 7)
 check('PATCH bogus stage -> 400', call('PATCH', f'/admin/candidates/{C3}', AT, {'stage': 'quantum'})[0] == 400)
+st, b = call('PATCH', f'/admin/candidates/{C3}', AT, {'stage': 'enrichment'})
+check('PATCH valid stage persists', st == 200 and b['stage'] == 'enrichment')
+st, b = call('PATCH', f'/admin/candidates/{C3}', AT, {'years_experience': None})
+check('PATCH clearing years_experience stores null not 0', st == 200 and b['years_experience'] is None)
+# Restore: allocation only advances stage forward, so leave C3 at role_mapped.
+call('PATCH', f'/admin/candidates/{C3}', AT, {'stage': 'role_mapped', 'years_experience': 7})
 rohit_cid = detR['candidate']['id']
 st, b = call('DELETE', f'/admin/candidates/{rohit_cid}', AT)
 check('delete without admin password -> 403', st == 403 and 'password' in b.get('error', '').lower())
@@ -376,7 +383,9 @@ check('rohit cannot see scratch assessment (404)', call('GET', f'/candidate/asse
 check('arjun cannot see priya assessment (404)', call('GET', f'/assessor/assessments/{AID}', AJ)[0] == 404)
 check('C4 candidate cannot see C3 assessment', call('GET', f'/candidate/assessments/{AID}', T4)[0] == 404)
 st, wl = call('GET', '/assessor/assessments', PT)
-proj = next(a for a in wl['assessments'] if a['id'] == AID)['candidate']
+scored_row = next(a for a in wl['assessments'] if a['id'] == AID)
+check('assessor list includes readiness_key after scoring', scored_row.get('readiness_key') == 'go')
+proj = scored_row['candidate']
 check('assessor projection exposes only professional fields', set(proj.keys()) <= {'id', 'name', 'current_title', 'years_experience', 'target_role_id'})
 
 # ================================ S8 question allocation (X questions per candidate)
