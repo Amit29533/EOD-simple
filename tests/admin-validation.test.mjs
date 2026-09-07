@@ -316,3 +316,101 @@ test('competency PATCH caps every text field exactly like POST', async () => {
     assert.equal(patched.body[field].length, created.body[field].length, `${field} PATCH cap == POST cap`);
   }
 });
+
+test('a malformed options array is a validation error, never a 500', async () => {
+  // Options reach the API from a form, a CSV grid and the workbook extractor, so
+  // an entry can be null, a bare string, a number, or an object with a numeric
+  // label. Validation used to read `o.label` off whatever arrived, and a single
+  // null crashed both question endpoints.
+  const hostile = [
+    [null, { id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+    ['a', 'b'],
+    [1, 2],
+    [{ id: 'a', label: 5 }, { id: 'b', label: 6 }],
+    [{ id: 'a', label: { toString: () => 'x' } }, { id: 'b', label: 'B' }],
+    [{ label: 'A' }, { label: 'B' }],
+    ['a', ['b'], { id: 'c', label: 'C', extra: { deep: true } }],
+  ];
+  for (const [i, options] of hostile.entries()) {
+    for (const path of ['/admin/questions', '/admin/question-bank/questions']) {
+      const body = {
+        role_id: roleA.id, competency_id: compA.id, module: 'T01', type: 'mcq_single',
+        prompt: `Hostile options payload ${i}?`, points: 4, difficulty: 'intermediate',
+        order: 1, active: true, options, correct_option_ids: ['a'],
+      };
+      const res = await call('POST', path, { token: adminToken, body });
+      assert.ok(res.status < 500, `${path} rejected payload ${i} with ${res.status}: ${JSON.stringify(res.body).slice(0, 160)}`);
+    }
+  }
+  // Non-array `options` values must not crash either.
+  for (const options of ['abc', { 0: { id: 'a', label: 'A' } }, 42, true]) {
+    const res = await call('POST', '/admin/questions', {
+      token: adminToken,
+      body: validQuestion({ options, correct_option_ids: ['a'] }),
+    });
+    assert.equal(res.status, 400, `options ${JSON.stringify(options)} is refused, not crashed`);
+  }
+});
+
+test('junk options are dropped, and an answer key pointing at dropped text is still refused', async () => {
+  // The refusal must stay consistent: dropping a malformed entry is only safe if
+  // the correct-answer check runs against what survived.
+  // One entry survives the drop, so the count check fires first: proof that the
+  // blank/null entries never made it into the option list the key is checked on.
+  const res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      options: [null, undefined, 'x', { id: 'a', label: 'Alpha' }, { id: 'b', label: '   ' }],
+      correct_option_ids: ['b'],
+    }),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /at least two options/i);
+
+  // Two survivors, and the key points at a dropped entry -> refused.
+  const dangling = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }, { id: 'c', label: '' }],
+      correct_option_ids: ['c'],
+    }),
+  });
+  assert.equal(dangling.status, 400, JSON.stringify(dangling.body));
+  assert.match(dangling.body.error, /correct option/i, 'a dropped option cannot be the answer key');
+
+  const okRes = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      options: [null, { id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }],
+      correct_option_ids: ['a'],
+    }),
+  });
+  assert.equal(okRes.status, 201, JSON.stringify(okRes.body));
+  assert.deepEqual(okRes.body.options.map((o) => o.id), ['a', 'b'], 'only the well-formed options persist');
+});
+
+test('a structured prompt is refused, not stringified into "[object Object]"', async () => {
+  // str() is forgiving by design, which let an object body be stored as the
+  // literal text "[object Object]" -- and since the prompt is what the duplicate
+  // check and the serving dedupe compare, every such row collapsed into one.
+  for (const prompt of [{ a: 1 }, ['a', 'b'], { toString: () => 'x' }, new Map()]) {
+    const res = await call('POST', '/admin/questions', {
+      token: adminToken, body: validQuestion({ prompt }),
+    });
+    assert.equal(res.status, 400, `prompt ${JSON.stringify(prompt)} must be refused, got ${res.status}`);
+    assert.match(res.body.error, /plain text/i);
+  }
+  const bank = await call('POST', '/admin/question-bank/questions', {
+    token: adminToken,
+    body: { role_id: roleA.id, competency_id: compA.id, module: 'T01', type: 'objective', prompt: { a: 1 }, points: 4 },
+  });
+  assert.equal(bank.status, 422, JSON.stringify(bank.body));
+  assert.ok(bank.body.errors.some((e) => /plain text/i.test(e)), JSON.stringify(bank.body.errors));
+  // A numeric prompt is still just "too short" rather than a type error, and a
+  // real string prompt keeps working.
+  const good = await call('POST', '/admin/questions', {
+    token: adminToken, body: validQuestion({ prompt: 'Which governance layer owns row-level access?' }),
+  });
+  assert.equal(good.status, 201, JSON.stringify(good.body));
+  assert.equal(good.body.prompt, 'Which governance layer owns row-level access?');
+});

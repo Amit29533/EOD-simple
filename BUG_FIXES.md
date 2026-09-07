@@ -5,10 +5,76 @@ The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A lat
 hunt then fixed the two most severe defects in the product — an exam timer that expired every
 question on arrival, and a report that graded untested competencies as 0% critical gaps — plus
 10 further correctness, integrity and performance findings, all pinned with regression tests.
+The most recent pass was an exhaustive verification campaign — a route × role authorisation
+matrix, tenant-isolation and lifecycle probes, fuzzing, concurrency, static-asset, storage-
+corruption and serverless-path checks, and a jsdom render sweep of every screen — which closed
+three more input-handling defects (two 500s on malformed `options`, and structured request
+bodies being stringified into stored `[object Object]` text).
 
-Current verification: **292/292 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+Current verification: **304/304 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
 
-## 🔍 Whole-project bug hunt & cleanup pass (latest)
+## 🧪 Exhaustive verification pass (latest)
+
+Every feature, screen and route was driven black-box against a live server, with a jsdom
+render sweep over the UI. Any defect that could be reproduced was fixed and pinned with a
+regression test; anything that looked like a defect but was not is written down below so the
+next reader does not re-investigate it.
+
+**What was exercised**
+
+| Layer | Harness | Result |
+| --- | --- | --- |
+| Route × role authorisation | all 61 routes × anonymous / candidate / assessor / admin | 230 assertions, 0 violations |
+| Tenant isolation & lifecycle | cross-account object access in every state (assigned → in_progress → submitted → scored → validated) | 53 assertions, foreign papers 404-hid, no leakage after submission |
+| Boundary & fuzz | malformed bodies, 200k-char strings, 5 000-entry arrays, `__proto__` / `constructor.prototype` keys, bogus enums, out-of-range numbers, hostile ids, formula-injection payloads, 2.5 MB bodies, lying `Content-Length` | 128 assertions, **zero 5xx** (oversized bodies answered 413/400/clean reset) |
+| Concurrency | 25 parallel integrity events, 8 parallel autosaves, 6 racing `/next`, 6 racing allocations, 5 parallel deletes | 15 assertions, exactly-once effects held, no torn writes |
+| UI render | every admin / assessor / candidate screen painted in jsdom against live data, plus the exam walked start → answer → lock → advance → auto-submit | 18 screens, no crash, no leaked `undefined` / `NaN` / `[object Object]` |
+| Static layer | every browser-loaded module resolves and parses, referenced assets, path traversal under `public/` | all clean |
+| Storage backend | truncated / empty / array-shaped / garbage JSON store, poisoned rows (strings and numbers where objects belong) | boots every time, corrupt file is backed up, **no 500s** |
+| Serverless path | `netlify/functions/api.mjs` invoked directly: preflight, base64 bodies, 12 MB cap, `/api` prefix stripping, unknown route | 27 assertions |
+| Load sanity | 2 000-row CSV bank import, 2 000-row listing, 10 allocations against a fat bank | import 655 ms, list 3 ms, ~61 ms per allocation |
+
+**Three real defects found — all fixed and pinned**
+
+1. **A 500 on a malformed `options` value** (`POST`/`PATCH /admin/questions`). `options: [null, …]`
+   reached a `.map`/`.id` read with no type guard. Fixed with one `cleanOptions()` helper shared by
+   both routes, so a bad array shape is now a 400 with a usable message.
+2. **The same class in the question-bank path** (`/admin/question-bank/questions`, CSV import).
+   Fixed by exporting `sanitizeOptions()` from `src/core/question-intake.mjs` and using it at all
+   three consumers (correct-option parsing, type inference, validation) — an import can no longer
+   500 the server.
+3. **Structured values were silently laundered into text.** `str()` in `src/api/helpers.mjs`
+   stringified *anything*, so `{"prompt": {"a": 1}}` was accepted with 201 and stored as the literal
+   `"[object Object]"`. The row is unrecoverable junk, it looks identical to every other such row so
+   the duplicate check stopped catching real duplicates, and the modules table rendered the string
+   verbatim. Now `isTextish()` rejects non-scalars (400 on the admin route, 422 on the bank route,
+   `Prompt must be plain text.`), and `canonicalizeRow()` skips object/array values for every field so
+   a CSV cell cannot smuggle structure either.
+
+Pinned by `tests/admin-validation.test.mjs` (structured body refused, not stringified) and the
+bank/import suites; the UI side is now covered by `tests/exam-screen.test.mjs`, which drives the real
+exam screen through the countdown, the lock/advance call, the urgent-clock state and auto-submit —
+the exact path the timer bug escaped.
+
+**Looked at, and not a defect (so this is the last time it needs asking)**
+
+- `PUT /candidate/assessments/:id/answers` implements a merge-style autosave, but the exam screen
+  never calls it: a lock carries the answer inside `POST /next`. So a browser that dies mid-question
+  loses the typed notes for *that* question (everything already locked is safe). Left alone
+  deliberately — "leaving a question locks it" is the paper's contract, and the timer auto-advances —
+  but this is the first thing to revisit if the exam ever has to survive offline.
+- `/nope.js` and other unknown paths fall through to the SPA shell (200 + HTML) instead of 404. The
+  browser refuses to execute HTML as a module by MIME, and nothing outside `public/` is reachable.
+- Prototype pollution, `__proto__`-shaped patches, negative offsets, `years_experience: 1e400`,
+  `=cmd|'…'` spreadsheet formula strings, 100k-char names: all either rejected or stored and echoed
+  back byte-identical and rendered escaped. The login throttle really does lock an account after
+  8 failures in 10 minutes (429) and a successful sign-in clears it.
+- A second `npm start` printed a raw `EADDRINUSE` stack from the crash hook; it now exits 1 with the
+  fix spelled out (`PORT=3001 npm start`), and every other listen failure still reaches the hook.
+
+Verification after this pass: **304/304 Node tests · 39/39 smoke · 216/216 feature**.
+
+## 🔍 Whole-project bug hunt & cleanup pass
 
 Every JS/MJS/PY source file (~26K lines, excluding the generated question bank) was
 re-read line by line, cross-checked with ESLint and AST scans, and every finding that
@@ -713,7 +779,7 @@ body {
 
 **Total Bugs Fixed (original audit)**: 7
 **Total Improvements (original audit)**: 6
-**Current verification**: 268/268 Node tests · 39/39 smoke tests · 206/206 feature tests (100%)
+**Verification at that time**: 268/268 Node tests · 39/39 smoke tests · 206/206 feature tests (100%)
 **Files Modified (original audit)**: 5
 **Lines Changed (original audit)**: ~120
 **Time Spent**: Comprehensive audit and fix

@@ -1,7 +1,7 @@
 import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
-  ok, created, bad, notFound, conflict, forbidden, unprocessable,
-  audit, str, num, bool, missing, bulkInsert,
+  ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
+  str, num, bool, missing, bulkInsert, isTextish,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import {
@@ -796,6 +796,7 @@ export function adminHandlers(route) {
   const validateQuestion = (body) => {
     if (!QUESTION_TYPE_KEYS.includes(body.type)) return `Type must be one of: ${QUESTION_TYPE_KEYS.join(', ')}`;
     if (!str(body.prompt)) return 'Question prompt is required.';
+    if (!isTextish(body.prompt)) return 'Question prompt must be plain text.';
     const points = body.points === undefined || body.points === ''
       ? 4
       : Number(body.points);
@@ -803,7 +804,7 @@ export function adminHandlers(route) {
     if (DIFFICULTIES.includes(body.difficulty) === false && body.difficulty !== undefined && body.difficulty !== '')
       return `Difficulty must be one of: ${DIFFICULTIES.join(', ')}`;
     if (body.type === 'mcq_single' || body.type === 'mcq_multi') {
-      const opts = Array.isArray(body.options) ? body.options.filter((o) => str(o.label)) : [];
+      const opts = cleanOptions(body.options);
       if (opts.length < 2) return 'At least two options are required.';
       const ids = new Set(opts.map((o) => o.id));
       const correct = Array.isArray(body.correct_option_ids) ? body.correct_option_ids : [];
@@ -1367,10 +1368,24 @@ function yearsError(value) {
   return null;
 }
 
+/**
+ * The option entries a request may carry are untrusted: a hand-edited JSON
+ * import or a stale form can post `null`, a bare string or a number inside the
+ * array. Validation and persistence must agree on what survives, so both call
+ * this one cleaner — an option needs to be an object with a non-blank label, and
+ * its id/label are stored exactly as validated (numbers stringified, so an
+ * `options:[{id:1}]` row and a `correct_option_ids:[1]` reference line up).
+ */
+function cleanOptions(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((o) => o && typeof o === 'object')
+    .map((o) => ({ id: str(o.id, 40), label: str(o.label, 500) }))
+    .filter((o) => o.label !== '');
+}
+
 function normalizeQuestion(body, existing = {}) {
-  const options = Array.isArray(body.options)
-    ? body.options.filter((o) => str(o.label)).map((o) => ({ id: str(o.id, 40), label: str(o.label, 500) }))
-    : [];
+  const options = cleanOptions(body.options);
   return {
     role_id: body.role_id || existing.role_id,
     competency_id: body.competency_id || existing.competency_id,

@@ -286,6 +286,17 @@ const server = http.createServer(async (req, res) => {
   await serveStatic(req, res, url);
 });
 
+// A busy port is a configuration mistake, not a crash. Without this the raw
+// EADDRINUSE surfaces through the uncaughtException hook as a stack trace and
+// the operator has to read it to learn what to change.
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[ecod] port ${PORT} is already in use — stop the other process or start elsewhere: PORT=3001 npm start`);
+    process.exit(1);
+  }
+  throw err; // every other listen failure keeps going through the crash hook
+});
+
 server.listen(PORT, HOST, () => console.log(`[ecod] server on http://${HOST}:${PORT} (pid ${process.pid})`));
 
 // Graceful shutdown

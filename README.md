@@ -23,16 +23,16 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 292 tests: scoring engine, question apportionment, API/RBAC journey,
-                    #           exam session & open-question microphone contract, full exam
-                    #           lifecycle (phases/timers/audio/scoring/report), the exam
-                    #           answer screen (jsdom), admin validation, question-bank
-                    #           authoring (add/edit/import), bulk candidate + portal-user
-                    #           import (API + jsdom dialog), Airtable adapter contract,
-                    #           sign-in view, app shell, the allocation dialog and the
-                    #           published-catalogue sync
-                    #           storage batch contract (insertMany/updateMany,
-                    #           audit-log rotation)
+npm test            # 304 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #           exam session & open-question microphone contract, the full
+                    #           exam lifecycle (phases/timers/audio/scoring/report), the exam
+                    #           answer screen (jsdom: countdown, options, lock, expiry,
+                    #           auto-submit), admin validation, question-bank authoring
+                    #           (add/edit/import), bulk candidate + portal-user import (API +
+                    #           jsdom dialog), Airtable adapter contract, sign-in view, app
+                    #           shell, the allocation dialog, the published-catalogue sync,
+                    #           the storage batch contract (insertMany/updateMany, audit-log
+                    #           rotation) and the health probe
                     #           (jsdom is optional; installed for the UI suites)
 ```
 
