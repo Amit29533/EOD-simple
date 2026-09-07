@@ -14,7 +14,6 @@ const R = ['candidate'];
 async function myCandidate(store, user) {
   return user.candidate_id ? store.get('candidates', user.candidate_id) : null;
 }
-/** Owned-or-404: never reveal that an assessment belongs to someone else. */
 async function ownAssessment(store, user, id) {
   const a = await store.get('assessments', id);
   return a && a.candidate_id === user.candidate_id ? a : null;
@@ -29,9 +28,6 @@ function textValue(value) {
 function isBlank(q, value) {
   if (value === undefined || value === null || value === '') return true;
   if (Array.isArray(value) && !value.length) return true;
-  // An open answer counts when it carries typed notes, a transcript *or* a
-  // recording: a candidate who answered out loud without typing must not have
-  // that answer treated as blank and dropped.
   if (q.type === 'text') return !openAnswerHasContent(value);
   return false;
 }
@@ -48,12 +44,6 @@ function persistableAnswer(q, value) {
       out.audio_b64 = b64;
       out.audio_mime = String(value.audio_mime || 'audio/webm').slice(0, 80);
     }
-    // Contract bookkeeping: an open answer is supposed to be spoken. The exam UI
-    // refuses to advance without a recording, but a submission that still
-    // arrives with typed notes only (mic denied, no MediaRecorder, a clip too
-    // large to store) is kept rather than discarded — silently throwing away a
-    // candidate's work inside a timed exam is worse than the gap — and flagged
-    // so the assessor and the integrity trail can see it.
     if (requiresSpokenAnswer(q) && !hasSpokenEvidence(out)) out.audio_missing = true;
     return out;
   }
@@ -85,6 +75,13 @@ function validateAnswerShape(q, value) {
     default:
       return false;
   }
+}
+
+function rawRemainingMs(q, quiz, now) {
+  const started = Date.parse(quiz.question_started_at || 0) || now;
+  const b = budgetsFor(q);
+  const budget = isOpenQuestion(q) && (quiz.phase || 'answer') === 'review' ? b.review_ms : b.answer_ms;
+  return budget - (now - started);
 }
 
 export function candidateHandlers(route) {
@@ -236,9 +233,6 @@ export function candidateHandlers(route) {
     const q = questions[quiz.index];
     if (!q || !isOpenQuestion(q)) return unprocessable('This question has no review phase.');
     if (body?.phase !== 'answer') return bad('phase must be "answer".');
-    // The review -> answer transition is one-way: re-calling it must not
-    // restart the answer countdown (an exam integrity requirement — the
-    // two-minute answer window cannot be extended by repeating the call).
     if ((quiz.phase || 'answer') !== 'review')
       return conflict('The answer phase for this question has already started; its timer cannot be reset.');
     const next = { ...quiz, phase: 'answer', question_started_at: new Date().toISOString() };
@@ -256,26 +250,87 @@ export function candidateHandlers(route) {
     const q = questions[quiz.index];
     if (!q) return ok({ complete: true, index: quiz.index, total: questions.length });
 
+    const now = Date.now();
+    const raw = rawRemainingMs(q, quiz, now);
+    const timeExpired = raw <= 0;
+    const graceMs = 5000;
+    const hardExpired = raw < -graceMs;
+
     let base = quiz;
-    if (body?.answer !== undefined && body.answer !== null && !isBlank(q, body.answer)) {
-      if (!validateAnswerShape(q, body.answer)) return unprocessable('Invalid answer for the current question.');
+
+    // Review timer expired: auto-advance to answer phase (soft expiry returns phase_advanced)
+    if (isOpenQuestion(q) && (quiz.phase || 'answer') === 'review' && timeExpired) {
+      if (hardExpired) {
+        base = integrityPatch(
+          base,
+          'time_expired',
+          `Q${quiz.index + 1} review expired - auto-advanced to answer.`,
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+        );
+      }
+      const nextQuiz = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
+      await store.update('assessments', a.id, { quiz_state: nextQuiz });
+      return ok({
+        complete: false,
+        index: quiz.index,
+        total: questions.length,
+        phase_advanced: true,
+        remaining_ms: budgetsFor(q).answer_ms,
+      });
+    }
+
+    // Answer flow: allow answering in review or answer phase (review is UI guidance, not hard gate)
+    let answerToLock = body?.answer;
+    if (hardExpired) {
+      answerToLock = null;
+      base = integrityPatch(
+        base,
+        'time_expired',
+        `Q${quiz.index + 1} time expired - auto-advanced as blank.`,
+        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+      );
+    }
+
+    if (answerToLock !== undefined && answerToLock !== null && !isBlank(q, answerToLock)) {
+      if (!validateAnswerShape(q, answerToLock))
+        return unprocessable('Invalid answer for the current question.');
       const existing = await store.list('responses', { assessment_id: a.id });
       const r = existing.find((x) => x.question_id === q.id);
-      const stored = persistableAnswer(q, body.answer);
+      const stored = persistableAnswer(q, answerToLock);
       if (r) await store.update('responses', r.id, { answer: stored, locked: true });
       else await store.insert('responses', { assessment_id: a.id, question_id: q.id, answer: stored, locked: true });
       if (stored.audio_missing) {
-        // Locking a mic-required answer with no recording is a proctoring
-        // event: it lands in the exam's integrity trail and the audit log so
-        // the gap is reviewed instead of silently scored.
-        base = integrityPatch(base, 'spoken_answer_missing',
+        base = integrityPatch(
+          base,
+          'spoken_answer_missing',
           `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
-          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt });
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+        );
         const candidate = await myCandidate(store, auth.user);
         await audit(
-          store, auth.user, 'exam_spoken_answer_missing', 'assessments', a.id,
-          `"${candidate?.name || 'Candidate'}" locked Q${quiz.index + 1} without a recording — "${String(q.prompt).slice(0, 80)}"`,
+          store,
+          auth.user,
+          'exam_spoken_answer_missing',
+          'assessments',
+          a.id,
+          `"${candidate?.name || 'Candidate'}" locked Q${quiz.index + 1} without a recording - "${String(q.prompt).slice(0, 80)}"`,
           { question_index: quiz.index, question_id: q.id },
+        );
+      }
+    } else if (timeExpired) {
+      const existing = await store.list('responses', { assessment_id: a.id });
+      const r = existing.find((x) => x.question_id === q.id);
+      if (!r) {
+        const blankValue =
+          q.type === 'mcq_multi' ? [] : q.type === 'text' ? { text: '', transcript: '', source: 'timed_out' } : '';
+        await store.insert('responses', { assessment_id: a.id, question_id: q.id, answer: blankValue, locked: true });
+      }
+      if (!hardExpired) {
+        base = integrityPatch(
+          base,
+          'time_expired',
+          `Q${quiz.index + 1} time expired - recorded as blank.`,
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
         );
       }
     }

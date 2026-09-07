@@ -22,4 +22,10 @@ export function metaHandlers(route) {
     families: FAMILIES,
     moduleTestStructure: MODULE_TEST_STRUCTURE,
   }));
+  route('GET', '/health', 'public', async () => ok({
+    ok: true,
+    version: '1.0.0',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  }));
 }

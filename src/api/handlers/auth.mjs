@@ -1,10 +1,13 @@
-import { verifyPassword } from '../../core/passwords.mjs';
+import { verifyPasswordAsync } from '../../core/passwords.mjs';
 import { ok, bad, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 
 const MAX_FAILURES = 8;
 const WINDOW_MS = 10 * 60 * 1000;
 const failures = new Map(); // in-memory login throttle (per instance)
+// Note: in serverless (Netlify) this is per-invocation, not global. For production
+// with persistent rate limiting, move to storage-backed counter. Kept in-memory
+// for zero-dependency local dev.
 
 /**
  * Concurrent sessions kept per user. Cap bounds row growth on the login hot
@@ -24,6 +27,14 @@ const recordFailure = (key) => {
   else f.count += 1;
 };
 
+// Periodic cleanup of expired throttle entries to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of failures) {
+    if (v.resetAt <= now) failures.delete(k);
+  }
+}, 60_000).unref?.();
+
 export function authHandlers(route) {
   route('POST', '/auth/login', 'public', async ({ store, body, helpers, audit: _a }) => {
     const need = missing(body, ['username', 'password']);
@@ -40,7 +51,12 @@ export function authHandlers(route) {
         .filter((u) => String(u.email || '').trim().toLowerCase() === username);
       if (matches.length === 1) user = matches[0];
     }
-    if (!user || user.active === false || !verifyPassword(body.password, user.password_hash)) {
+    if (!user || user.active === false) {
+      recordFailure(username);
+      return unauthorized('Invalid username or password.');
+    }
+    const okPass = await verifyPasswordAsync(body.password, user.password_hash);
+    if (!okPass) {
       recordFailure(username);
       return unauthorized('Invalid username or password.');
     }
