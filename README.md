@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 266 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 268 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, full exam
                     #           lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom), admin validation, question-bank

@@ -3,7 +3,29 @@
 ## Summary
 The original audit fixed **7 critical bugs** and **6 UI/UX improvements**. A later candidate secure-exam pass added the question-duplication fix, consistent audio-recording behavior, transcript discipline, the RSA oral-quota contract, and a persisted anti-cheat / integrity trail visible to admins. A further hardening pass made the duplication fix and the spoken-question (microphone) contract immune to legacy/restyled data. A full-fledged exam-lifecycle test pass then closed the last timer-integrity hole. The newest pass promoted the microphone from an optional per-question flag into a rule of the open-question type, so every Open / scenario question now demands a recorded answer (with the text box optional) — enforced at the catalogue, bank, snapshot, API and exam-screen layers.
 
-Current verification: **266/266 Node tests**, **39/39 smoke tests**, and **206/206 feature tests** pass.
+Current verification: **268/268 Node tests**, **39/39 smoke tests**, and **206/206 feature tests** pass.
+
+## 🧹 Audit pass: tightening API validation (latest)
+
+While re-running every suite and probing the API by hand, two single-record paths
+were found to be **looser than the bulk import path** they mirror:
+
+1. **Candidate create / PATCH accepted non-numeric or out-of-range years.** The
+   spreadsheet importer already rejected values outside `0–50`, but the
+   single-create and edit paths silently coerced garbage (`'abc'`) to `null`.
+   Both endpoints now reject non-finite or out-of-range values with the same
+   `400` message, while blank stays `null` and `0`/`3.5`/`50` remain valid.
+
+2. **Legacy `POST/PATCH /admin/questions` accepted a non-numeric `points`**
+   and silently fell back to the default `4`. Validation now rejects anything
+   that is not a number between `1` and `20` (omitted still defaults to `4`).
+
+Also fixed a typo in the published RSA role description
+(`track forDatabricks` → `track for Databricks`) and added `__pycache__`/`*.pyc`
+to `.gitignore` so Python test helpers never pollute the working tree.
+
+Regression coverage was added to `tests/admin-validation.test.mjs`
+**(266 → 268 Node tests)**.
 
 ---
 
@@ -587,7 +609,7 @@ body {
 
 **Total Bugs Fixed (original audit)**: 7
 **Total Improvements (original audit)**: 6
-**Current verification**: 266/266 Node tests · 39/39 smoke tests · 206/206 feature tests (100%)
+**Current verification**: 268/268 Node tests · 39/39 smoke tests · 206/206 feature tests (100%)
 **Files Modified (original audit)**: 5
 **Lines Changed (original audit)**: ~120
 **Time Spent**: Comprehensive audit and fix

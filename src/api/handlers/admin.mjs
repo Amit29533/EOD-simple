@@ -225,6 +225,8 @@ export function adminHandlers(route) {
     if (miss.length) return bad('Candidate name is required.');
     if (body.stage && !STAGE_KEYS.includes(body.stage)) return bad('Unknown pipeline stage.');
     if (body.target_role_id && !(await store.get('roles', body.target_role_id))) return bad('Unknown target role.');
+    const yearsProblem = yearsError(body.years_experience);
+    if (yearsProblem) return bad(yearsProblem);
     const rec = await store.insert('candidates', {
       name: str(body.name, 120), email: str(body.email, 200), phone: str(body.phone, 60),
       current_title: str(body.current_title, 120), years_experience: yearsExperience(body.years_experience),
@@ -391,7 +393,11 @@ export function adminHandlers(route) {
       if (body[f] !== undefined) patch[f] = body[f] === '' ? '' : str(body[f], max);
     if (body.target_role_id !== undefined)
       patch.target_role_id = body.target_role_id === '' ? null : str(body.target_role_id, 60);
-    if (body.years_experience !== undefined) patch.years_experience = yearsExperience(body.years_experience);
+    if (body.years_experience !== undefined) {
+      const yearsProblem = yearsError(body.years_experience);
+      if (yearsProblem) return bad(yearsProblem);
+      patch.years_experience = yearsExperience(body.years_experience);
+    }
     // Stage was validated above but never written — the admin Edit form sends it
     // on every save, so changing a candidate's pipeline stage silently no-op'd.
     if (body.stage !== undefined) patch.stage = body.stage;
@@ -621,8 +627,10 @@ export function adminHandlers(route) {
   const validateQuestion = (body) => {
     if (!QUESTION_TYPE_KEYS.includes(body.type)) return `Type must be one of: ${QUESTION_TYPE_KEYS.join(', ')}`;
     if (!str(body.prompt)) return 'Question prompt is required.';
-    const points = num(body.points, 4);
-    if (!(points > 0 && points <= 20)) return 'Points must be between 1 and 20.';
+    const points = body.points === undefined || body.points === ''
+      ? 4
+      : Number(body.points);
+    if (!Number.isFinite(points) || points < 1 || points > 20) return 'Points must be between 1 and 20.';
     if (DIFFICULTIES.includes(body.difficulty) === false && body.difficulty !== undefined && body.difficulty !== '')
       return `Difficulty must be one of: ${DIFFICULTIES.join(', ')}`;
     if (body.type === 'mcq_single' || body.type === 'mcq_multi') {
@@ -1159,6 +1167,16 @@ export function adminHandlers(route) {
 function yearsExperience(value) {
   if (value === undefined || value === null || value === '') return null;
   return num(value, null);
+}
+
+/** Validate years-of-experience input the same way the bulk import does. */
+function yearsError(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 50) {
+    return 'Years of experience must be a number between 0 and 50.';
+  }
+  return null;
 }
 
 function normalizeQuestion(body, existing = {}) {

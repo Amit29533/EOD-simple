@@ -52,6 +52,34 @@ function validQuestion(overrides = {}) {
   };
 }
 
+test('candidate create/patch reject invalid years of experience instead of silently storing null', async () => {
+  for (const years of ['abc', -1, 51, Infinity, NaN]) {
+    const create = await call('POST', '/admin/candidates', {
+      token: adminToken,
+      body: { name: 'Bad Years', years_experience: years },
+    });
+    assert.equal(create.status, 400, `create accepted invalid years=${years}`);
+    assert.match(create.body.error, /years of experience must be a number between 0 and 50/i);
+
+    const patch = await call('PATCH', `/admin/candidates/${candA.id}`, {
+      token: adminToken,
+      body: { years_experience: years },
+    });
+    assert.equal(patch.status, 400, `patch accepted invalid years=${years}`);
+    assert.match(patch.body.error, /years of experience must be a number between 0 and 50/i);
+  }
+
+  // Boundary values remain accepted through both paths.
+  for (const years of [0, 3.5, 50]) {
+    const create = await call('POST', '/admin/candidates', {
+      token: adminToken,
+      body: { name: `Valid ${years}`, years_experience: years },
+    });
+    assert.equal(create.status, 201, `create rejected valid years=${years}`);
+    assert.equal(create.body.years_experience, years);
+  }
+});
+
 test('admin question validation rejects competencies from another role', async () => {
   const create = await call('POST', '/admin/questions', {
     token: adminToken,
@@ -213,6 +241,22 @@ test('editing a spoken question preserves its oral metadata (mic requirement, pi
   assert.equal(plain.body.audio_required, false);
   assert.equal(plain.body.pin_first, false);
   assert.equal(plain.body.question_set, '');
+});
+
+test('legacy question points reject non-numeric input instead of silently defaulting', async () => {
+  const bad = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ points: 'abc' }),
+  });
+  assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  assert.match(bad.body.error, /points must be between 1 and 20/i);
+
+  const badPatch = await call('PATCH', `/admin/questions/${(await call('POST', '/admin/questions', { token: adminToken, body: validQuestion() })).body.id}`, {
+    token: adminToken,
+    body: { points: 'not-a-number' },
+  });
+  assert.equal(badPatch.status, 400, JSON.stringify(badPatch.body));
+  assert.match(badPatch.body.error, /points must be between 1 and 20/i);
 });
 
 test('an open question cannot be stored or edited into a typed-only question', async () => {
