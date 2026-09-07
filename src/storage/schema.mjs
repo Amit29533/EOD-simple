@@ -13,6 +13,11 @@ export const TABLES = {
   // Admin-authored bank questions. The published bank in src/content is
   // generated and read-only, so additions live here and are merged over it.
   bank_questions: { json: ['options', 'correct_option_ids', 'probes', 'tags'] },
+  // Visibility overrides for published questions. A published question cannot
+  // be edited or hard-deleted (it lives in a generated file), but an admin
+  // can remove it from circulation: { question_id, active: false }. Restoring
+  // deletes the override row. Merged over the published set in effectiveBank.
+  bank_question_overrides: { json: [] },
   frameworks:   { json: ['config'] },
   assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state'] },
   responses:    { json: ['answer'] },

@@ -348,6 +348,79 @@ test('a deactivated question is excluded from the counts it can no longer fill',
   await call('DELETE', `/admin/question-bank/questions/${id}`, { token: adminToken });
 });
 
+/* -------------- published questions can be removed and restored -------------- */
+// Published questions live in a generated file, so DELETE hides one from
+// circulation (tree counts, plan, generation) instead of destroying anything,
+// and PATCH { active: true } brings it back. Anything else on a published id
+// is still rejected.
+
+test('a published question can be removed from circulation and restored', async () => {
+  const before = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const beforeT01 = before.body.modules.find((m) => m.key === 'T01');
+
+  const del = await call('DELETE', '/admin/question-bank/questions/RSA-T01-010', { token: adminToken });
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+
+  const after = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  const afterT01 = after.body.modules.find((m) => m.key === 'T01');
+  assert.equal(after.body.bank_total, before.body.bank_total - 1);
+  assert.equal(after.body.published_total, before.body.published_total - 1);
+  assert.equal(after.body.inactive_total, before.body.inactive_total + 1);
+  assert.equal(afterT01.objective, beforeT01.objective - 1);
+  assert.equal(afterT01.inactive, (beforeT01.inactive || 0) + 1);
+
+  const fam = await call('GET', '/admin/question-bank/families/T01:advanced-technical-judgment', { token: adminToken });
+  const row = fam.body.questions.find((q) => q.id === 'RSA-T01-010');
+  assert.ok(row, 'the removed question is still listed');
+  assert.equal(row.active, false);
+  assert.equal(row.removed, true);
+
+  // The plan agrees with the tree: one fewer objective available in T01.
+  const plan = await call('GET', '/admin/question-bank/plan', { token: adminToken });
+  const planT01 = plan.body.modules.find((m) => m.module === 'T01');
+  assert.equal(planT01.available_objective, afterT01.objective);
+
+  // A removed question is never drawn, across many papers.
+  for (let i = 0; i < 20; i += 1) {
+    const preview = await call('POST', '/admin/question-bank/preview', { token: adminToken, body: {} });
+    assert.ok(!preview.body.questions.some((q) => q.id === 'RSA-T01-010'), 'a removed question was served');
+  }
+
+  // Restore brings every count back.
+  const restore = await call('PATCH', '/admin/question-bank/questions/RSA-T01-010', {
+    token: adminToken, body: { active: true },
+  });
+  assert.equal(restore.status, 200, JSON.stringify(restore.body));
+  assert.equal(restore.body.question.id, 'RSA-T01-010');
+  assert.ok(!restore.body.question.removed, 'the removed flag is gone');
+
+  const back = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  assert.equal(back.body.bank_total, before.body.bank_total);
+  assert.equal(back.body.published_total, before.body.published_total);
+  assert.equal(back.body.inactive_total, before.body.inactive_total);
+});
+
+test('published questions stay read-only except for visibility', async () => {
+  const edit = await call('PATCH', '/admin/question-bank/questions/RSA-T01-011', {
+    token: adminToken, body: { prompt: 'A rewritten prompt?' },
+  });
+  assert.equal(edit.status, 400);
+
+  const mixed = await call('PATCH', '/admin/question-bank/questions/RSA-T01-011', {
+    token: adminToken, body: { active: false, prompt: 'Sneaking in an edit' },
+  });
+  assert.equal(mixed.status, 400);
+
+  // Unknown ids are still 404s.
+  assert.equal((await call('DELETE', '/admin/question-bank/questions/RSA-XX-999', { token: adminToken })).status, 404);
+  assert.equal((await call('PATCH', '/admin/question-bank/questions/RSA-XX-999', { token: adminToken, body: { active: false } })).status, 404);
+
+  // None of the rejected writes left an override behind.
+  const after = await call('GET', '/admin/question-bank/modules', { token: adminToken });
+  assert.equal(after.body.bank_total, 348);
+  assert.equal(after.body.inactive_total, 0);
+});
+
 test('the module tree never advertises more than the plan can serve', async () => {
   const created = await addQuestion({
     module: 'T04', family: 'Advanced Technical Judgment', type: 'objective',

@@ -115,7 +115,9 @@ instead, and `src/api/bank-service.mjs` merges them over the published set
 (`effectiveBank`) on every read. So:
 
 - reads see one bank; `bank_total = published_total + authored_total`,
-- only authored ids are mutable — `PATCH`/`DELETE` on a published id is a **404**,
+- authored ids are fully mutable; a published id only accepts visibility changes —
+  `DELETE` removes it from circulation (an override row, restorable via
+  `PATCH { active: true }`), any other write is **400**, an unknown id **404**,
 - an authored question that names a new family **creates** that family in its module,
   which is how the taxonomy grows without a rebuild,
 - regenerating the published file from the workbook never clobbers authored work.
@@ -173,7 +175,7 @@ Admin endpoints, all admin-only and all reading through `effectiveBank`:
 | `GET /admin/question-bank/plan` | per-module readiness (availability excludes the optional pool) |
 | `POST /admin/question-bank/preview` | draw a sample paper — never persisted |
 | `POST /admin/question-bank/questions` | add one — `422 {errors}` invalid, `409` duplicate prompt, `201` created |
-| `PATCH`/`DELETE` `…/questions/:id` | edit/remove an authored question — `404` on a published id |
+| `PATCH`/`DELETE` `…/questions/:id` | edit/delete authored; remove/restore published (`DELETE` hides, `PATCH { active }` toggles) |
 | `POST /admin/question-bank/import` | bulk import; `dry_run` validates and reports without writing |
 | `GET /admin/question-bank/import-template` | the starter CSV with the recognised columns |
 

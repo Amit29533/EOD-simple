@@ -176,7 +176,10 @@ gone; `#/questions` redirects here.
 The published bank is **read-only** — it is generated from the source workbook and is
 never written to at runtime. Additions live alongside it in the `bank_questions` table
 and are merged over the published set on read, so the bank grows without the generated
-file drifting from its source. Only these authored rows can be edited or deleted.
+file drifting from its source. Only authored rows can be edited or permanently deleted;
+a published question can instead be **removed from circulation** — hidden from the counts
+and never drawn into generated tests — and restored later. Either way the generated file
+is never touched.
 
 - **One at a time** — *Add question*, or *+ Add a question to `<MODULE>`* on any module
   card. The form follows the answer type: objective questions collect 2–8 options and a

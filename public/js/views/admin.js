@@ -1222,7 +1222,8 @@ function familyModal({ family, questions }, bank, onChanged) {
       <td class="muted">${i + 1}</td>
       <td><span class="chip">${esc(q.type === 'objective' ? 'Objective' : 'Open')}</span></td>
       <td style="max-width:480px">${esc(q.prompt)}
-        ${q.active === false ? '<span class="chip chip-optional">Inactive</span>' : ''}
+        ${q.removed ? '<span class="chip chip-optional">Removed</span>'
+          : q.active === false ? '<span class="chip chip-optional">Inactive</span>' : ''}
         ${q.authored ? '<span class="chip">Added here</span>' : ''}
         ${q.optional ? '<span class="chip chip-optional">Optional</span>' : ''}
         ${q.needs_option_review ? '<span class="chip chip-optional">Options need review</span>' : ''}
@@ -1231,7 +1232,11 @@ function familyModal({ family, questions }, bank, onChanged) {
           : ''}</td>
       <td class="actions">${q.authored
         ? `<button class="btn ghost sm danger" data-del="${esc(q.id)}">Delete</button>`
-        : '<span class="small muted">Published</span>'}</td>
+        : q.optional
+          ? '<span class="small muted">Optional</span>'
+          : q.removed || q.active === false
+            ? `<button class="btn ghost sm" data-restore="${esc(q.id)}">Restore</button>`
+            : `<button class="btn ghost sm danger" data-del="${esc(q.id)}" data-published="1">Remove</button>`}</td>
     </tr>`).join('');
 
   const dialog = modal({
@@ -1256,23 +1261,45 @@ function familyModal({ family, questions }, bank, onChanged) {
         },
       }] : []),
     ],
-    onOpen: (root) => {
-      // Only admin-authored rows are deletable; the published bank is read-only.
+    onOpen: (root, close) => {
+      // After any change the dialog re-opens on fresh data (and the tree
+      // behind it refreshes), so the header counts and row states never go
+      // stale — a removed question flips to Removed + Restore in place.
+      const reload = async () => {
+        const fresh = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(family.id)}`));
+        if (onChanged) onChanged();
+        close();
+        if (fresh) familyModal(fresh, bank, onChanged);
+      };
+      // Authored rows are deleted for good; published rows are removed from
+      // circulation (hidden from counts and generation) and can be restored.
       for (const btn of root.querySelectorAll('[data-del]')) {
         btn.onclick = async () => {
+          const isPublished = btn.dataset.published === '1';
           const okToDelete = await confirmModal(
-            'Delete this question?',
-            'It is removed from the bank and will no longer be drawn into generated tests.',
-            'Delete', true,
+            isPublished ? 'Remove this question?' : 'Delete this question?',
+            isPublished
+              ? 'It is hidden from the bank and will no longer be drawn into generated tests. You can restore it any time.'
+              : 'It is removed from the bank and will no longer be drawn into generated tests.',
+            isPublished ? 'Remove' : 'Delete', true,
           );
           if (!okToDelete) return;
           const out = await attempt(
             () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.del)}`, { method: 'DELETE' }),
-            { okMessage: 'Question deleted' },
+            { okMessage: isPublished ? 'Question removed — restore it any time' : 'Question deleted' },
           );
           if (!out) return;
-          btn.closest('tr').remove();
-          if (onChanged) onChanged();
+          await reload();
+        };
+      }
+      for (const btn of root.querySelectorAll('[data-restore]')) {
+        btn.onclick = async () => {
+          const out = await attempt(
+            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.restore)}`, { method: 'PATCH', body: { active: true } }),
+            { okMessage: 'Question restored' },
+          );
+          if (!out) return;
+          await reload();
         };
       }
     },
