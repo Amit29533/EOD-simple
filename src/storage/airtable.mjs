@@ -35,20 +35,46 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
     return out;
   };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function api(pathname, { method = 'GET', body, query } = {}) {
     const url = new URL(`${apiUrl}/${base}/${pathname}`);
     for (const [k, v] of Object.entries(query || {})) url.searchParams.set(k, v);
-    const res = await fetch(url, {
-      method,
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (res.status === 404) return null;
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Airtable ${method} ${pathname} failed (${res.status}): ${text.slice(0, 300)}`);
+    // Airtable enforces ~5 requests/second; a bulk onboarding or bank sync
+    // bursts past that and would fail the whole import on the first 429.
+    // Retry rate-limits with backoff, bounded so a truly failing backend still
+    // surfaces promptly. Only 429 is retried for writes: a 429 is rejected
+    // *before* processing, while a 5xx/network failure after a POST may have
+    // applied server-side — retrying that would double-insert. Reads also
+    // retry 5xx/network errors (they cannot create duplicates).
+    const idempotent = method === 'GET' || method === 'DELETE';
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt) await sleep(250 * 2 ** (attempt - 1) + Math.floor(Math.random() * 120));
+      let res;
+      try {
+        res = await fetch(url, {
+          method,
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+      } catch (err) {
+        if (!idempotent) throw err;
+        lastError = err;
+        continue;
+      }
+      if (res.status === 404) return null;
+      if (res.status === 429 || (idempotent && res.status >= 500)) {
+        lastError = new Error(`Airtable ${method} ${pathname} failed (${res.status})`);
+        continue;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Airtable ${method} ${pathname} failed (${res.status}): ${text.slice(0, 300)}`);
+      }
+      return res.json();
     }
-    return res.json();
+    throw lastError instanceof Error ? lastError : new Error(`Airtable ${method} ${pathname} failed after retries`);
   }
 
   // Airtable formula injection hardening:

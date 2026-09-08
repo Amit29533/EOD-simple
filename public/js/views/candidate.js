@@ -59,7 +59,7 @@ export async function quizView(view, { id }) {
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
 
   if (d.exam?.complete) {
-    await finalizeExam(id, {});
+    await finalizeExam(id);
     return;
   }
 
@@ -119,7 +119,6 @@ async function runExamSession(view, id, payload) {
   let stopLiveCapture = null;
   let pageHideLogged = false;
   const tabId = `${id}-${Math.random().toString(36).slice(2, 9)}`;
-  const collected = {};
   const cleanup = [];
   const lastIntegrityAt = new Map();
 
@@ -321,17 +320,18 @@ async function runExamSession(view, id, payload) {
     if (advancing) return;
     advancing = true;
     if (ticking) { clearInterval(ticking); ticking = null; }
-    const q = d.current_question;
-    if (q && answer !== undefined) collected[q.id] = answer;
     const out = await attempt(() => api(`/candidate/assessments/${id}/next`, {
       method: 'POST',
-      body: { answer: answer === undefined ? null : answer },
+      // The question this advance answers: if a retried/duplicated request
+      // arrives after the cursor moved on, the server no-ops it instead of
+      // skipping the live question (see the /next idempotency guard).
+      body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
     }));
     if (!out) { advancing = false; return; }
     if (out.complete) {
       finished = true;
       cleanup.forEach((fn) => fn());
-      await finalizeExam(id, collected);
+      await finalizeExam(id);
       return;
     }
     d = await api(`/candidate/assessments/${id}`);
@@ -354,7 +354,7 @@ async function runExamSession(view, id, payload) {
     if (!q || exam.complete) {
       finished = true;
       cleanup.forEach((fn) => fn());
-      finalizeExam(id, collected);
+      finalizeExam(id);
       return;
     }
     const phase = exam.phase || 'answer';
@@ -408,7 +408,7 @@ async function runExamSession(view, id, payload) {
         </div>
         <div class="exam-actions row between">
           <span class="small muted">Answers lock when time expires. You cannot return.</span>
-          <button class="btn" id="exam-next" ${open && phase === 'review' ? '' : ''}>${open && phase === 'review' ? 'Start answering →' : (n >= exam.total ? 'Lock & submit' : 'Lock & continue →')}</button>
+          <button class="btn" id="exam-next">${open && phase === 'review' ? 'Start answering →' : (n >= exam.total ? 'Lock & submit' : 'Lock & continue →')}</button>
         </div>
       </div>`;
 
@@ -453,9 +453,19 @@ async function runExamSession(view, id, payload) {
         };
       }
       nextBtn.onclick = async () => {
-        await attempt(() => api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } }));
-        d = await api(`/candidate/assessments/${id}`);
-        currentAnswer = d.current_answer;
+        // A double-click (or a click racing the expired-review auto-advance)
+        // 409s on the second transition; that is benign — the server state
+        // wins via the refetch — so only a failed refetch is worth a toast.
+        nextBtn.disabled = true;
+        await api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } }).catch(() => null);
+        try {
+          d = await api(`/candidate/assessments/${id}`);
+          currentAnswer = d.current_answer;
+        } catch {
+          toast('Could not reach the server — your place is saved; try again.', 'error');
+          nextBtn.disabled = false;
+          return;
+        }
         paint();
       };
     } else if (q.type === 'mcq_single' || q.type === 'mcq_multi') {
@@ -705,11 +715,22 @@ async function runExamSession(view, id, payload) {
         clearInterval(ticking);
         ticking = null;
         if (open && phase === 'review') {
-          attempt(() => api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } }))
+          // Automatic, so failures stay silent: a 409 just means the candidate
+          // clicked through first (or the server already advanced) — either
+          // way the refetch repaints whatever the server says is current.
+          api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
+            .catch(() => null)
             .then(async () => {
-              d = await api(`/candidate/assessments/${id}`);
-              currentAnswer = d.current_answer;
-              paint();
+              try {
+                d = await api(`/candidate/assessments/${id}`);
+                currentAnswer = d.current_answer;
+                paint();
+              } catch {
+                // Offline or a transient failure: retry the handover in a few
+                // seconds rather than stranding the candidate on an expired
+                // review screen (or hammering a dead server every 250 ms).
+                ticking = setTimeout(() => { ticking = null; paint(); }, 3000);
+              }
             });
           return;
         }
@@ -723,9 +744,13 @@ async function runExamSession(view, id, payload) {
   paint();
 }
 
-async function finalizeExam(id, answers) {
+async function finalizeExam(id) {
   document.body.classList.remove('exam-lock');
-  const out = await attempt(() => api(`/candidate/assessments/${id}/submit`, { method: 'POST', body: { answers } }));
+  // Submit with no answers: every lock already persisted its answer (locked
+  // rows win server-side, so re-sending them is pure payload — with recorded
+  // audio that ran to megabytes and tripped the request-size limit, failing
+  // the submit of a completed exam). Unanswered items submit as blanks.
+  const out = await attempt(() => api(`/candidate/assessments/${id}/submit`, { method: 'POST', body: { answers: {} } }));
   if (out) {
     toast('Assessment submitted. An assessor will review open responses.', 'success', 5000);
     location.hash = '#/journey';

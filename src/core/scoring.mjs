@@ -230,6 +230,12 @@ export function validateFrameworkConfig(config) {
     problems.push('At least two readiness bands are required.');
   } else {
     for (const b of bands) {
+      // A null/array/string band entry is invalid input, not a crash: reading
+      // `.key` off null used to throw a TypeError and 500 the endpoint.
+      if (!b || typeof b !== 'object' || Array.isArray(b)) {
+        problems.push('Every readiness band must be an object with a key, a label and a min.');
+        continue;
+      }
       if (!b.key || !b.label) problems.push('Every band needs a key and a label.');
       if (!Number.isFinite(Number(b.min)) || Number(b.min) < 0 || Number(b.min) > 100)
         problems.push(`Band "${b.label || b.key}" min must be between 0 and 100.`);

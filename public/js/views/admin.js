@@ -1,4 +1,4 @@
-import { api } from '../api.js';
+import { api, apiAll } from '../api.js';
 import { state } from '../app.js';
 import {
   esc, fmtDate, fmtDateTime, badge, dataTable, loading, emptyState, toast, attempt,
@@ -90,7 +90,7 @@ const candidateFields = (roles) => [
 
 export async function candidatesView(view) {
   view.innerHTML = loading();
-  const [{ candidates }, { roles }] = await Promise.all([api('/admin/candidates'), api('/admin/roles')]);
+  const [candidates, { roles }] = await Promise.all([apiAll('/admin/candidates', 'candidates'), api('/admin/roles')]);
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Talent directory</div><h1>Candidates</h1><p>Search, filter and open a candidate record.</p></div>
@@ -193,7 +193,7 @@ async function deleteCandidateFlow(c, { goBack = false } = {}) {
  * (weighted, so a shorter assessment still scores fairly).
  */
 export async function allocateAssessorModal(c, presetRoleId) {
-  const [{ roles }, { users }] = await Promise.all([api('/admin/roles'), api('/admin/users')]);
+  const [{ roles }, users] = await Promise.all([api('/admin/roles'), apiAll('/admin/users', 'users')]);
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   const activeRoles = roles.filter((r) => r.active !== false);
   if (!activeRoles.length) { toast('Create an assessment track (role) with questions first.', 'error'); return; }
@@ -453,8 +453,7 @@ export async function assessmentsView(view) {
   const urlStatus = new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '';
   // Always fetch the full list so the status pills keep truthful counts while a
   // filter is active (filtering server-side made every other pill read 0).
-  const [d, { users }] = await Promise.all([api('/admin/assessments'), api('/admin/users')]);
-  const all = d.assessments;
+  const [all, users] = await Promise.all([apiAll('/admin/assessments', 'assessments'), apiAll('/admin/users', 'users')]);
   const assessments = urlStatus ? all.filter((a) => a.status === urlStatus) : all;
   const assessors = users.filter((u) => u.role === 'assessor' && u.active);
   view.innerHTML = `
@@ -616,7 +615,7 @@ export async function roleDetailView(view, { id }) {
     <div class="card">
       <div class="row between">
         <div><h2 style="margin:0">${esc(role.name)}</h2><div class="muted small">${esc(role.key)} · ${esc(role.technology)}</div></div>
-        <div class="row">${role.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey')}<button class="btn secondary sm" id="edit-role">Edit</button></div>
+        <div class="row">${role.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey')}<button class="btn secondary sm" id="edit-role">Edit</button><button class="btn ghost sm" id="del-role" style="color:var(--red)">Delete</button></div>
       </div>
       ${role.description ? `<p class="small muted" style="margin-top:8px">${esc(role.description)}</p>` : ''}
     </div>
@@ -686,6 +685,12 @@ export async function roleDetailView(view, { id }) {
     if (!vals) return;
     await attempt(() => api(`/admin/roles/${role.id}`, { method: 'PATCH', body: vals }), { okMessage: 'Role updated' });
     roleDetailView(view, { id });
+  };
+  view.querySelector('#del-role').onclick = async () => {
+    const yes = await confirmModal('Delete role', `Delete the "${role.name}" track and all of its competencies and questions? In-flight assessments keep their snapshot and are unaffected. Roles with assessments on record cannot be deleted — deactivate them instead.`, 'Delete', true);
+    if (!yes) return;
+    const out = await attempt(() => api(`/admin/roles/${role.id}`, { method: 'DELETE' }));
+    if (out) location.hash = '#/roles';
   };
 
   renderFramework(view.querySelector('#fw-box'), role, d.framework, () => roleDetailView(view, { id }));
@@ -875,7 +880,7 @@ function questionEditorModal(existing, competencies) {
 /* ================================ Users & access ================================ */
 export async function usersView(view) {
   view.innerHTML = loading();
-  const [{ users }, { candidates }] = await Promise.all([api('/admin/users'), api('/admin/candidates')]);
+  const [users, candidates] = await Promise.all([apiAll('/admin/users', 'users'), apiAll('/admin/candidates', 'candidates')]);
   const roleTone = { admin: 'red', assessor: 'blue', candidate: 'green', validator: 'amber', trainer: 'amber' };
   view.innerHTML = `
     <div class="page-heading">
@@ -978,7 +983,7 @@ export async function usersView(view) {
 /* ================================ Audit log ================================ */
 export async function auditView(view) {
   view.innerHTML = loading();
-  const { events } = await api('/admin/audit');
+  const events = await apiAll('/admin/audit', 'events', { limit: 200 });
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Trust & transparency</div><h1>Audit log</h1><p>Account, candidate, assessment and framework events.</p></div>
@@ -1036,11 +1041,11 @@ export async function modulesView(view) {
     api('/admin/question-bank/modules?include_optional=1'),
     attempt(() => api('/admin/question-bank/plan')),
     attempt(() => api('/admin/roles')),
-    attempt(() => api(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`)),
+    attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`, 'questions')),
     attempt(() => api('/admin/content/catalogue')),
   ]);
   const roles = rolesOut?.roles || [];
-  const served = servedOut?.questions || [];
+  const served = servedOut || [];
   const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
 
   const bp = bank.blueprint;

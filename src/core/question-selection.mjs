@@ -228,13 +228,16 @@ function pickWeighted(pool, competencies, count, randomize, rng) {
   if (count >= pool.length) return pool;
   const groups = groupByCompetency(pool, competencies);
   const quota = apportion(groups, Math.floor(count));
+  // Matched by identity, not by id: every id-less legacy row shares the key
+  // `undefined`, so keying this set by id kept either all of them (when one
+  // was selected) or promised a quota the filter could not honor.
   const keep = new Set();
   for (const g of groups) {
     const n = quota.get(g.id) ?? 0;
     const selected = randomize ? sample(g.items, n, rng) : g.items.slice(0, n);
-    for (const q of selected) keep.add(q.id);
+    for (const q of selected) keep.add(q);
   }
-  return pool.filter((q) => keep.has(q.id));
+  return pool.filter((q) => keep.has(q));
 }
 
 export function dedupeQuestions(questions = []) {
@@ -248,11 +251,13 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
   const n = fullBank ? pool.length : Math.floor(requested);
 
   const reserved = [];
-  const reservedIds = new Set();
+  // Identity, not id: two id-less legacy rows must not collapse into one
+  // reservation (nor exclude every other id-less row from the rest below).
+  const reservedSet = new Set();
   const take = (q) => {
-    if (!q || reservedIds.has(q.id)) return;
+    if (!q || reservedSet.has(q)) return;
     reserved.push(q);
-    reservedIds.add(q.id);
+    reservedSet.add(q);
   };
 
   // The spoken customer-advisory set is always capped at RSA_ORAL_IN_CAP. This
@@ -262,21 +267,21 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
   for (const q of pool.filter(isPinFirst)) take(q);
   const oralBank = pool.filter(isOralSet);
   const maxOral = Math.min(RSA_ORAL_IN_CAP, n, oralBank.length);
-  const oralRest = oralBank.filter((q) => !reservedIds.has(q.id));
+  const oralRest = oralBank.filter((q) => !reservedSet.has(q));
   const extra = Math.max(0, maxOral - reserved.filter(isOralSet).length);
   const extraOral = randomize ? sample(oralRest, extra, rng) : oralRest.slice(0, extra);
   for (const q of extraOral) take(q);
   while (reserved.length > n) {
     const idx = [...reserved.keys()].reverse().find((i) => !isPinFirst(reserved[i]));
     if (idx === undefined) break;
-    reservedIds.delete(reserved[idx].id);
+    reservedSet.delete(reserved[idx]);
     reserved.splice(idx, 1);
   }
 
   // When the bank is bigger a full "bank-wide" paper still serves the remaining
   // non-oral questions; only in a capped-sampling paper do we weight-split the
   // remaining seats across competencies.
-  const restSource = pool.filter((q) => !reservedIds.has(q.id) && !isOralSet(q));
+  const restSource = pool.filter((q) => !reservedSet.has(q) && !isOralSet(q));
   const rest = fullBank
     ? restSource
     : pickWeighted(restSource, competencies, n - reserved.length, randomize, rng);

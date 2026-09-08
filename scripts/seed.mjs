@@ -100,9 +100,12 @@ console.log('[seed] assessment allocated: Rohit Verma -> assessor Priya Nair (st
 
 // ---- fully worked example: Neha scored by Arjun ------------------------
 // Realistic-but-imperfect answers so the example report shows real gaps.
+// Deep-cloned: the two demo assessments must not share one snapshot object in
+// memory (a later in-place edit to either paper would otherwise rewrite both).
+const nehaSnapshot = JSON.parse(JSON.stringify(snapshot));
 const nehaAssessment = await store.insert('assessments', {
   candidate_id: candIds.neha, role_id: role.id, assessor_id: userIds['arjun.mehta'],
-  status: 'submitted', snapshot_json: snapshot, report_json: null,
+  status: 'submitted', snapshot_json: nehaSnapshot, report_json: null,
   started_at: new Date(Date.now() - 4 * 864e5).toISOString(),
   submitted_at: new Date(Date.now() - 3 * 864e5).toISOString(),
   overall_pct: null, readiness_key: '', readiness_label: '', created_by: userIds.admin,
@@ -121,7 +124,11 @@ const fallbackAnswer = (q) => {
 const answers = new Map();
 const scores = new Map();   // manual assessor scores per question id
 for (const [compKey, compId] of Object.entries(compIds)) {
-  const [q1, q2, q3] = qByComp[compId];
+  // The worked example addresses the first three questions per competency; a
+  // thinner bank (or a future catalogue trim) must degrade to fallback answers
+  // rather than crash the seed on an undefined question.
+  const [q1, q2, q3] = qByComp[compId] || [];
+  if (!q1 || !q2 || !q3) continue;
   if (compKey === 'devops-production' || compKey === 'performance-cost') {
     // deliberately weak areas for the example -> they surface as gaps
     if (q1.type === 'mcq_single') answers.set(q1.id, wrongSingle(q1));

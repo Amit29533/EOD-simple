@@ -100,7 +100,20 @@ export function canonicalizeRow(row = {}) {
       // "[object Object]", which used to be stored as a prompt (and every such
       // row then looked identical to the duplicate check and the dedupe). Leave
       // the field unset so the required/length rules report it properly.
-      if (value === undefined || value === null || typeof value === 'object') continue;
+      if (value === undefined || value === null || typeof value === 'object') {
+        // ...except a form's tags/probes list: an open-question form post has
+        // no `options` array, so it is canonicalized as a sheet row, and its
+        // list would otherwise be silently dropped. (Spreadsheets never
+        // produce arrays, so this branch only ever fires for form posts.)
+        if ((field === 'tags' || field === 'probes') && Array.isArray(value)
+            && value.every((x) => x === undefined || x === null || typeof x === 'string' || typeof x === 'number')) {
+          out[field] = value.filter((x) => x !== undefined && x !== null)
+            .map((x) => String(x).trim()).filter(Boolean).join('\n');
+          seen.add(alias);
+          break;
+        }
+        continue;
+      }
       if (String(value).trim() === '') continue;
       out[field] = String(value).trim();
       seen.add(alias);
@@ -152,11 +165,27 @@ export function sanitizeOptions(raw) {
   const out = [];
   for (const o of raw) {
     if (!o || typeof o !== 'object') continue;
+    // A structured id or label is dropped, not stringified: `String({…})`
+    // would store the literal "[object Object]" as a served answer choice.
+    // Numbers survive (a form can post `{id: 1}`), matching the legacy bank's
+    // cleanOptions rule.
+    if (!isScalar(o.id) || !isScalar(o.label)) continue;
     const label = String(o.label ?? '').trim();
     if (!label) continue;
     out.push({ id: String(o.id ?? '').trim(), label });
   }
   return out;
+}
+
+/** Plain scalar (or absent) — the only thing a text field may carry. */
+function isScalar(v) {
+  return v === undefined || v === null || typeof v === 'string' || typeof v === 'number';
+}
+
+/** `tags`/`probes` accept a delimited string or a list of plain scalars. */
+function isStringList(v) {
+  return typeof v === 'string'
+    || (Array.isArray(v) && v.every((x) => typeof x === 'string' || typeof x === 'number'));
 }
 
 /** "B", "b", "2", "Option B", "b,c" -> ['b'] / ['b','c'] */
@@ -189,8 +218,12 @@ const clampInt = (value, min, max, fallback) => {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 };
 
-const splitList = (value) => String(value ?? '')
-  .split(/[\n;|]+|,(?![^(]*\))/)
+const splitList = (value) => String(Array.isArray(value)
+  // A form posts tags/probes as a real list; join with newlines (not commas)
+  // so an element that itself contains a comma survives as one entry.
+  ? value.filter((x) => x !== undefined && x !== null).map((x) => String(x).trim()).filter(Boolean).join('\n')
+  : (value ?? ''))
+  .split(/[\n;|]+|,(?![^(]*\))/) 
   .map((s) => s.trim())
   .filter(Boolean);
 
@@ -233,12 +266,29 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
   }
   if (!QUESTION_MODES.includes(type)) errors.push(`Type must be "objective" or "open" (got "${row.type}").`);
 
-  // ---- prompt ----------------------------------------------------------
-  // Checked on the raw request, before canonicalization: a structured prompt is
-  // a type error, not something to stringify and store.
-  if (typeof input?.prompt === 'object' && input.prompt !== null) {
-    errors.push('Prompt must be plain text.');
+  // ---- structured scalars ----------------------------------------------
+  // Checked on the raw request, before canonicalization: a structured value is
+  // a type error, not something to stringify and store (or silently drop, as
+  // canonicalizeRow does for sheet rows — a form post naming no family should
+  // hear about it rather than land in General). Lists stay lists: tags/probes
+  // accept a delimited string or an array of plain scalars.
+  const SCALAR_FIELDS = [
+    ['module', 'Module'], ['family', 'Family'], ['family_id', 'Family id'], ['type', 'Type'],
+    ['prompt', 'Prompt'], ['correct', 'Correct answer'], ['rubric', 'Rubric'],
+    ['rationale', 'Rationale'], ['difficulty', 'Difficulty'], ['band', 'Band'],
+    ['minutes', 'Minutes'], ['gap_tag', 'Gap tag'], ['red_flags', 'Red flags'],
+    ['enrichment', 'Enrichment'], ['mode', 'Mode'],
+  ];
+  for (const [field, label] of SCALAR_FIELDS) {
+    const v = input[field];
+    if (v !== undefined && v !== null && !isScalar(v)) errors.push(`${label} must be plain text.`);
   }
+  for (const [field, label] of [['tags', 'Tags'], ['probes', 'Probes']]) {
+    const v = input[field];
+    if (v !== undefined && v !== null && !isStringList(v)) errors.push(`${label} must be plain text.`);
+  }
+
+  // ---- prompt ----------------------------------------------------------
   const prompt = String(row.prompt ?? '').replace(/\s+/g, ' ').trim();
   if (!prompt) errors.push('Prompt is required.');
   else if (prompt.length < 15) errors.push('Prompt is too short to be a real question.');

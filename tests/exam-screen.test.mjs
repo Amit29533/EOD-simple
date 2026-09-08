@@ -169,6 +169,7 @@ test('locking an answer saves it, advances once, and ignores a double click', { 
     // Locking a question IS the save: the chosen option rides with /next.
     const next = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/next'))[0];
     assert.equal(next.body.answer, QUESTION.options[0].id, 'the advance must carry the selected option');
+    assert.equal(next.body.question_id, QUESTION.id, 'the advance must name the question it answers (server-side idempotency)');
     assert.match(textOf(view), /Question\s*3\s*of\s*3/, 'the next question must be painted after the advance');
 
     // Two clicks in the same tick must be one advance, or a candidate skips a
@@ -217,5 +218,24 @@ test('a finished paper submits itself and leaves the exam hall', { skip: SKIP },
     const submits = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit'));
     assert.equal(submits.length, 1, `a completed paper must auto-submit exactly once (calls: ${h.calls.map((c) => c.method + ' ' + c.path.split('/').pop()).join(',')})`);
     assert.match(String(h.window.location.hash), /#\/journey/, 'the candidate must be moved off the exam screen');
+  } finally { await h.teardown(); }
+});
+
+test('the submit carries no duplicated answers (locked answers already persist server-side)', { skip: SKIP }, async () => {
+  // Every answer is autosaved as the candidate advances, so the submit only
+  // finalises. Re-sending the transcript risked 413 on 1MB reverse proxies and
+  // got the paper rejected at the final whistle.
+  const h = setup({ pages: [payload({ index: 2, total: 3, complete: true })] });
+  try {
+    const view = h.window.document.getElementById('view');
+    const { state } = await import('../public/js/app.js');
+    state.user = { username: 'cand', role: 'candidate' };
+    state.meta = META;
+    const { quizView } = await import('../public/js/views/candidate.js');
+    await quizView(view, { id: 'asm1' });
+    await flush(400);
+    const submits = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit'));
+    assert.equal(submits.length, 1, 'a completed paper must auto-submit');
+    assert.deepEqual(submits[0].body, { answers: {} }, `the submit must not resend the transcript, got ${JSON.stringify(submits[0].body)}`);
   } finally { await h.teardown(); }
 });

@@ -9,9 +9,120 @@ The most recent pass was an exhaustive verification campaign — a route × role
 matrix, tenant-isolation and lifecycle probes, fuzzing, concurrency, static-asset, storage-
 corruption and serverless-path checks, and a jsdom render sweep of every screen — which closed
 three more input-handling defects (two 500s on malformed `options`, and structured request
-bodies being stringified into stored `[object Object]` text).
+bodies being stringified into stored `[object Object]` text). The final deployment-readiness
+pass closed the remaining server-crash, data-laundering, lost-write and exam-finalisation
+holes (a bank intake that 201-stored structured values, silent tag loss on open-question
+forms, stale-cache clobbers in the blob store, zip-bomb/row-cap gaps in the spreadsheet
+parser, and an exam submit that re-sent the whole transcript into the 413 ceiling), hardened
+the Netlify wrapper to fail fast without a storage backend, and completed the Airtable setup
+schema so a provisioned base accepts every field the adapter writes.
 
-Current verification: **304/304 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+Current verification: **338/338 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+and **76/76 final-gauntlet checks** pass.
+
+## ⚔️ Final gauntlet (latest)
+
+A self-contained black-box suite (`tests/final-gauntlet.py`, `npm run test:gauntlet`) that builds
+its own namespaced fixtures, so it passes on any database state and cleans up after itself. It
+runs a route × role authorisation matrix, cross-tenant 404-hiding, a full shuffled-paper exam
+journey (lock-and-next, review phase, empty-transcript submit, scoring, report redaction, audit),
+a 24-payload zero-5xx fuzz sweep, live CSV imports plus a forged zip-bomb `.xlsx`, generic
+pagination, security headers, and the 413 ceiling — and it caught three real concurrency
+defects, all fixed:
+
+1. **Racing advances skipped questions and duplicated response rows.** Six concurrent
+   `/next` calls interleaved their read-modify-write cycles. Fixed twice over: a per-assessment
+   async mutex (`src/api/mutex.mjs`) serializes every exam mutation, and advances are now
+   idempotent — the exam hall sends the `question_id` it is answering, and a stale advance
+   no-ops (`{ duplicate: true }`) instead of skipping a question the candidate never saw.
+   This also closes the dropped-response auto-retry skip. Legacy callers without
+   `question_id` keep the old behavior.
+2. **Parallel integrity events lost increments.** Ten concurrent beacons collapsed onto one
+   counter value. Under the mutex the counters and event history are exact.
+3. **Racing allocations double-booked the candidate.** Two concurrent allocations of the same
+   track both passed the open-assessment check. Allocation now runs under a
+   candidate+role lock: exactly one 201, one 409.
+
+The same pass wrapped scoring/finalization, assessment reassignment and assessment deletion
+in the assessment lock (a delete racing a submit can no longer orphan response rows). The
+lock is per-process — correct for a single server; a multi-instance serverless deployment
+narrows the race but cannot close it without conditional-write adapter support.
+
+Also verified in this pass: Netlify preflight + 503 matrix, setup-script exit codes and
+import safety, path-traversal fallback, corrupt-file backup-and-boot, misshapen-row tolerance
+(all fail closed, zero 5xx), a 50-way `/health` burst, and seed re-run idempotency.
+
+## 🚀 Deployment-readiness hardening pass (latest)
+
+A sweep over every write path, storage backend, intake route and exam transition with one
+question in mind: *what breaks, corrupts or silently mis-serves in production?* Eleven defect
+classes were fixed; all are pinned in `tests/deployment-hardening.test.mjs` (29 tests) plus
+one exam-submit assertion in `tests/exam-screen.test.mjs`.
+
+**Server crashes turned into 400/422s**
+
+1. **Malformed percent-encoding in a route parameter** (`/admin/candidates/%ff`) threw inside
+   `decodeURIComponent` and 500'd. The router now answers 400.
+2. **Null / non-object assessor score entries** (`scores: [null]`) threw a `TypeError` on
+   `.question_id`. They are now 400 malformed input; unknown question ids are still skipped.
+3. **Null / non-object framework bands** (`readiness_bands: [null, null]`) crashed on `.key`.
+   They are now a 422 with a per-band problems list.
+
+**Structured values can no longer launder into stored text**
+
+4. **Bank intake accepted objects on the form path.** An open-question form post has no
+   `options` array, so it travelled the spreadsheet canonicalization branch — which *drops*
+   structured values. A `{ family: {…} }` post therefore 201'd into the wrong family with no
+   error, and the plain-text guards (which read the canonicalized row, not the raw request)
+   never fired. The guards now read the raw request, so every structured scalar is a 422
+   naming its field — verified live (`Family must be plain text.`).
+5. **Array tags/probes on open-question forms were silently dropped** by the same branch
+   (a 201 that lost the tags). Canonicalization now preserves scalar lists, and `splitList`
+   joins list elements with newlines so a tag containing a comma survives as one entry.
+6. **Legacy write paths audited end to end**: candidates, users, roles, competencies,
+   frameworks and questions reject objects/arrays in text fields with 400 before anything is
+   written; `username`/`key` slugs that bypass the guard are backstopped by their strict
+   regexes (a structured value can never match); structured option ids/labels are dropped
+   rather than stored as `[object Object]`, and numbers still survive stringified.
+
+**Storage backends**
+
+7. **Blob-store mutations read through the TTL cache no more.** Two function instances
+   writing between cache refreshes lost one write (read-modify-write over a stale copy).
+   All five mutations (`insert`, `insertMany`, `update`, `updateMany`, `remove`) now start
+   from a fresh read; the module is injectable so the race is covered by a unit test with a
+   shared fake backend.
+8. **The Netlify wrapper failed open without storage.** With `STORAGE` unset the function
+   used the JSON file store (read-only bundle, empty per-invocation copy) and failed logins
+   and writes with misleading errors. It now answers 503 — for reads and writes alike —
+   naming the exact variables to set.
+9. **The Airtable setup schema was missing fields the adapter writes**
+   (`question_set`, `pin_first`, `audio_required`, `question_count`, `locked`, the
+   `bank_questions` / `bank_question_overrides` tables, `updated_at` columns). A base
+   provisioned from the script now accepts every payload; the script also refuses to run
+   provisioning on import and warns when pointed at an existing base.
+
+**Exam & spreadsheet robustness**
+
+10. **The exam submit re-sent the whole answer transcript**, risking a 413 rejection from
+    the 1 MB proxy ceiling at the final whistle. Answers already persist via autosave, so
+    the submit now finalises with `{ answers: {} }`.
+11. **The spreadsheet parser trusted the archive.** A part declaring a huge inflated size
+    is now refused before inflating (zip-bomb guard), the inflated total is capped, and
+    worksheets stop at 10 000 rows — a hostile workbook is a 400, not an out-of-memory
+    crash. (CSV input is bounded by the request body limit instead.)
+12. **Id-less legacy rows collapsed in paper selection.** The keep/reserved sets were keyed
+    by `id`, so every id-less row shared the key `undefined`: one selection served *all* of
+    them (over-quota papers) and pin reservations dropped all but the first pin. Both sets
+    are now keyed by row identity.
+
+**Also in this pass**: quitting the review phase after the window expired now records the
+`time_expired` integrity event (previously only the auto-advance did); the admin question /
+candidate / user / audit lists page through the whole collection instead of the first 200;
+roles gained a Delete button (blocked with guidance while assessments exist); assessor
+score/comment rendering is HTML-escaped; a malformed `#` route bounces home instead of
+blank-screening; the seed no longer crashes on a thin bank and no longer aliases the demo
+snapshot.
 
 ## 🧪 Exhaustive verification pass (latest)
 
