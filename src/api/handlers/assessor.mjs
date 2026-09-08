@@ -1,4 +1,4 @@
-import { ok, bad, notFound, conflict, unprocessable, audit, num, str } from '../helpers.mjs';
+import { ok, bad, notFound, conflict, unprocessable, audit, num, str, isTextish } from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring } from '../assessment-service.mjs';
@@ -76,6 +76,10 @@ export function assessorHandlers(route) {
     const byQid = new Map(responses.map((r) => [r.question_id, r]));
     const qById = new Map(a.snapshot_json.questions.map((q) => [q.id, q]));
     for (const e of entries) {
+      // A null (or otherwise non-object) entry used to throw a TypeError on
+      // `.question_id` and 500 the endpoint; it is malformed input instead.
+      if (!e || typeof e !== 'object' || Array.isArray(e))
+        return bad('Each score entry must be an object with a question_id.');
       const q = qById.get(e.question_id);
       if (!q) continue;
       const patch = {};
@@ -85,7 +89,10 @@ export function assessorHandlers(route) {
           return unprocessable(`Score for "${q.prompt.slice(0, 60)}..." must be 0-${q.points ?? 1}.`);
         patch.assessor_score = score;
       }
-      if (e.comment !== undefined) patch.assessor_comment = str(e.comment, 1500);
+      if (e.comment !== undefined) {
+        if (!isTextish(e.comment)) return bad('Score comments must be plain text.');
+        patch.assessor_comment = str(e.comment, 1500);
+      }
       const existing = byQid.get(e.question_id);
       if (existing) await store.update('responses', existing.id, patch);
       else await store.insert('responses', { assessment_id: a.id, question_id: e.question_id, answer: null, ...patch });

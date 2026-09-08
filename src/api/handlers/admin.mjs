@@ -1,7 +1,7 @@
 import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
-  str, num, bool, missing, bulkInsert, isTextish,
+  str, num, bool, missing, bulkInsert, isTextish, textField,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import {
@@ -250,6 +250,8 @@ export function adminHandlers(route) {
   route('POST', '/admin/candidates', A, async ({ store, body, auth }) => {
     const miss = missing(body, ['name']);
     if (miss.length) return bad('Candidate name is required.');
+    const structured = textField(body, Object.keys(CANDIDATE_TEXT_FIELDS));
+    if (structured) return bad(`Candidate ${structured} must be plain text.`);
     if (body.stage && !STAGE_KEYS.includes(body.stage)) return bad('Unknown pipeline stage.');
     if (body.target_role_id) {
       const role = await store.get('roles', body.target_role_id);
@@ -499,6 +501,8 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/candidates/:id', A, async ({ store, body, params, auth }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
+    const structured = textField(body, Object.keys(CANDIDATE_TEXT_FIELDS));
+    if (structured) return bad(`Candidate ${structured} must be plain text.`);
     if (body.stage !== undefined && (!body.stage || !STAGE_KEYS.includes(body.stage)))
       return bad('Unknown pipeline stage.');
     if (body.target_role_id) {
@@ -583,6 +587,8 @@ export function adminHandlers(route) {
     const miss = missing(body, ['username', 'name', 'role', 'password']);
     if (miss.length) return bad(`Missing: ${miss.join(', ')}`);
     if (!USER_ROLES.includes(body.role)) return bad(`Role must be one of: ${USER_ROLES.join(', ')}`);
+    const structured = textField(body, ['name', 'email']);
+    if (structured) return bad(`User ${structured} must be plain text.`);
     const username = str(body.username, 100).toLowerCase();
     if (!/^[a-z0-9._-]{3,}$/.test(username)) return bad('Username must be 3+ chars: a-z 0-9 . _ -');
     if (String(body.password).length < 8) return bad('Password must be at least 8 characters.');
@@ -648,6 +654,8 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => {
     const u = await store.get('users', params.id);
     if (!u) return notFound('User not found.');
+    const structured = textField(body, ['name', 'email']);
+    if (structured) return bad(`User ${structured} must be plain text.`);
     const patch = {};
     if (body.name !== undefined) patch.name = str(body.name, 120);
     if (body.email !== undefined) patch.email = str(body.email, 200);
@@ -690,6 +698,8 @@ export function adminHandlers(route) {
   route('POST', '/admin/roles', A, async ({ store, body, auth }) => {
     const miss = missing(body, ['key', 'name', 'technology']);
     if (miss.length) return bad(`Missing: ${miss.join(', ')}`);
+    const structured = textField(body, ['name', 'technology', 'description']);
+    if (structured) return bad(`Role ${structured} must be plain text.`);
     const key = str(body.key, 60).toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(key)) return bad('Key must be a slug like databricks-rsa.');
     if ((await store.list('roles', { key })).length) return conflict('A role with this key already exists.');
@@ -707,6 +717,8 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/roles/:id', A, async ({ store, body, params, auth }) => {
     const r = await store.get('roles', params.id);
     if (!r) return notFound('Role not found.');
+    const structured = textField(body, ['name', 'technology', 'description']);
+    if (structured) return bad(`Role ${structured} must be plain text.`);
     const patch = {};
     for (const f of ['name', 'technology', 'description']) if (body[f] !== undefined) patch[f] = str(body[f], f === 'description' ? 2000 : 120);
     if (body.active !== undefined) patch.active = bool(body.active);
@@ -751,6 +763,8 @@ export function adminHandlers(route) {
 
   route('POST', '/admin/competencies', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
+    const structured = textField(body, Object.keys(COMPETENCY_TEXT_FIELDS));
+    if (structured) return bad(`Competency ${structured} must be plain text.`);
     const problem = validateCompetency(body);
     if (problem) return bad(problem);
     const rec = await store.insert('competencies', {
@@ -771,6 +785,8 @@ export function adminHandlers(route) {
   route('PATCH', '/admin/competencies/:id', A, async ({ store, body, params, auth }) => {
     const c = await store.get('competencies', params.id);
     if (!c) return notFound('Competency not found.');
+    const structured = textField(body, Object.keys(COMPETENCY_TEXT_FIELDS));
+    if (structured) return bad(`Competency ${structured} must be plain text.`);
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return bad('Weight must be 0-100.');
     if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return bad('Target level must be 1-5.');
     const patch = {};
@@ -797,6 +813,8 @@ export function adminHandlers(route) {
     if (!QUESTION_TYPE_KEYS.includes(body.type)) return `Type must be one of: ${QUESTION_TYPE_KEYS.join(', ')}`;
     if (!str(body.prompt)) return 'Question prompt is required.';
     if (!isTextish(body.prompt)) return 'Question prompt must be plain text.';
+    if (body.help_text !== undefined && !isTextish(body.help_text)) return 'Question help text must be plain text.';
+    if (body.rubric !== undefined && !isTextish(body.rubric)) return 'Question rubric must be plain text.';
     const points = body.points === undefined || body.points === ''
       ? 4
       : Number(body.points);
@@ -878,6 +896,7 @@ export function adminHandlers(route) {
 
   route('PUT', '/admin/frameworks', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
+    if (body.name !== undefined && !isTextish(body.name)) return bad('Framework name must be plain text.');
     const config = body.config;
     const problems = validateFrameworkConfig(config);
     if (problems.length) return unprocessable('Invalid framework configuration.', { problems });
@@ -1380,6 +1399,11 @@ function cleanOptions(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((o) => o && typeof o === 'object')
+    // An option whose id or label is a structured value is dropped, not
+    // stringified: `str({…})` would store the literal "[object Object]" as a
+    // served answer choice. Numbers survive (stringified, so `{id: 1}` still
+    // lines up with `correct_option_ids: [1]`).
+    .filter((o) => isTextish(o.id) && isTextish(o.label))
     .map((o) => ({ id: str(o.id, 40), label: str(o.label, 500) }))
     .filter((o) => o.label !== '');
 }
@@ -1392,7 +1416,9 @@ function normalizeQuestion(body, existing = {}) {
     type: body.type || existing.type,
     prompt: str(body.prompt, 2000), help_text: str(body.help_text, 1000),
     options,
-    correct_option_ids: Array.isArray(body.correct_option_ids) ? body.correct_option_ids.map((x) => str(x, 40)) : [],
+    correct_option_ids: Array.isArray(body.correct_option_ids)
+      ? body.correct_option_ids.filter(isTextish).map((x) => str(x, 40))
+      : [],
     points: num(body.points, 4), difficulty: body.difficulty || 'intermediate',
     rubric: str(body.rubric, 3000), order: num(body.order, existing.order ?? 0),
     active: body.active !== undefined ? bool(body.active) : true,

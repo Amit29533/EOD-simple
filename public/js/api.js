@@ -35,6 +35,31 @@ export async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+/**
+ * Fetch every page of a paginated list endpoint into one array. List routes
+ * cap pages (200 by default, 500 max), so a single call silently drops rows
+ * past the first page — this follows `offset` until `total` rows are in hand.
+ * A response without pagination metadata ends the walk after one page, so
+ * unpaginated routes stay single-request and the helper is stub-safe in tests.
+ */
+export async function apiAll(path, key, { limit = 500 } = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const rows = [];
+  let offset = 0;
+  let total = Infinity;
+  let guard = 0;
+  while (rows.length < total && guard++ < 100) {
+    const page = await api(`${path}${sep}limit=${limit}&offset=${offset}`);
+    const batch = Array.isArray(page?.[key]) ? page[key] : [];
+    rows.push(...batch);
+    if (typeof page?.total !== 'number') break;
+    total = page.total;
+    offset = rows.length;
+    if (!batch.length) break;
+  }
+  return rows;
+}
+
 export const login = (username, password) => api('/auth/login', { method: 'POST', body: { username, password } });
 export const logout = () => api('/auth/logout', { method: 'POST' }).catch(() => {});
 export const me = () => api('/auth/me');

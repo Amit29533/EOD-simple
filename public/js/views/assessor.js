@@ -160,7 +160,9 @@ function scoreCard(q, n, r) {
       : '';
     answerBlock += `<div class="row" style="margin-top:8px">${badge(`Auto score: ${fmtPts(auto)}/${q.points}${multiNote}`, tone)}</div>`;
   } else if (q.type === 'scale') {
-    answerBlock = `<div class="row"><b style="font-size:22px">${answer ?? '—'}</b><span class="muted">/5 self-rated</span>${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, 'blue')}</div>`;
+    // The answer is candidate-controlled stored data: escape it like every
+    // other rendered answer, even though the API only accepts 1-5 today.
+    answerBlock = `<div class="row"><b style="font-size:22px">${esc(answer ?? '—')}</b><span class="muted">/5 self-rated</span>${badge(`Auto score: ${r?.auto_score ?? 0}/${q.points}`, 'blue')}</div>`;
   } else {
     // Open answer: the recording is the answer and typed notes are optional, so
     // the player — plus an explicit warning when the mandatory recording is
@@ -184,8 +186,8 @@ function scoreCard(q, n, r) {
       <details class="fold" style="margin-top:10px"><summary>📋 Scoring rubric (expected evidence)</summary>
         <div class="rubric" style="margin-top:8px">${esc(q.rubric || 'No rubric configured.')}</div></details>
       <div class="row" style="margin-top:12px;align-items:flex-end">
-        <label class="f" style="margin:0"><span class="lbl">Your score (0-${q.points})</span>
-          <input type="number" class="score-input" id="score-${esc(q.id)}" min="0" max="${esc(q.points)}" step="0.5" value="${r?.assessor_score ?? ''}"/></label>
+        <label class="f" style="margin:0"><span class="lbl">Your score (0-${esc(q.points)})</span>
+          <input type="number" class="score-input" id="score-${esc(q.id)}" min="0" max="${esc(q.points)}" step="0.5" value="${esc(r?.assessor_score ?? '')}"/></label>
         <label class="f" style="margin:0;flex:1"><span class="lbl">Feedback for the report (internal)</span>
           <input type="text" id="comment-${esc(q.id)}" value="${esc(r?.assessor_comment || '')}" placeholder="Why this score? Not shown to the candidate."/></label>
       </div>`;

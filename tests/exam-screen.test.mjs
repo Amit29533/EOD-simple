@@ -219,3 +219,22 @@ test('a finished paper submits itself and leaves the exam hall', { skip: SKIP },
     assert.match(String(h.window.location.hash), /#\/journey/, 'the candidate must be moved off the exam screen');
   } finally { await h.teardown(); }
 });
+
+test('the submit carries no duplicated answers (locked answers already persist server-side)', { skip: SKIP }, async () => {
+  // Every answer is autosaved as the candidate advances, so the submit only
+  // finalises. Re-sending the transcript risked 413 on 1MB reverse proxies and
+  // got the paper rejected at the final whistle.
+  const h = setup({ pages: [payload({ index: 2, total: 3, complete: true })] });
+  try {
+    const view = h.window.document.getElementById('view');
+    const { state } = await import('../public/js/app.js');
+    state.user = { username: 'cand', role: 'candidate' };
+    state.meta = META;
+    const { quizView } = await import('../public/js/views/candidate.js');
+    await quizView(view, { id: 'asm1' });
+    await flush(400);
+    const submits = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit'));
+    assert.equal(submits.length, 1, 'a completed paper must auto-submit');
+    assert.deepEqual(submits[0].body, { answers: {} }, `the submit must not resend the transcript, got ${JSON.stringify(submits[0].body)}`);
+  } finally { await h.teardown(); }
+});

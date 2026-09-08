@@ -1,4 +1,4 @@
-import { notFound, forbidden, unauthorized } from './helpers.mjs';
+import { notFound, forbidden, unauthorized, bad as badRequest } from './helpers.mjs';
 import { authHandlers } from './handlers/auth.mjs';
 import { adminHandlers } from './handlers/admin.mjs';
 import { assessorHandlers } from './handlers/assessor.mjs';
@@ -40,7 +40,13 @@ export async function dispatch(routes, ctx) {
       if (r.roles && !r.roles.includes(ctx.auth.user.role)) return forbidden();
     }
     const params = {};
-    r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    try {
+      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    } catch {
+      // A path parameter that is not valid percent-encoding (a bare `%`, a
+      // truncated sequence) is a bad request, not a server failure.
+      return badRequest();
+    }
     return r.handler({ ...ctx, params });
   }
   return notFound();

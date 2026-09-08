@@ -18,6 +18,21 @@ export const str = (v, max = 500) => String(v ?? '').trim().slice(0, max);
  * numeric prompt is caught by the length rules).
  */
 export const isTextish = (v) => v === undefined || v === null || typeof v === 'string' || typeof v === 'number';
+/**
+ * First field in `fields` whose body value is a structured value (object or
+ * array), or null when every present value is plain text. Handlers use this to
+ * refuse values `str()` would launder into the literal string "[object
+ * Object]" — a row that is unrecoverable junk and, worse, looks identical to
+ * every other such row, so duplicate checks stop catching real duplicates.
+ * Usage: `const badField = textField(body, ['name', ...]); if (badField) return bad(...)`.
+ */
+export const textField = (body, fields = []) => {
+  for (const f of fields) {
+    const v = body?.[f];
+    if (v !== undefined && v !== null && !isTextish(v)) return f;
+  }
+  return null;
+};
 export const num = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
 /**
  * Truthiness for values arriving over HTTP. Covers JSON booleans, HTML form

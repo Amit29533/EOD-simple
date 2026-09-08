@@ -31,6 +31,18 @@ import { inflateRawSync } from 'node:zlib';
  * streamed sizes of 0 with the real values in a trailing data descriptor, so
  * the central directory is the only authoritative source for entry sizes.
  */
+/**
+ * Decompression guards: an .xlsx is a zip, and 8 MB of compressed input can
+ * declare gigabytes of output (a zip bomb). Entries declaring more than this
+ * are skipped before inflating, and the inflated total is capped as well, so
+ * a hostile workbook is a 400 instead of an out-of-memory crash. Real exports
+ * are far smaller (a 2000-row sheet inflates to a few MB at most).
+ */
+export const MAX_XLSX_ENTRY_BYTES = 64_000_000;
+export const MAX_XLSX_TOTAL_BYTES = 128_000_000;
+/** Rows read from one worksheet — 5x the per-import row limit, so no legitimate file hits it. */
+export const MAX_SHEET_ROWS = 10000;
+
 function unzip(buffer) {
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
   // End Of Central Directory: signature 0x06054b50, within the last 64KB+22.
@@ -43,11 +55,13 @@ function unzip(buffer) {
   const count = buf.readUInt16LE(eocd + 10);
   let ptr = buf.readUInt32LE(eocd + 16);
   const files = new Map();
+  let inflatedTotal = 0;
 
   for (let n = 0; n < count && ptr + 46 <= buf.length; n += 1) {
     if (buf.readUInt32LE(ptr) !== 0x02014b50) break;      // central header sig
     const method = buf.readUInt16LE(ptr + 10);
     const compressedSize = buf.readUInt32LE(ptr + 20);
+    const declaredSize = buf.readUInt32LE(ptr + 24);
     const nameLen = buf.readUInt16LE(ptr + 28);
     const extraLen = buf.readUInt16LE(ptr + 30);
     const commentLen = buf.readUInt16LE(ptr + 32);
@@ -56,14 +70,28 @@ function unzip(buffer) {
 
     // Re-read the *local* header to find where the payload actually starts;
     // its extra field length can differ from the central one.
-    if (buf.readUInt32LE(localOffset) === 0x04034b50) {
+    if (localOffset + 30 <= buf.length && buf.readUInt32LE(localOffset) === 0x04034b50) {
       const lNameLen = buf.readUInt16LE(localOffset + 26);
       const lExtraLen = buf.readUInt16LE(localOffset + 28);
       const start = localOffset + 30 + lNameLen + lExtraLen;
-      const slice = buf.subarray(start, start + compressedSize);
+      // Never inflate a part that declares an absurd size, and never let the
+      // inflated archive as a whole exceed the budget: both are zip-bomb
+      // shapes, and both end the import with a 400 instead of the process.
+      if (method !== 0 && declaredSize > MAX_XLSX_ENTRY_BYTES) {
+        throw new Error('That .xlsx declares more data than can be safely read (possible zip bomb).');
+      }
+      const slice = buf.subarray(start, Math.min(buf.length, start + compressedSize));
       try {
-        files.set(name, method === 0 ? slice : inflateRawSync(slice));
-      } catch { /* a part we cannot inflate is simply unavailable */ }
+        const part = method === 0 ? slice : inflateRawSync(slice);
+        inflatedTotal += part.length;
+        if (inflatedTotal > MAX_XLSX_TOTAL_BYTES) {
+          throw new Error('That .xlsx expands to more data than can be safely read (possible zip bomb).');
+        }
+        files.set(name, part);
+      } catch (err) {
+        if (err && /zip bomb/.test(err.message)) throw err;
+        /* a part we cannot inflate is simply unavailable */
+      }
     }
     ptr += 46 + nameLen + extraLen + commentLen;
   }
@@ -156,6 +184,9 @@ function parseXlsx(buffer) {
 
   const grid = [];
   for (const rowMatch of sheet.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+    // A hostile sheet can declare millions of rows; the match is lazy, so
+    // stop reading once the grid is far past anything the importer accepts.
+    if (grid.length >= MAX_SHEET_ROWS) break;
     const cells = [];
     // Match both a populated cell and a SELF-CLOSING empty one (`<c r="E4"/>`).
     // Excel emits the latter for blank cells that carry a style, and skipping

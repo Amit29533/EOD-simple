@@ -8,7 +8,25 @@ import { createApp } from '../../src/api/app.mjs';
  * Production hardening: security headers, CORS, payload limits.
  */
 let appPromise;
-const getApp = () => (appPromise ||= createStore().then(createApp));
+/**
+ * The JSON file store cannot work inside a function: the bundle filesystem is
+ * read-only (every write throws) and each invocation starts from an empty
+ * in-memory copy, so without STORAGE set the app fails every login and write
+ * with misleading errors. Fail fast with the fix instead — reads and writes
+ * alike, since an empty store would only serve convincing-looking lies.
+ */
+const getApp = () => (appPromise ||= createStore().then(async (store) => ({
+  kind: store.kind,
+  app: await createApp(store),
+})));
+
+const storageMisconfigured = () => ({
+  statusCode: 503,
+  headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  body: JSON.stringify({
+    error: 'Storage backend is not configured. Set STORAGE=blobs (recommended) or STORAGE=airtable with AIRTABLE_API_KEY and AIRTABLE_BASE_ID in the site environment, then redeploy.',
+  }),
+});
 
 const MAX_BODY = 12_000_000; // 12MB max for uploads
 
@@ -29,7 +47,8 @@ export async function handler(event) {
       };
     }
 
-    const app = await getApp();
+    const { kind, app } = await getApp();
+    if (kind === 'json-file') return storageMisconfigured();
     let body;
     if (event.body) {
       if (event.body.length > MAX_BODY) {

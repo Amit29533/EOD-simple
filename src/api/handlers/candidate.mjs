@@ -228,7 +228,21 @@ export function candidateHandlers(route) {
     if (body?.phase !== 'answer') return bad('phase must be "answer".');
     if ((quiz.phase || 'answer') !== 'review')
       return conflict('The answer phase for this question has already started; its timer cannot be reset.');
-    const next = { ...quiz, phase: 'answer', question_started_at: new Date().toISOString() };
+    // The transition itself grants a fresh answer budget, so a candidate who
+    // sleeps through review (a backgrounded tab, a dead network) must not get
+    // that window silently: past the same grace the /next path allows, the
+    // overrun is recorded in the integrity trail — mirroring the automatic
+    // review-expiry advance, which logs before transitioning.
+    let base = quiz;
+    if (remainingTimeMs(q, quiz, Date.now()) < -5000) {
+      base = integrityPatch(
+        base,
+        'time_expired',
+        `Q${quiz.index + 1} review window expired before the candidate started answering.`,
+        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+      );
+    }
+    const next = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
     await store.update('assessments', a.id, { quiz_state: next });
     return ok({ phase: 'answer', remaining_ms: budgetsFor(q).answer_ms });
   });

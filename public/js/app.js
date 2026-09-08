@@ -203,7 +203,14 @@ async function renderOnce() {
     const match = hash.match(rx);
     if (!match) continue;
     const params = {};
-    keys.forEach((k, i) => { params[k] = decodeURIComponent(match[i + 1]); });
+    try {
+      keys.forEach((k, i) => { params[k] = decodeURIComponent(match[i + 1]); });
+    } catch {
+      // A malformed hash (a bare `%`, a truncated sequence) is not a view —
+      // bounce home instead of dying with a blank screen.
+      location.hash = DEFAULT_ROUTE[state.user.role];
+      return;
+    }
     view.innerHTML = '<div class="loading"><span class="spinner"></span><span>Loading workspace</span></div>';
     try {
       const isExam = state.user.role === 'candidate' && /\/quiz$/.test(hash);

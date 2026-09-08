@@ -6,10 +6,12 @@ import { AUDIT_TABLE, trimAuditRows } from './audit-rotation.mjs';
  * One blob per table. Suitable for the MVP scale; swap STORAGE=airtable or a
  * future SQL adapter as you grow - the rest of the app does not change.
  */
-export async function createBlobsStore() {
-  let blobs;
-  try { blobs = await import('@netlify/blobs'); }
-  catch { throw new Error('STORAGE=blobs requires the @netlify/blobs package inside the Netlify runtime.'); }
+export async function createBlobsStore({ blobsModule = null } = {}) {
+  let blobs = blobsModule;
+  if (!blobs) {
+    try { blobs = await import('@netlify/blobs'); }
+    catch { throw new Error('STORAGE=blobs requires the @netlify/blobs package inside the Netlify runtime.'); }
+  }
   const store = blobs.getStore(
   process.env.NETLIFY_SITE_ID && process.env.NETLIFY_AUTH_TOKEN
     ? { name: 'ecod', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_AUTH_TOKEN }
@@ -34,16 +36,27 @@ export async function createBlobsStore() {
     return next;
   };
 
-  const readTable = async (t) => {
-    if (UNCACHED.has(t)) {
-      let rows = {};
-      try { rows = (await store.get(t, { type: 'json' })) || {}; } catch { rows = {}; }
-      return rows;
-    }
-    const hit = cache.get(t);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.rows;
+  const readFresh = async (t) => {
     let rows = {};
     try { rows = (await store.get(t, { type: 'json' })) || {}; } catch { rows = {}; }
+    return rows;
+  };
+  const readTable = async (t) => {
+    if (UNCACHED.has(t)) return readFresh(t);
+    const hit = cache.get(t);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.rows;
+    const rows = await readFresh(t);
+    cache.set(t, { rows, at: Date.now() });
+    return rows;
+  };
+  /**
+   * Mutations always start from a fresh read, never from the TTL cache: a
+   * read-modify-write over a stale copy silently drops whatever another
+   * function instance wrote in the meantime (each deploy runs many instances
+   * behind one blob store, and the per-process lock cannot span them).
+   */
+  const readForWrite = async (t) => {
+    const rows = await readFresh(t);
     cache.set(t, { rows, at: Date.now() });
     return rows;
   };
@@ -67,7 +80,7 @@ export async function createBlobsStore() {
     },
     async insert(t, data) {
       return withLock(t, async () => {
-        const rows = await readTable(t);
+        const rows = await readForWrite(t);
         const id = data.id || newId();
         const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
         rows[id] = rec;
@@ -78,7 +91,7 @@ export async function createBlobsStore() {
     },
     async insertMany(t, rows = []) {
       return withLock(t, async () => {
-        const all = await readTable(t);
+        const all = await readForWrite(t);
         const recs = rows.map((data) => {
           const id = data.id || newId();
           const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };
@@ -94,7 +107,7 @@ export async function createBlobsStore() {
     },
     async update(t, id, patch) {
       return withLock(t, async () => {
-        const rows = await readTable(t);
+        const rows = await readForWrite(t);
         if (!rows[id]) return null;
         rows[id] = { ...rows[id], ...patch, id, updated_at: new Date().toISOString() };
         await writeTable(t, rows);
@@ -104,7 +117,7 @@ export async function createBlobsStore() {
     /** Batch update in one blob write; see the json-file adapter for the contract. */
     async updateMany(t, patches = []) {
       return withLock(t, async () => {
-        const rows = await readTable(t);
+        const rows = await readForWrite(t);
         let touched = 0;
         const out = patches.map(({ id, patch }) => {
           if (!rows[id]) return null;
@@ -118,7 +131,7 @@ export async function createBlobsStore() {
     },
     async remove(t, id) {
       return withLock(t, async () => {
-        const rows = await readTable(t);
+        const rows = await readForWrite(t);
         if (!rows[id]) return false;
         delete rows[id];
         await writeTable(t, rows);

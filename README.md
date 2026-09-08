@@ -382,9 +382,21 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 
 1. **New site from Git** → pick this repository. No build command needed.
 2. Set **Environment variables**: either `STORAGE=airtable` + `AIRTABLE_API_KEY` +
-   `AIRTABLE_BASE_ID`, or `STORAGE=blobs` for zero-config persistence.
-3. Deploy, then run the seed once (locally, pointing at the same backend):
+   `AIRTABLE_BASE_ID`, or `STORAGE=blobs` for zero-config persistence. With neither set,
+   every `/api/*` call answers **503** telling you exactly what to set (the JSON file
+   store cannot work inside a function — read-only bundle, fresh empty copy per
+   invocation — so the wrapper fails fast instead of failing logins misleadingly).
+3. For Airtable, provision the schema first: `STORAGE=airtable AIRTABLE_API_KEY=…
+   AIRTABLE_BASE_ID=… npm run airtable:setup` (safe to re-run; skips tables that already
+   exist — but it cannot add columns to tables created by an older version, so point it
+   at a fresh base when upgrading).
+4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
+
+Verify before you ship: `npm test` (334 Node tests), then with a local server up
+(`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
+`seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
+(216 black-box checks).
 4. **Attach to anthroprime.com** — two clean options:
    - *Subdomain (recommended):* add `ecod.anthroprime.com` as the site's custom domain in Netlify DNS.
    - *Path on the main site:* in the anthroprime.com site's `netlify.toml`:
