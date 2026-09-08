@@ -169,6 +169,7 @@ test('locking an answer saves it, advances once, and ignores a double click', { 
     // Locking a question IS the save: the chosen option rides with /next.
     const next = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/next'))[0];
     assert.equal(next.body.answer, QUESTION.options[0].id, 'the advance must carry the selected option');
+    assert.equal(next.body.question_id, QUESTION.id, 'the advance must name the question it answers (server-side idempotency)');
     assert.match(textOf(view), /Question\s*3\s*of\s*3/, 'the next question must be painted after the advance');
 
     // Two clicks in the same tick must be one advance, or a candidate skips a

@@ -393,10 +393,11 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (334 Node tests), then with a local server up
+Verify before you ship: `npm test` (338 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
-(216 black-box checks).
+(216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks
+(auth matrix, isolation, races, fuzz, live imports) and passes on any database state.
 4. **Attach to anthroprime.com** — two clean options:
    - *Subdomain (recommended):* add `ecod.anthroprime.com` as the site's custom domain in Netlify DNS.
    - *Path on the main site:* in the anthroprime.com site's `netlify.toml`:

@@ -322,7 +322,10 @@ async function runExamSession(view, id, payload) {
     if (ticking) { clearInterval(ticking); ticking = null; }
     const out = await attempt(() => api(`/candidate/assessments/${id}/next`, {
       method: 'POST',
-      body: { answer: answer === undefined ? null : answer },
+      // The question this advance answers: if a retried/duplicated request
+      // arrives after the cursor moved on, the server no-ops it instead of
+      // skipping the live question (see the /next idempotency guard).
+      body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
     }));
     if (!out) { advancing = false; return; }
     if (out.complete) {

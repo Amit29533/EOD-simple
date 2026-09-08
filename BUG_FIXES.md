@@ -17,7 +17,40 @@ parser, and an exam submit that re-sent the whole transcript into the 413 ceilin
 the Netlify wrapper to fail fast without a storage backend, and completed the Airtable setup
 schema so a provisioned base accepts every field the adapter writes.
 
-Current verification: **334/334 Node tests**, **39/39 smoke tests**, and **216/216 feature tests** pass.
+Current verification: **338/338 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+and **76/76 final-gauntlet checks** pass.
+
+## ⚔️ Final gauntlet (latest)
+
+A self-contained black-box suite (`tests/final-gauntlet.py`, `npm run test:gauntlet`) that builds
+its own namespaced fixtures, so it passes on any database state and cleans up after itself. It
+runs a route × role authorisation matrix, cross-tenant 404-hiding, a full shuffled-paper exam
+journey (lock-and-next, review phase, empty-transcript submit, scoring, report redaction, audit),
+a 24-payload zero-5xx fuzz sweep, live CSV imports plus a forged zip-bomb `.xlsx`, generic
+pagination, security headers, and the 413 ceiling — and it caught three real concurrency
+defects, all fixed:
+
+1. **Racing advances skipped questions and duplicated response rows.** Six concurrent
+   `/next` calls interleaved their read-modify-write cycles. Fixed twice over: a per-assessment
+   async mutex (`src/api/mutex.mjs`) serializes every exam mutation, and advances are now
+   idempotent — the exam hall sends the `question_id` it is answering, and a stale advance
+   no-ops (`{ duplicate: true }`) instead of skipping a question the candidate never saw.
+   This also closes the dropped-response auto-retry skip. Legacy callers without
+   `question_id` keep the old behavior.
+2. **Parallel integrity events lost increments.** Ten concurrent beacons collapsed onto one
+   counter value. Under the mutex the counters and event history are exact.
+3. **Racing allocations double-booked the candidate.** Two concurrent allocations of the same
+   track both passed the open-assessment check. Allocation now runs under a
+   candidate+role lock: exactly one 201, one 409.
+
+The same pass wrapped scoring/finalization, assessment reassignment and assessment deletion
+in the assessment lock (a delete racing a submit can no longer orphan response rows). The
+lock is per-process — correct for a single server; a multi-instance serverless deployment
+narrows the race but cannot close it without conditional-write adapter support.
+
+Also verified in this pass: Netlify preflight + 503 matrix, setup-script exit codes and
+import safety, path-traversal fallback, corrupt-file backup-and-boot, misshapen-row tolerance
+(all fail closed, zero 5xx), a 50-way `/health` burst, and seed re-run idempotency.
 
 ## 🚀 Deployment-readiness hardening pass (latest)
 

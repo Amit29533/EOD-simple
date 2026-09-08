@@ -3,8 +3,14 @@ import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
+import { withLock } from '../mutex.mjs';
 
 const R = ['assessor'];
+
+// Scoring and finalization share one assessment's lock with each other (and
+// with the candidate-side mutations in candidate.mjs): a score landing
+// mid-finalize, or two finalizes at once, must serialize, not interleave.
+const locked = (fn) => async (ctx) => withLock(`assessment:${ctx.params.id}`, () => fn(ctx));
 
 /** Load an assessment only if it belongs to the signed-in assessor (404 hides existence). */
 async function own(store, assessorId, assessmentId) {
@@ -66,7 +72,7 @@ export function assessorHandlers(route) {
     });
   });
 
-  route('PUT', '/assessor/assessments/:id/scores', R, async ({ store, auth, params, body }) => {
+  route('PUT', '/assessor/assessments/:id/scores', R, locked(async ({ store, auth, params, body }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
     if (a.status !== 'submitted') return conflict('Scores can only be entered after submission and before finalization.');
@@ -98,9 +104,9 @@ export function assessorHandlers(route) {
       else await store.insert('responses', { assessment_id: a.id, question_id: e.question_id, answer: null, ...patch });
     }
     return ok({ ok: true });
-  });
+  }));
 
-  route('POST', '/assessor/assessments/:id/finalize', R, async ({ store, auth, params }) => {
+  route('POST', '/assessor/assessments/:id/finalize', R, locked(async ({ store, auth, params }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
     if (a.status !== 'submitted') return conflict('Assessment is not awaiting scoring.');
@@ -115,5 +121,5 @@ export function assessorHandlers(route) {
       status: 'scored',
       candidate: candidateForAssessor(candidate),
     });
-  });
+  }));
 }

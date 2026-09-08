@@ -4,6 +4,7 @@ import {
   str, num, bool, missing, bulkInsert, isTextish, textField,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
+import { withLock } from '../mutex.mjs';
 import {
   USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG,
   PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE, MAX_SPREADSHEET_BYTES,
@@ -182,6 +183,11 @@ function readImportPayload(body = {}) {
 }
 
 const A = ['admin'];
+
+// Assessment mutations serialize per assessment (shared with the candidate
+// and assessor handlers): a delete racing a submit must not orphan response
+// rows, and a reassignment racing a finalize must see the final status.
+const lockedAssessment = (fn) => async (ctx) => withLock(`assessment:${ctx.params.id}`, () => fn(ctx));
 
 export function adminHandlers(route) {
 
@@ -1250,7 +1256,9 @@ export function adminHandlers(route) {
     return ok(result);
   });
 
-  route('POST', '/admin/assessments', A, async ({ store, body, auth }) => {
+  route('POST', '/admin/assessments', A, async (ctx) =>
+    withLock(`alloc:${ctx.body?.candidate_id}:${ctx.body?.role_id}`, async () => {
+      const { store, body, auth } = ctx;
     const miss = missing(body, ['candidate_id', 'role_id']);
     if (miss.length) return bad('candidate_id and role_id are required.');
     const candidate = await store.get('candidates', body.candidate_id);
@@ -1292,9 +1300,9 @@ export function adminHandlers(route) {
     await audit(store, auth.user, 'assessment_allocated', 'assessments', rec.id,
       `Assessment allocated to "${candidate.name}" (${scope})${assessor_id ? '' : ' — assessor to be assigned'}`);
     return created(rec);
-  });
+  }));
 
-  route('PATCH', '/admin/assessments/:id', A, async ({ store, body, params, auth }) => {
+  route('PATCH', '/admin/assessments/:id', A, lockedAssessment(async ({ store, body, params, auth }) => {
     const a = await store.get('assessments', params.id);
     if (!a) return notFound('Assessment not found.');
     if (body.assessor_id !== undefined) {
@@ -1308,9 +1316,9 @@ export function adminHandlers(route) {
       return ok(updated);
     }
     return bad('Nothing to update.');
-  });
+  }));
 
-  route('DELETE', '/admin/assessments/:id', A, async ({ store, params, auth }) => {
+  route('DELETE', '/admin/assessments/:id', A, lockedAssessment(async ({ store, params, auth }) => {
     const a = await store.get('assessments', params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
@@ -1319,7 +1327,7 @@ export function adminHandlers(route) {
     await store.remove('assessments', params.id);
     await audit(store, auth.user, 'assessment_deleted', 'assessments', params.id, 'Assessment deleted before submission');
     return ok({ ok: true });
-  });
+  }));
 
   // ------------------------------------------------ integrity / anti-cheat trail
   route('GET', '/admin/assessments/:id/integrity', A, async ({ store, params }) => {

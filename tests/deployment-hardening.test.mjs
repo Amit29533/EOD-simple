@@ -322,7 +322,7 @@ test('the Netlify wrapper fails fast with 503 when no storage backend is configu
   delete process.env.AIRTABLE_BASE_ID;
   try {
     const { handler } = await import('../netlify/functions/api.mjs');
-    for (const httpMethod of ['GET', 'POST']) {
+    for (const httpMethod of ['GET', 'POST', 'PUT', 'DELETE']) {
       const res = await handler({
         httpMethod, path: '/.netlify/functions/api/health',
         headers: {}, queryStringParameters: {},
@@ -330,6 +330,13 @@ test('the Netlify wrapper fails fast with 503 when no storage backend is configu
       assert.equal(res.statusCode, 503, `${httpMethod} must fail fast, got ${res.statusCode}`);
       assert.match(res.body, /STORAGE=blobs/, 'the 503 must tell the deployer exactly what to set');
     }
+    // Preflight never touches storage, so it answers even when unconfigured.
+    const pre = await handler({
+      httpMethod: 'OPTIONS', path: '/.netlify/functions/api/health',
+      headers: { origin: 'https://example.com' }, queryStringParameters: {},
+    });
+    assert.equal(pre.statusCode, 204);
+    assert.equal(pre.headers['access-control-allow-origin'], 'https://example.com');
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];

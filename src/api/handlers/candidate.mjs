@@ -8,8 +8,15 @@ import {
 import {
   requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent,
 } from '../../core/spoken-answer.mjs';
+import { withLock } from '../mutex.mjs';
 
 const R = ['candidate'];
+
+// Every mutation below is a read-modify-write over one assessment, so each
+// runs under that assessment's lock: without it, parallel autosaves,
+// integrity beacons and advances interleave and lose each other's writes
+// (duplicate response rows, dropped integrity increments). See mutex.mjs.
+const locked = (fn) => async (ctx) => withLock(`assessment:${ctx.params.id}`, () => fn(ctx));
 
 async function myCandidate(store, user) {
   return user.candidate_id ? store.get('candidates', user.candidate_id) : null;
@@ -149,7 +156,7 @@ export function candidateHandlers(route) {
     });
   });
 
-  route('PUT', '/candidate/assessments/:id/answers', R, async ({ store, auth, params, body }) => {
+  route('PUT', '/candidate/assessments/:id/answers', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
@@ -183,9 +190,9 @@ export function candidateHandlers(route) {
     if (a.status === 'assigned')
       await store.update('assessments', a.id, { status: 'in_progress', started_at: new Date().toISOString() });
     return ok({ ok: true, saved_at: new Date().toISOString() });
-  });
+  }));
 
-  route('POST', '/candidate/assessments/:id/integrity', R, async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/integrity', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
@@ -215,9 +222,9 @@ export function candidateHandlers(route) {
       { event, detail, question_index: base.index, question_id: q?.id || '', question_prompt: q?.prompt || '' },
     );
     return ok({ integrity: quiz.integrity, events: quiz.events });
-  });
+  }));
 
-  route('POST', '/candidate/assessments/:id/phase', R, async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/phase', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
@@ -245,9 +252,9 @@ export function candidateHandlers(route) {
     const next = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
     await store.update('assessments', a.id, { quiz_state: next });
     return ok({ phase: 'answer', remaining_ms: budgetsFor(q).answer_ms });
-  });
+  }));
 
-  route('POST', '/candidate/assessments/:id/next', R, async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/next', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
@@ -256,6 +263,15 @@ export function candidateHandlers(route) {
     const quiz = ensureQuizState(a, questions);
     const q = questions[quiz.index];
     if (!q) return ok({ complete: true, index: quiz.index, total: questions.length });
+
+    // Idempotent advances: the exam hall sends the question it is answering,
+    // so a duplicated advance — a double click, an auto-retry after a dropped
+    // response — is a no-op once the cursor has moved on, instead of skipping
+    // the live question the candidate has not seen yet. (Older callers that
+    // send no question_id keep the legacy always-advance behavior.)
+    if (body?.question_id !== undefined && body.question_id !== q.id) {
+      return ok({ complete: false, index: quiz.index, total: questions.length, duplicate: true });
+    }
 
     const now = Date.now();
     const raw = remainingTimeMs(q, quiz, now);
@@ -352,9 +368,9 @@ export function candidateHandlers(route) {
     };
     await store.update('assessments', a.id, { quiz_state: nextState });
     return ok({ complete: nextIndex >= questions.length, index: nextIndex, total: questions.length });
-  });
+  }));
 
-  route('POST', '/candidate/assessments/:id/submit', R, async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/submit', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (a.status === 'submitted') return conflict('This assessment has already been submitted.');
@@ -398,7 +414,7 @@ export function candidateHandlers(route) {
     const candidate = await myCandidate(store, auth.user);
     await audit(store, auth.user, 'assessment_submitted', 'assessments', a.id, `"${candidate?.name}" submitted their assessment`);
     return ok({ status: 'submitted' });
-  });
+  }));
 
   route('GET', '/candidate/reports/:id', R, async ({ store, auth, params }) => {
     const a = await ownAssessment(store, auth.user, params.id);
