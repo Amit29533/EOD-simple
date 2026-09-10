@@ -47,28 +47,49 @@ export async function portalView(view) {
 }
 
 /* ================================ Secure exam ================================ */
+function renderSubmitted(view) {
+  document.body.classList.remove('exam-lock');
+  view.innerHTML = `<div class="card">${emptyState('Assessment submitted', 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
+}
+
 export async function quizView(view, { id }) {
   view.innerHTML = loading();
-  const d = await api(`/candidate/assessments/${id}`);
+  const gateKey = `ecod.exam.ack.${id}`;
 
-  if (d.assessment.status === 'submitted') {
-    document.body.classList.remove('exam-lock');
-    view.innerHTML = `<div class="card">${emptyState('Assessment submitted', 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
+  if (!sessionStorage.getItem(gateKey)) {
+    // The rules gate must render BEFORE the exam starts: the first question's
+    // clock begins the moment the server is asked for the exam, so the gate
+    // reads the non-mutating assessments list (status, role and question count)
+    // instead of GETting the assessment. The candidate reads and acknowledges
+    // the rules on their own time — nothing ticks until they press enter.
+    const list = await api('/candidate/assessments');
+    const a = (list.assessments || []).find((x) => x.id === id);
+    if (a && a.status === 'submitted') { renderSubmitted(view); return; }
+    if (a && ['scored', 'validated'].includes(a.status)) { location.hash = `#/assessments/${id}/report`; return; }
+    if (!a) {
+      document.body.classList.remove('exam-lock');
+      view.innerHTML = emptyState('Assessment not found', 'Ask your administrator to allocate an assessment for you.');
+      return;
+    }
+    renderExamGate(view, {
+      assessment: { role: { name: a.role_name || 'this role' } },
+      exam: { total: a.question_count || 0 },
+    }, () => {
+      sessionStorage.setItem(gateKey, '1');
+      quizView(view, { id });
+    });
     return;
   }
+
+  // Rules acknowledged: this GET is the moment the exam — and its first
+  // question's clock — actually starts.
+  const d = await api(`/candidate/assessments/${id}`);
+
+  if (d.assessment.status === 'submitted') { renderSubmitted(view); return; }
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
 
   if (d.exam?.complete) {
     await finalizeExam(id);
-    return;
-  }
-
-  const gateKey = `ecod.exam.ack.${id}`;
-  if (!sessionStorage.getItem(gateKey)) {
-    renderExamGate(view, d, () => {
-      sessionStorage.setItem(gateKey, '1');
-      quizView(view, { id });
-    });
     return;
   }
 
