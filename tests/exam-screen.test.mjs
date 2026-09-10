@@ -33,17 +33,17 @@ const QUESTION = {
   correct_option_ids: ['c'], audio_required: false,
 };
 
-function payload({ remaining = 24_000, index = 1, total = 3, complete = false, phase = 'answer' } = {}) {
+function payload({ remaining = 24_000, index = 1, total = 3, complete = false, phase = 'answer', question = QUESTION } = {}) {
   return {
     assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
     exam: {
       index, total, phase, remaining_ms: remaining, server_now: new Date().toISOString(),
       budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete,
     },
-    current_question: QUESTION,
+    current_question: question,
     current_answer: null,
     competency: { id: 'c1', name: 'Lakehouse Architecture', category: 'technical', description: '', order: 1 },
-    questions: [QUESTION],
+    questions: [question],
     competencies: [],
     answers: {},
   };
@@ -151,6 +151,30 @@ test('the live exam screen shows a running clock, the question, and its options'
     assert.ok(view.querySelector('#exam-next'), 'the lock/continue control must exist');
     assert.doesNotMatch(textOf(view), /undefined|\[object Object\]|\bNaN\b/, 'the exam screen must not leak raw values');
     assert.doesNotMatch(textOf(view), /Something went wrong/, 'the exam screen must not hit the error boundary');
+  } finally { await h.teardown(); }
+});
+
+test('the clock honors the server remaining_ms instead of resetting to a 30s MCQ budget', { skip: SKIP }, async () => {
+  // Regression: the view once overwrote `exam.remaining_ms` with a hard-coded
+  // 30000 before painting, so every question — open questions included — got a
+  // fresh 30-second budget and the server's urgent/expired state was masked.
+  // The server is the authority on the clock; the client must render it as-is.
+  const h = setup({ pages: [payload({ remaining: 24_000 })] });
+  try {
+    const view = await paint(h);
+    const shown = view.querySelector('#exam-timer').textContent.trim();
+    assert.match(shown, /^2[0-4]s$/, `the clock must reflect the server's 24s, got ${JSON.stringify(shown)}`);
+    assert.notEqual(shown, '30s', 'the clock must not be silently reset to the 30s MCQ budget');
+  } finally { await h.teardown(); }
+});
+
+test('an open-question answer window keeps its two-minute budget (no 30s clamp)', { skip: SKIP }, async () => {
+  const open = { ...QUESTION, type: 'text', audio_required: true };
+  const h = setup({ pages: [payload({ remaining: 118_000, phase: 'answer', question: open })] });
+  try {
+    const view = await paint(h);
+    const shown = view.querySelector('#exam-timer').textContent.trim();
+    assert.match(shown, /^1:5[7-9]$|^2:0[0-9]$/, `an open answer window must keep its ~2min budget, got ${JSON.stringify(shown)}`);
   } finally { await h.teardown(); }
 });
 

@@ -15,9 +15,16 @@ holes (a bank intake that 201-stored structured values, silent tag loss on open-
 forms, stale-cache clobbers in the blob store, zip-bomb/row-cap gaps in the spreadsheet
 parser, and an exam submit that re-sent the whole transcript into the 413 ceiling), hardened
 the Netlify wrapper to fail fast without a storage backend, and completed the Airtable setup
-schema so a provisioned base accepts every field the adapter writes.
+schema so a provisioned base accepts every field the adapter writes. A subsequent regression
+sweep of the secure-exam view found the countdown being hard-reset to a 30-second MCQ budget
+in the client on every paint (`runExamSession` overwrote the server's `exam.remaining_ms` with
+`30000`), which re-granted a full budget to open questions (masking their 60s review / 2-minute
+answer windows) and masked the server's urgent/expired state, so the countdown never went red
+and the auto-advance never fired. The override is removed — the server is the sole authority on
+the clock — and the contract is pinned by two new jsdom regressions in
+`tests/exam-screen.test.mjs`.
 
-Current verification: **338/338 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+Current verification: **340/340 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
 ## ⚔️ Final gauntlet (latest)

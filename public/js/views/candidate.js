@@ -109,10 +109,15 @@ function renderExamGate(view, d, onStart) {
 async function runExamSession(view, id, payload) {
   document.body.classList.add('exam-lock');
   let d = payload;
-  // Reset the timer to the full MCQ budget (30 seconds) for a fresh reading period
-  // after the user acknowledges the exam rules. This ensures the timer always starts
-  // from 30 seconds regardless of any previous session's remaining time.
-  d.exam.remaining_ms = 30000;
+  // The server is the authority on the clock: `remaining_ms` is computed from
+  // `question_started_at` and the budget for the current question and phase
+  // (30s MCQ / 60s review / 2min answer), and the gate entry above re-fetches a
+  // fresh value right before this runs. Overriding it here re-granted a full
+  // 30s budget to every question — open questions included — and masked the
+  // server's "urgent / expired" state, so the countdown never went red and the
+  // auto-advance never fired. `paint()` re-bases the deadline to `Date.now()`,
+  // so the candidate still receives the full remaining budget from the moment
+  // the question is painted.
   let currentAnswer = d.current_answer;
   let ticking = null;
   let advancing = false;
