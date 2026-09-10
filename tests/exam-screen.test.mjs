@@ -33,17 +33,17 @@ const QUESTION = {
   correct_option_ids: ['c'], audio_required: false,
 };
 
-function payload({ remaining = 24_000, index = 1, total = 3, complete = false, phase = 'answer' } = {}) {
+function payload({ remaining = 24_000, index = 1, total = 3, complete = false, phase = 'answer', question = QUESTION } = {}) {
   return {
     assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
     exam: {
       index, total, phase, remaining_ms: remaining, server_now: new Date().toISOString(),
       budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete,
     },
-    current_question: QUESTION,
+    current_question: question,
     current_answer: null,
     competency: { id: 'c1', name: 'Lakehouse Architecture', category: 'technical', description: '', order: 1 },
-    questions: [QUESTION],
+    questions: [question],
     competencies: [],
     answers: {},
   };
@@ -62,7 +62,7 @@ const META = {
  * The route hash matches the exam so that app.js's own boot render paints the
  * same screen instead of racing a second renderer into `#view`.
  */
-function setup({ pages = [payload()], token = 'tok' } = {}) {
+function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [] } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <aside id="sidebar"></aside><header id="topbar"></header><div id="nav-scrim"></div>
     <main id="view"></main><div id="modal-root"></div><div id="toast-root"></div>
@@ -95,7 +95,7 @@ function setup({ pages = [payload()], token = 'tok' } = {}) {
       const current = () => pages[Math.min(page, pages.length - 1)];
       if (path.includes('/meta/bootstrap')) return json(META);
       if (path.includes('/auth/me')) return json({ user: { username: 'cand', role: 'candidate' }, candidate: { id: 'c1', name: 'Cand', stage: 'assessment' } });
-      if (/\/candidate\/assessments$/.test(path)) return json({ candidate: { id: 'c1', name: 'Cand', stage: 'assessment' }, assessments: [] });
+      if (/\/candidate\/assessments$/.test(path)) return json({ candidate: { id: 'c1', name: 'Cand', stage: 'assessment' }, assessments });
       if (method === 'POST' && path.includes('/next')) { calls.push({ method, path, body: JSON.parse(opts.body || '{}') }); page += 1; return json(current()); }
       if (method === 'POST' && path.includes('/phase')) { calls.push({ method, path, body: JSON.parse(opts.body || '{}') }); return json(current()); }
       if (method === 'GET') { calls.push({ method, path }); return json(current()); }
@@ -108,7 +108,7 @@ function setup({ pages = [payload()], token = 'tok' } = {}) {
   window.localStorage.setItem('ecod.token', token);
   // The rules gate is remembered per browser session; pre-acknowledge it so the
   // render goes straight to the paper, like a candidate mid-exam.
-  window.sessionStorage.setItem('ecod.exam.ack.asm1', '1');
+  if (ack) window.sessionStorage.setItem('ecod.exam.ack.asm1', '1');
   return {
     dom, window, calls,
     async teardown() {
@@ -151,6 +151,68 @@ test('the live exam screen shows a running clock, the question, and its options'
     assert.ok(view.querySelector('#exam-next'), 'the lock/continue control must exist');
     assert.doesNotMatch(textOf(view), /undefined|\[object Object\]|\bNaN\b/, 'the exam screen must not leak raw values');
     assert.doesNotMatch(textOf(view), /Something went wrong/, 'the exam screen must not hit the error boundary');
+  } finally { await h.teardown(); }
+});
+
+test('the clock honors the server remaining_ms instead of resetting to a 30s MCQ budget', { skip: SKIP }, async () => {
+  // Regression: the view once overwrote `exam.remaining_ms` with a hard-coded
+  // 30000 before painting, so every question — open questions included — got a
+  // fresh 30-second budget and the server's urgent/expired state was masked.
+  // The server is the authority on the clock; the client must render it as-is.
+  const h = setup({ pages: [payload({ remaining: 24_000 })] });
+  try {
+    const view = await paint(h);
+    const shown = view.querySelector('#exam-timer').textContent.trim();
+    assert.match(shown, /^2[0-4]s$/, `the clock must reflect the server's 24s, got ${JSON.stringify(shown)}`);
+    assert.notEqual(shown, '30s', 'the clock must not be silently reset to the 30s MCQ budget');
+  } finally { await h.teardown(); }
+});
+
+test('an open-question answer window keeps its two-minute budget (no 30s clamp)', { skip: SKIP }, async () => {
+  const open = { ...QUESTION, type: 'text', audio_required: true };
+  const h = setup({ pages: [payload({ remaining: 118_000, phase: 'answer', question: open })] });
+  try {
+    const view = await paint(h);
+    const shown = view.querySelector('#exam-timer').textContent.trim();
+    assert.match(shown, /^1:5[7-9]$|^2:0[0-9]$/, `an open answer window must keep its ~2min budget, got ${JSON.stringify(shown)}`);
+  } finally { await h.teardown(); }
+});
+
+test('the exam clock does not start until the rules are acknowledged', { skip: SKIP }, async () => {
+  // The first question's clock used to begin the moment the candidate opened
+  // the exam hash — the rules gate did a GET that started the server clock, so
+  // a candidate who read the rules for 20s met question one already 20s in.
+  // The gate must render from the non-mutating list, and the exam GET (which
+  // starts the clock) must happen only when the candidate presses enter.
+  const h = setup({
+    ack: false,
+    assessments: [{ id: 'asm1', status: 'in_progress', question_count: 3, role_name: 'RSA' }],
+    pages: [payload()],
+  });
+  try {
+    const view = h.window.document.getElementById('view');
+    const { state } = await import('../public/js/app.js');
+    state.user = { username: 'cand', role: 'candidate' };
+    state.meta = META;
+    const { quizView } = await import('../public/js/views/candidate.js');
+    await quizView(view, { id: 'asm1' });
+    for (let i = 0; i < 30 && !/Assessment rules/.test(textOf(view)); i += 1) await flush(50);
+
+    assert.match(textOf(view), /Assessment rules/, 'the rules gate must render first');
+    assert.ok(view.querySelector('#exam-enter'), 'the enter button must be present');
+    assert.match(textOf(view), /3 questions/, 'the gate must show the question count from the list, not the exam');
+    const examGets = () => h.calls.filter((c) => c.method === 'GET' && /\/candidate\/assessments\/asm1$/.test(c.path));
+    assert.equal(examGets().length, 0, 'no exam fetch may happen while the candidate reads the rules');
+
+    // Acknowledge the rules and enter: only now does the exam GET fire.
+    const ack = view.querySelector('#exam-ack');
+    ack.checked = true;
+    ack.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+    view.querySelector('#exam-enter').click();
+    for (let i = 0; i < 30 && !/Question\s*\d/.test(textOf(view)); i += 1) await flush(50);
+
+    assert.equal(examGets().length, 1, 'the exam fetch must happen exactly once, on acknowledge');
+    assert.match(textOf(view), /Question\s*2\s*of\s*3/, 'the paper must paint after acknowledge');
   } finally { await h.teardown(); }
 });
 

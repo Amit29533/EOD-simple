@@ -47,28 +47,49 @@ export async function portalView(view) {
 }
 
 /* ================================ Secure exam ================================ */
+function renderSubmitted(view) {
+  document.body.classList.remove('exam-lock');
+  view.innerHTML = `<div class="card">${emptyState('Assessment submitted', 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
+}
+
 export async function quizView(view, { id }) {
   view.innerHTML = loading();
-  const d = await api(`/candidate/assessments/${id}`);
+  const gateKey = `ecod.exam.ack.${id}`;
 
-  if (d.assessment.status === 'submitted') {
-    document.body.classList.remove('exam-lock');
-    view.innerHTML = `<div class="card">${emptyState('Assessment submitted', 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
+  if (!sessionStorage.getItem(gateKey)) {
+    // The rules gate must render BEFORE the exam starts: the first question's
+    // clock begins the moment the server is asked for the exam, so the gate
+    // reads the non-mutating assessments list (status, role and question count)
+    // instead of GETting the assessment. The candidate reads and acknowledges
+    // the rules on their own time — nothing ticks until they press enter.
+    const list = await api('/candidate/assessments');
+    const a = (list.assessments || []).find((x) => x.id === id);
+    if (a && a.status === 'submitted') { renderSubmitted(view); return; }
+    if (a && ['scored', 'validated'].includes(a.status)) { location.hash = `#/assessments/${id}/report`; return; }
+    if (!a) {
+      document.body.classList.remove('exam-lock');
+      view.innerHTML = emptyState('Assessment not found', 'Ask your administrator to allocate an assessment for you.');
+      return;
+    }
+    renderExamGate(view, {
+      assessment: { role: { name: a.role_name || 'this role' } },
+      exam: { total: a.question_count || 0 },
+    }, () => {
+      sessionStorage.setItem(gateKey, '1');
+      quizView(view, { id });
+    });
     return;
   }
+
+  // Rules acknowledged: this GET is the moment the exam — and its first
+  // question's clock — actually starts.
+  const d = await api(`/candidate/assessments/${id}`);
+
+  if (d.assessment.status === 'submitted') { renderSubmitted(view); return; }
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
 
   if (d.exam?.complete) {
     await finalizeExam(id);
-    return;
-  }
-
-  const gateKey = `ecod.exam.ack.${id}`;
-  if (!sessionStorage.getItem(gateKey)) {
-    renderExamGate(view, d, () => {
-      sessionStorage.setItem(gateKey, '1');
-      quizView(view, { id });
-    });
     return;
   }
 
@@ -109,10 +130,15 @@ function renderExamGate(view, d, onStart) {
 async function runExamSession(view, id, payload) {
   document.body.classList.add('exam-lock');
   let d = payload;
-  // Reset the timer to the full MCQ budget (30 seconds) for a fresh reading period
-  // after the user acknowledges the exam rules. This ensures the timer always starts
-  // from 30 seconds regardless of any previous session's remaining time.
-  d.exam.remaining_ms = 30000;
+  // The server is the authority on the clock: `remaining_ms` is computed from
+  // `question_started_at` and the budget for the current question and phase
+  // (30s MCQ / 60s review / 2min answer), and the gate entry above re-fetches a
+  // fresh value right before this runs. Overriding it here re-granted a full
+  // 30s budget to every question — open questions included — and masked the
+  // server's "urgent / expired" state, so the countdown never went red and the
+  // auto-advance never fired. `paint()` re-bases the deadline to `Date.now()`,
+  // so the candidate still receives the full remaining budget from the moment
+  // the question is painted.
   let currentAnswer = d.current_answer;
   let ticking = null;
   let advancing = false;

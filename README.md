@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 304 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 341 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -393,7 +393,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (338 Node tests), then with a local server up
+Verify before you ship: `npm test` (341 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks

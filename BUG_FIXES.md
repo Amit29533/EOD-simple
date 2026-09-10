@@ -15,9 +15,25 @@ holes (a bank intake that 201-stored structured values, silent tag loss on open-
 forms, stale-cache clobbers in the blob store, zip-bomb/row-cap gaps in the spreadsheet
 parser, and an exam submit that re-sent the whole transcript into the 413 ceiling), hardened
 the Netlify wrapper to fail fast without a storage backend, and completed the Airtable setup
-schema so a provisioned base accepts every field the adapter writes.
+schema so a provisioned base accepts every field the adapter writes. A subsequent regression
+sweep of the secure-exam view found the countdown being hard-reset to a 30-second MCQ budget
+in the client on every paint (`runExamSession` overwrote the server's `exam.remaining_ms` with
+`30000`), which re-granted a full budget to open questions (masking their 60s review / 2-minute
+answer windows) and masked the server's urgent/expired state, so the countdown never went red
+and the auto-advance never fired. The override is removed — the server is the sole authority on
+the clock — and the contract is pinned by two new jsdom regressions in
+`tests/exam-screen.test.mjs`. A follow-up trace of the exam-hall flow then confirmed two
+timer-contract details: (1) budgets are consistent per question and phase (30s MCQ, 60s open
+review, 2-minute open answer, never reset on refresh — the server derives every countdown from
+`question_started_at`), and (2) the first question's clock was starting too early — the rules
+gate did a `GET /candidate/assessments/:id` before the candidate acknowledged, and that GET is
+the moment the server starts the clock, so a candidate who read the rules for 20s met question
+one already 20s in. The gate now renders from the non-mutating assessments list (status, role,
+question count) and the exam GET — the actual clock start — fires only when the candidate
+presses *Enter exam hall*; a jsdom regression pins that no exam fetch happens before
+acknowledgement.
 
-Current verification: **338/338 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+Current verification: **341/341 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
 ## ⚔️ Final gauntlet (latest)
