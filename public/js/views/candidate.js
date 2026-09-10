@@ -109,6 +109,10 @@ function renderExamGate(view, d, onStart) {
 async function runExamSession(view, id, payload) {
   document.body.classList.add('exam-lock');
   let d = payload;
+  // Reset the timer to the full MCQ budget (30 seconds) for a fresh reading period
+  // after the user acknowledges the exam rules. This ensures the timer always starts
+  // from 30 seconds regardless of any previous session's remaining time.
+  d.exam.remaining_ms = 30000;
   let currentAnswer = d.current_answer;
   let ticking = null;
   let advancing = false;
