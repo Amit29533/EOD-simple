@@ -29,6 +29,17 @@ const THEME_OPTIONS = [
 
 const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
+/**
+ * The sign-in screen's theme-switch subscription. A login view can be mounted
+ * more than once per page life without a successful sign-in in between (two
+ * parallel requests hitting a 401 fire the unauthorized handler twice, and the
+ * render guard turns that into mount → queued re-mount), and the unsubscribe
+ * returned by onThemeChange is only invoked on submit success. Without this
+ * handle, every redundant mount left its listener — and a closure over the
+ * detached theme switch — in the theme module's listener set forever.
+ */
+let activeThemeSync = null;
+
 /** Animate a number from 0 → to inside `el`. No-op under prefers-reduced-motion. */
 function countUp(el, to, { duration = 1400, suffix = '' } = {}) {
   if (!el) return;
@@ -193,7 +204,9 @@ export function loginView(view, onSuccess) {
     });
   };
   syncThemeUI();
+  activeThemeSync?.(); // a re-mount supersedes the previous screen's subscription
   const offTheme = onThemeChange(syncThemeUI);
+  activeThemeSync = offTheme;
   themeSwitch.addEventListener('click', (e) => {
     const btn = e.target.closest('.theme-opt');
     if (btn) { setThemePref(btn.dataset.themeOpt); syncThemeUI(); btn.focus(); }
