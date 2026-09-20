@@ -350,6 +350,18 @@ async function runExamSession(view, id, payload) {
     if (advancing) return;
     advancing = true;
     if (ticking) { clearInterval(ticking); ticking = null; }
+    // Feedback the instant the final "Lock & submit" is pressed: the exam is
+    // over from the candidate's point of view, but /next + /submit + the
+    // journey reload are three sequential round trips (easily 5-15s on a
+    // cold serverless function). Show the handover panel now instead of a
+    // frozen exam screen whose button silently swallows extra clicks.
+    const isFinalLock = Number(d?.exam?.index ?? -1) + 1 >= Number(d?.exam?.total || 0);
+    if (isFinalLock) {
+      renderSubmitHandover(view);
+    } else {
+      const btn = view.querySelector('#exam-next');
+      if (btn) { btn.disabled = true; btn.textContent = 'Locking…'; }
+    }
     const out = await attempt(() => api(`/candidate/assessments/${id}/next`, {
       method: 'POST',
       // The question this advance answers: if a retried/duplicated request
@@ -357,7 +369,14 @@ async function runExamSession(view, id, payload) {
       // skipping the live question (see the /next idempotency guard).
       body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
     }));
-    if (!out) { advancing = false; return; }
+    if (!out) {
+      // Restore the question so the candidate can retry (a final lock that
+      // actually committed still self-heals: the retry /next returns
+      // complete again via the idempotency guard).
+      advancing = false;
+      paint();
+      return;
+    }
     if (out.complete) {
       finished = true;
       cleanup.forEach((fn) => fn());
@@ -774,18 +793,79 @@ async function runExamSession(view, id, payload) {
   paint();
 }
 
-async function finalizeExam(id) {
+/* ============================ Submit handover ============================ */
+
+/**
+ * Panels for the end-of-exam handover. The last lock, the submit POST and the
+ * journey reload are sequential network round trips; on a cold serverless
+ * function that is easily 5-15s of dead air. The candidate used to stare at
+ * the frozen exam screen the whole time (button unchanged, re-clicks silently
+ * swallowed by the advancing guard) — the "Done does nothing" bug.
+ */
+
+function renderSubmitHandover(view) {
   document.body.classList.remove('exam-lock');
+  view.innerHTML = `
+    <div class="empty-page submit-handover" role="status" aria-live="polite">
+      <div class="submit-ring"><span class="spinner"></span></div>
+      <h1>Submitting your assessment…</h1>
+      <p class="muted">Your final answer is locked and on its way to the assessor team. This usually takes a few seconds — please keep this tab open.</p>
+    </div>`;
+}
+
+function renderSubmitProblem(view, retry) {
+  document.body.classList.remove('exam-lock');
+  view.innerHTML = `
+    <div class="empty-page" role="alert">
+      <div class="error-icon">!</div>
+      <h1>We couldn't submit your assessment</h1>
+      <p class="muted">Your answers are safely saved — nothing was lost. Check your connection and try again.</p>
+      <div class="row" style="justify-content:center;gap:10px;margin-top:8px">
+        <button class="btn" id="submit-retry" type="button">Try submitting again</button>
+        <a class="btn secondary" href="#/journey">Back to My Journey</a>
+      </div>
+    </div>`;
+  view.querySelector('#submit-retry').onclick = retry;
+}
+
+/**
+ * Submit a completed exam, retrying transient failures. Every answer is
+ * already locked server-side at this point, so a retry never duplicates work;
+ * 409 means the exam was already submitted (double click, replayed request)
+ * and is success. Other 4xx are thrown immediately — retrying cannot help.
+ */
+export async function submitExam(id, { attempts = 3, backoffMs = 1200 } = {}) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    if (i) await new Promise((r) => setTimeout(r, backoffMs * i));
+    try {
+      const out = await api(`/candidate/assessments/${id}/submit`, { method: 'POST', body: { answers: {} } });
+      return out && typeof out === 'object' ? out : { status: 'submitted' };
+    } catch (err) {
+      if (err?.status === 409) return { status: 'submitted', already: true };
+      if (err?.status && err.status !== 429 && err.status < 500) throw err;
+      lastError = err; // network failure, 429 or 5xx — worth another attempt
+    }
+  }
+  throw lastError || new Error('Assessment submission failed');
+}
+
+export async function finalizeExam(id, opts) {
+  const view = document.getElementById('view');
+  renderSubmitHandover(view);
   // Submit with no answers: every lock already persisted its answer (locked
   // rows win server-side, so re-sending them is pure payload — with recorded
   // audio that ran to megabytes and tripped the request-size limit, failing
   // the submit of a completed exam). Unanswered items submit as blanks.
-  const out = await attempt(() => api(`/candidate/assessments/${id}/submit`, { method: 'POST', body: { answers: {} } }));
-  if (out) {
+  try {
+    await submitExam(id, opts);
     toast('Assessment submitted. An assessor will review open responses.', 'success', 5000);
     location.hash = '#/journey';
-  } else {
-    location.hash = '#/journey';
+  } catch {
+    // Stay on an explicit, retryable error screen instead of pretending the
+    // submission succeeded and dropping the candidate on a stale journey page
+    // that still shows the exam as in progress.
+    renderSubmitProblem(view, () => finalizeExam(id, opts));
   }
 }
 

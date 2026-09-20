@@ -77,13 +77,35 @@ export function countUp(el, to, { duration = 1200, suffix = '', prefix = '' } = 
 /**
  * Animate the view container when it changes content.
  * Adds a quick fade-in that the CSS handles.
+ *
+ * The class MUST be removed once the animation ends: `viewFadeIn` is filled
+ * `both`, so a lingering `.view-enter` would keep a (identity) transform on
+ * the container forever. Any transform turns the container into the
+ * containing block for `position: fixed` descendants — the sign-in overlay
+ * (.auth-stage) is fixed and rendered inside #view, so a stale class
+ * collapsed the login screen into a ~106px strip after sign-out (it only
+ * looked right again after a full page reload).
  */
 export function animateView(view) {
   if (reduceMotion()) return;
+  if (typeof view._endViewEnter === 'function') view._endViewEnter();
   view.classList.remove('view-enter');
   // Force reflow so the class re-triggers
   void view.offsetWidth;
   view.classList.add('view-enter');
+  const end = () => {
+    view.removeEventListener('animationend', onEnd);
+    clearTimeout(timer);
+    if (view._endViewEnter === end) view._endViewEnter = null;
+    view.classList.remove('view-enter');
+  };
+  const onEnd = (e) => {
+    // Ignore animationend bubbling from children (stagger/card animations).
+    if (e.target === view && e.animationName === 'viewFadeIn') end();
+  };
+  const timer = setTimeout(end, 700); // fallback: animation is .42s; covers quiet tabs
+  view.addEventListener('animationend', onEnd);
+  view._endViewEnter = end;
 }
 
 /**

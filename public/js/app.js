@@ -181,6 +181,8 @@ async function renderOnce() {
   const view = document.getElementById('view');
   if (!state.user) {
     document.body.classList.remove('app-body');
+    // Signing out mid-exam must not leave exam paddings behind either.
+    document.body.classList.remove('exam-lock');
     closeMobileNav();
     loginView(view, onSignedIn);
     return;

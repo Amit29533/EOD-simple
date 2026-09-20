@@ -264,3 +264,26 @@ test('readiness stats count up to their target values', { skip: SKIP }, async ()
     assert.equal(chip.textContent, '24%', 'chip settled on 24%');
   } finally { teardownDom(dom); }
 });
+
+test('a superseded login mount releases its theme subscription', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    // Two mounts with no successful sign-in between them: what a queued
+    // re-render after concurrent 401s produces. The second mount must
+    // unsubscribe the first (its listener used to stay registered forever,
+    // pinning the detached first screen and re-running on every theme change).
+    const first = await mount();
+    const switchA = first.wrap.querySelector('.theme-switch');
+    const view = document.getElementById('view');
+    view.innerHTML = '';
+    const second = await mount();
+    const switchB = second.wrap.querySelector('.theme-switch');
+    assert.notEqual(switchA, switchB, 'two distinct mounts');
+
+    const theme = await import('../public/js/theme.js');
+    theme.setThemePref('dark');
+    assert.equal(switchB.dataset.active, '2', 'the live screen tracks the theme');
+    assert.equal(switchA.dataset.active, '0',
+      'the superseded screen no longer receives theme changes (subscription released)');
+  } finally { teardownDom(dom); }
+});
