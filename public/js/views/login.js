@@ -47,6 +47,11 @@ function countUp(el, to, { duration = 1400, suffix = '' } = {}) {
 
 export function loginView(view, onSuccess) {
   view.innerHTML = '';
+  // The stage is position:fixed inside #view. A leftover entrance-animation
+  // class keeps a transform on #view, which would make it the containing
+  // block for this fixed overlay and collapse it to a strip (the sign-out
+  // / expired-session blank-screen bug). Never mount under one.
+  view.classList.remove('view-enter');
   document.getElementById('sidebar').innerHTML = '';
   document.getElementById('topbar').innerHTML = '';
 

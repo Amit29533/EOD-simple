@@ -1183,12 +1183,15 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 }
 
 /* --- View entrance: the main content area fades in on route change --- */
+/* `to` must stay transform:none: this animation is filled `both`, and a
+   persisted transform on .view would make it the containing block for the
+   fixed sign-in overlay (see animateView in js/motion.js). */
 .view-enter {
   animation: viewFadeIn .42s var(--ease-out) both;
 }
 @keyframes viewFadeIn {
   from { opacity: 0; transform: translateY(10px); }
-  to   { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* --- Enhanced cards: subtle lift + glow on hover --- */
