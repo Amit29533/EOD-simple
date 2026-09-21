@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import zlib from 'node:zlib';
 import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
 import { corsAllowOrigin, corsHeaders } from './src/api/cors.mjs';
@@ -63,11 +64,17 @@ const MIME = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
   '.ttf': 'font/ttf',
+  '.map': 'application/json',
 };
 
 // ---- rate limiting (per-IP, in-memory, simple sliding window) ----
@@ -129,9 +136,10 @@ const store = await createStore();
 const app = await createApp(store);
 console.log(`[ecod] storage backend: ${store.kind} | env: ${NODE_ENV}`);
 
-function send(res, status, body, extraHeaders = {}) {
+function send(req, res, status, body, extraHeaders = {}) {
+  const isHead = req?.method === 'HEAD';
   const isObj = typeof body === 'object' && body !== null && !Buffer.isBuffer(body);
-  const payload = isObj ? JSON.stringify(body) : body;
+  const rawPayload = isObj ? JSON.stringify(body) : body;
   const isHtml = extraHeaders['content-type']?.includes('text/html');
   const headers = {
     'content-type': isObj ? 'application/json; charset=utf-8' : (extraHeaders['content-type'] || 'application/octet-stream'),
@@ -140,8 +148,44 @@ function send(res, status, body, extraHeaders = {}) {
   };
   // Remove duplicate cache-control if extraHeaders already set
   if (extraHeaders['cache-control']) headers['cache-control'] = extraHeaders['cache-control'];
+
+  if (status === 204 || status === 304) {
+    res.writeHead(status, headers);
+    res.end();
+    return;
+  }
+
+  const buf = Buffer.isBuffer(rawPayload)
+    ? rawPayload
+    : Buffer.from(typeof rawPayload === 'string' ? rawPayload : String(rawPayload || ''), 'utf8');
+
+  // Gzip compression for compressible responses >= 1KB when client requests it
+  const acceptEncoding = req?.headers?.['accept-encoding'] || '';
+  const canCompress = /\bgzip\b/i.test(acceptEncoding) &&
+    status >= 200 && status < 300 &&
+    buf.length >= 1024 &&
+    /^(text\/|application\/(json|javascript)|image\/svg\+xml)/i.test(headers['content-type'] || '');
+
+  if (canCompress) {
+    const compressed = zlib.gzipSync(buf);
+    headers['content-encoding'] = 'gzip';
+    headers['content-length'] = String(compressed.length);
+    res.writeHead(status, headers);
+    if (isHead) {
+      res.end();
+    } else {
+      res.end(compressed);
+    }
+    return;
+  }
+
+  headers['content-length'] = String(buf.length);
   res.writeHead(status, headers);
-  res.end(payload);
+  if (isHead) {
+    res.end();
+  } else {
+    res.end(buf);
+  }
 }
 
 function clientIp(req) {
@@ -153,35 +197,65 @@ function clientIp(req) {
 // Pre-resolve public files for faster checks? Keep simple but async.
 async function serveStatic(req, res, url) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
-    send(res, 405, { error: 'Method not allowed' });
+    send(req, res, 405, { error: 'Method not allowed' });
     return;
   }
-  let filePath = path.resolve(PUBLIC, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
+  let safePath;
+  try {
+    safePath = decodeURIComponent(url.pathname);
+  } catch {
+    send(req, res, 400, { error: 'Bad request' });
+    return;
+  }
+  let filePath = path.resolve(PUBLIC, '.' + (safePath === '/' ? '/index.html' : safePath));
   // Containment, not a string prefix: `p.startsWith('/x/public')` is also true
   // for '/x/public-archive/…', which would hand out files from a sibling
   // directory of the web root.
   if (filePath !== PUBLIC && !filePath.startsWith(PUBLIC + path.sep)) {
-    send(res, 403, { error: 'Forbidden' });
+    send(req, res, 403, { error: 'Forbidden' });
     return;
   }
   try {
-    const stat = await fsp.stat(filePath).catch(() => null);
-    if (!stat || stat.isDirectory()) filePath = path.join(PUBLIC, 'index.html');
+    let stat = await fsp.stat(filePath).catch(() => null);
+    if (!stat || stat.isDirectory()) {
+      const ext = path.extname(filePath).toLowerCase();
+      // If a specific file asset with an extension was requested and not found, return 404
+      if (ext && ext !== '.html') {
+        send(req, res, 404, { error: 'Not found' });
+        return;
+      }
+      filePath = path.join(PUBLIC, 'index.html');
+      stat = await fsp.stat(filePath).catch(() => null);
+    }
     const ext = path.extname(filePath).toLowerCase();
+    const isHtml = ext === '.html';
+    const etag = stat ? `W/"${Math.floor(stat.mtimeMs).toString(16)}-${stat.size.toString(16)}"` : null;
+    if (etag && req.headers['if-none-match'] === etag) {
+      const headers = {
+        etag,
+        ...securityHeaders(false, isHtml),
+      };
+      send(req, res, 304, null, headers);
+      return;
+    }
     const data = await fsp.readFile(filePath);
-    send(res, 200, data, { 'content-type': MIME[ext] || 'application/octet-stream' });
+    const extraHeaders = {
+      'content-type': MIME[ext] || 'application/octet-stream',
+    };
+    if (etag) extraHeaders.etag = etag;
+    send(req, res, 200, data, extraHeaders);
   } catch (err) {
     // If even index.html fails, 500
     if (filePath.endsWith('index.html')) {
       console.error('[static] failed to read index.html:', err.message);
-      send(res, 500, { error: 'Internal error' });
+      send(req, res, 500, { error: 'Internal error' });
     } else {
       // SPA fallback on any missing file
       try {
         const data = await fsp.readFile(path.join(PUBLIC, 'index.html'));
-        send(res, 200, data, { 'content-type': 'text/html; charset=utf-8' });
+        send(req, res, 200, data, { 'content-type': 'text/html; charset=utf-8' });
       } catch {
-        send(res, 500, { error: 'Internal error' });
+        send(req, res, 500, { error: 'Internal error' });
       }
     }
   }
@@ -219,7 +293,11 @@ const server = http.createServer(async (req, res) => {
   // production. Do not add fields here without adding them to meta.mjs too
   // (tests/health-route.test.mjs pins the app-level shape).
   if (url.pathname === '/api/health' || url.pathname === '/health') {
-    send(res, 200, {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      send(req, res, 405, { error: 'Method not allowed' }, { allow: 'GET, HEAD' });
+      return;
+    }
+    send(req, res, 200, {
       ok: true,
       version: APP_VERSION,
       uptime: process.uptime(),
@@ -230,7 +308,7 @@ const server = http.createServer(async (req, res) => {
 
   const isApi = url.pathname.startsWith('/api/');
   if (isRateLimited(ip, isApi)) {
-    send(res, 429, { error: 'Too many requests. Please slow down.' }, { 'retry-after': '60' });
+    send(req, res, 429, { error: 'Too many requests. Please slow down.' }, { 'retry-after': '60' });
     return;
   }
 
@@ -245,19 +323,19 @@ const server = http.createServer(async (req, res) => {
           chunks.push(c);
           size += c.length;
           if (size > limit) {
-            send(res, 413, { error: 'Payload too large' });
+            send(req, res, 413, { error: 'Payload too large' });
             return;
           }
         }
       } catch {
-        send(res, 400, { error: 'Failed to read request body' });
+        send(req, res, 400, { error: 'Failed to read request body' });
         return;
       }
       if (chunks.length) {
         try {
           body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         } catch {
-          send(res, 400, { error: 'Invalid JSON body' });
+          send(req, res, 400, { error: 'Invalid JSON body' });
           return;
         }
       } else {
@@ -272,10 +350,10 @@ const server = http.createServer(async (req, res) => {
         headers: req.headers,
         body,
       });
-      send(res, result.status, result.body);
+      send(req, res, result.status, result.body, result.headers);
     } catch (err) {
       console.error(`[api] ${req.method} ${url.pathname} [${reqId}] failed:`, err);
-      send(res, 500, { error: 'Internal error. Please try again.' });
+      send(req, res, 500, { error: 'Internal error. Please try again.' });
     } finally {
       const dur = Date.now() - start;
       if (dur > 500 || IS_PROD) {

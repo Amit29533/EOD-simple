@@ -201,7 +201,7 @@ async function deleteCandidateFlow(c, { goBack = false } = {}) {
  */
 export async function allocateAssessorModal(c, presetRoleId) {
   const [{ roles }, users] = await Promise.all([api('/admin/roles'), apiAll('/admin/users', 'users')]);
-  const assessors = users.filter((u) => u.role === 'assessor' && u.active);
+  const assessors = users.filter((u) => u.role === 'assessor' && u.active !== false);
   const activeRoles = roles.filter((r) => r.active !== false);
   if (!activeRoles.length) { toast('Create an assessment track (role) with questions first.', 'error'); return; }
   if (!assessors.length) { toast('Create an assessor user first (Users & Access).', 'error'); return; }
@@ -464,7 +464,7 @@ export async function assessmentsView(view) {
   // filter is active (filtering server-side made every other pill read 0).
   const [all, users] = await Promise.all([apiAll('/admin/assessments', 'assessments'), apiAll('/admin/users', 'users')]);
   const assessments = urlStatus ? all.filter((a) => a.status === urlStatus) : all;
-  const assessors = users.filter((u) => u.role === 'assessor' && u.active);
+  const assessors = users.filter((u) => u.role === 'assessor' && u.active !== false);
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Evaluation operations</div><h1>Assessments</h1><p>Allocations, submissions and outcomes.</p></div>
@@ -929,12 +929,42 @@ function questionEditorModal(existing, competencies) {
           if (multiNote) multiNote.style.display = v.type === 'mcq_multi' ? '' : 'none';
         };
         syncVisibility();
+        const syncFromDom = () => {
+          options.forEach((o, i) => {
+            const input = el.querySelector(`[data-opt-label="${i}"]`);
+            if (input) o.label = input.value;
+          });
+          const checked = [...el.querySelectorAll('input[name=qe-correct]:checked')].map((x) => x.value);
+          v.correct_option_ids = checked;
+        };
         const wireOpts = () => {
-          el.querySelectorAll('[data-opt-del]').forEach((b) => (b.onclick = () => { options.splice(Number(b.dataset.optDel), 1); refreshOpts(); }));
+          el.querySelectorAll('[data-opt-del]').forEach((b) => (b.onclick = () => {
+            syncFromDom();
+            const idx = Number(b.dataset.optDel);
+            const removed = options[idx];
+            if (removed) {
+              v.correct_option_ids = (v.correct_option_ids || []).filter((id) => id !== removed.id);
+            }
+            options.splice(idx, 1);
+            refreshOpts();
+          }));
+          el.querySelectorAll('input[name=qe-correct]').forEach((input) => {
+            input.onchange = () => {
+              const checked = [...el.querySelectorAll('input[name=qe-correct]:checked')].map((x) => x.value);
+              v.correct_option_ids = checked;
+            };
+          });
+          el.querySelectorAll('[data-opt-label]').forEach((input) => {
+            input.oninput = () => {
+              const idx = Number(input.dataset.optLabel);
+              if (options[idx]) options[idx].label = input.value;
+            };
+          });
         };
         const refreshOpts = () => { el.querySelector('#qe-opts').innerHTML = optionRows(); wireOpts(); };
         wireOpts();
         el.querySelector('#qe-add-opt').onclick = () => {
+          syncFromDom();
           const used = new Set(options.map((o) => o.id));
           let next = '';
           for (let i = 0; i < 26; i += 1) {
@@ -945,7 +975,15 @@ function questionEditorModal(existing, competencies) {
           options.push({ id: next, label: '' });
           refreshOpts();
         };
-        el.querySelector('#qe-type').onchange = (e) => { v.type = e.target.value; v.correct_option_ids = []; syncVisibility(); refreshOpts(); };
+        el.querySelector('#qe-type').onchange = (e) => {
+          syncFromDom();
+          v.type = e.target.value;
+          if (v.type === 'mcq_single' && v.correct_option_ids?.length > 1) {
+            v.correct_option_ids = [v.correct_option_ids[0]];
+          }
+          syncVisibility();
+          refreshOpts();
+        };
       },
     });
   });
@@ -1630,8 +1668,9 @@ function addQuestionModal(bank, { module: presetModule, familyId: presetFamily }
       {
         label: 'Add question',
         onClick: async (close, btn) => {
-          const el = (id) => document.getElementById(id);
-          const clearErrors = () => document.querySelectorAll('#aq-form .field-err')
+          const root = btn.closest('.modal') || document;
+          const el = (id) => root.querySelector(`#${id}`);
+          const clearErrors = () => root.querySelectorAll('#aq-form .field-err')
             .forEach((e) => { e.hidden = true; e.textContent = ''; });
           const showError = (name, msg) => {
             const box = el(`aq-err-${name}`);
@@ -1652,14 +1691,14 @@ function addQuestionModal(bank, { module: presetModule, familyId: presetFamily }
             tags: el('aq-tags').value,
           };
           if (type === 'objective') {
-            const rows = [...document.querySelectorAll('#aq-options .opt-row')];
+            const rows = [...root.querySelectorAll('#aq-options .opt-row')];
             payload.options = rows
               .map((r) => ({
                 id: r.dataset.opt.toLowerCase(),
                 label: r.querySelector('.opt-text').value.trim(),
               }))
               .filter((o) => o.label);
-            const picked = document.querySelector('#aq-options input[name="aq-correct"]:checked');
+            const picked = root.querySelector('#aq-options input[name="aq-correct"]:checked');
             payload.correct_option_ids = picked ? [picked.value] : [];
             payload.rationale = el('aq-rationale').value.trim();
           } else {

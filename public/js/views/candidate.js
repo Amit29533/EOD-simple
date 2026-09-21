@@ -423,6 +423,13 @@ async function runExamSession(view, id, payload) {
     return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `${s}s`;
   }
 
+  function fmtStopwatch(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, '0')}`;
+  }
+
   function paint() {
     if (!stillHere()) { cleanup.forEach((fn) => fn()); return; }
     const q = d.current_question;
@@ -496,7 +503,7 @@ async function runExamSession(view, id, payload) {
     let rec = { stream: null, recorder: null, chunks: [], recognition: null, startedAt: 0 };
     // Live "recording for 0:42" readout, driven by the exam's existing 250 ms
     // ticker, so the candidate can see how long they have been speaking.
-    const recElapsed = () => (rec.startedAt ? fmtMs(Date.now() - rec.startedAt) : '');
+    const recElapsed = () => (rec.startedAt ? fmtStopwatch(Date.now() - rec.startedAt) : '');
 
     if (open && phase === 'review') {
       body.innerHTML = `<div class="exam-review">
