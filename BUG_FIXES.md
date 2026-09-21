@@ -55,7 +55,60 @@ origin, and a page-load blip that silently signed people out.
 Current verification: **396/396 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
-## 🧭 Whole-project audit pass — 17 defects reproduced and fixed (latest)
+## 🧩 Published tracks missing from Roles & frameworks (latest)
+
+**Symptom.** The two new tracks — *Senior Databricks AI/BI & Genie Consultant*
+(`databricks-ai-bi-genie`, 10 competencies, the 100 questions of
+`AI BI G Question bank 1.1.xlsx`) and *Senior Consultant* (`senior-consultant`, 7 competencies,
+bank to be authored) — were fully registered in code (`src/content/*-catalogue.mjs`,
+`PUBLISHED_CATALOGUES`), yet an existing workspace showed neither under **Roles & frameworks**,
+while the AI/BI track *did* appear in the Question Bank's *Track* selector.
+
+**Cause.** Nothing ever installed a published track into an *existing* workspace:
+
+- `scripts/seed.mjs` created all tracks only on a fresh seed; its migration path
+  (`if (!existingRole) continue;`) synced roles that already existed and silently skipped the
+  rest, so `npm run seed` printed one RSA line and exited.
+- `syncCatalogue()` / `POST /admin/content/sync` required an active role with the catalogue's
+  key and otherwise answered *"No active track matches the published catalogue"*;
+  `GET /admin/content/catalogue` just said `available: false`. There was no UI affordance at
+  all — the Roles screen lists the `roles` table and only that.
+- The Question Bank's *Track* selector is fed by the static module-bank registry in
+  `/meta/bootstrap`, so it listed AI/BI regardless — and choosing it snapped back to the RSA
+  bank because the selection was resolved through a workspace role that did not exist.
+
+**Fix.**
+
+- `src/api/catalogue-service.mjs`: new `installCatalogue(store, roleKey)` creates the role
+  (from the catalogue's role record), its default scoring framework, competencies and published
+  questions when no role with that key exists; tops an installed track up otherwise
+  (idempotent); refuses with `code: 'inactive'` when the role exists but is deactivated (never a
+  duplicate role). New `listCatalogues(store)` reports every published track with its install
+  state; `catalogueStatus()` now says *which* track is missing and whether it is installable.
+- `src/api/handlers/admin.mjs`: `GET /admin/content/tracks` (list) and
+  `POST /admin/content/tracks { role_key }` (install → 201 + `track_installed` audit event;
+  top-up → 200; deactivated → 409; unknown key → 400). `POST /admin/content/sync` keeps its
+  sync-only contract.
+- `scripts/seed.mjs`: both paths go through `installCatalogue`, so `npm run seed` on an existing
+  store now adds the published tracks it is missing (and leaves a deactivated one alone), and a
+  fresh seed and a later in-app install produce identical tracks.
+- `public/js/views/admin.js`: **Roles & frameworks** gains a *Published tracks* card — one row
+  per published track with *Installed* / *Not in this workspace* / *Deactivated* / *N published
+  questions missing* and an **Add to workspace** (or *Add N published questions*) button; the
+  **Question bank** keeps the chosen track when it has no workspace role (`#/modules?bank=<key>`)
+  and shows an *Add track to workspace* strip instead of snapping back to RSA. (Also closed an
+  unbalanced `<div>` in the optional-pool card markup.)
+
+**Verification.** `tests/published-tracks.test.mjs` (9 API/seed regressions: list shape,
+install creates role + framework + 10 competencies + 100 questions and allocates a 50-question
+paper, idempotent top-up, Senior Consultant installs empty and accepts authored questions,
+deactivated track → 409 and no duplicate, auth/unknown-key rejections, `sync` unchanged, seed
+migration adds missing tracks on a legacy store and is idempotent) and `tests/roles-view.test.mjs`
+(5 jsdom regressions for the card, the install click, the refused-install recovery and the
+Question-bank strip). `npm test`: **410/410**; smoke, features (216/216) and final gauntlet
+(76/76) green against a fresh seed.
+
+## 🧭 Whole-project audit pass — 17 defects reproduced and fixed
 
 Method: every source module (API handlers, services, core, storage adapters, both transports,
 the SPA) was read end to end; each suspected defect was then reproduced against the real

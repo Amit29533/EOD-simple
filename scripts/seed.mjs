@@ -9,19 +9,18 @@
  *  - three demo candidates at different pipeline stages, one with a fully scored example report
  *
  * Usage:
- *   node scripts/seed.mjs          # seed if empty; sync newly published seed questions otherwise
+ *   node scripts/seed.mjs          # seed if empty; otherwise add newly published
+ *                                  # tracks and sync newly published seed questions
  *   SEED_FRESH=1 node scripts/seed.mjs   # wipe JSON store and reseed
  *   STORAGE=airtable AIRTABLE_API_KEY=.. AIRTABLE_BASE_ID=.. node scripts/seed.mjs
  */
 import fs from 'node:fs';
 import { createStore } from '../src/storage/index.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
-import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
-import { requiresSpokenAnswer } from '../src/core/spoken-answer.mjs';
 import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
-import { synchronizeBank, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
+import { installCatalogue, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
 import { bulkInsert } from '../src/api/helpers.mjs';
-import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
+import { RSA_ROLE, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
 
 const env = process.env;
 
@@ -33,66 +32,50 @@ if ((env.SEED_FRESH === '1') && (env.STORAGE || 'json') === 'json') {
 const store = await createStore();
 console.log(`[seed] storage backend: ${store.kind}`);
 
-const questionRecord = (q, roleId, compIds) => ({
-  role_id: roleId, competency_id: compIds[q.competency],
-  type: q.type, prompt: q.prompt, help_text: q.help_text || '',
-  options: q.options || [], correct_option_ids: q.correct_option_ids || [],
-  points: q.points, difficulty: q.difficulty, rubric: q.rubric || '', order: q.order, active: true,
-  question_set: q.question_set || '',
-  pin_first: q.pin_first === true,
-  // Mirrors the published-catalogue service: an open question is stored as a
-  // recorded-answer question (core/spoken-answer.mjs), not by opt-in.
-  audio_required: requiresSpokenAnswer(q),
-});
-
 // `seed` is also safe to run against an existing demo/MVP store. This matters
-// when new seed content is published: do not recreate users or assessments,
-// just add the new question records that are not already present and repair
-// the spoken-question contract flags on existing copies (see
-// synchronizeBank — shared with the in-app published-catalogue sync).
+// when new seed content is published: do not recreate users or assessments;
+// add the published tracks the workspace does not have yet (role, default
+// framework, competencies, published questions), add the new question records
+// that are not already present and repair the spoken-question contract flags
+// on existing copies (see installCatalogue / synchronizeBank — shared with the
+// in-app "Add to workspace" / "Add published questions" actions). A track an
+// admin deactivated is left alone, never re-created.
 const existingAdmin = await store.list('users', { username: 'admin' });
 if (existingAdmin.length) {
-  let synced = 0;
   for (const catalogue of Object.values(PUBLISHED_CATALOGUES)) {
-    const existingRole = (await store.list('roles', { key: catalogue.role.key }))[0];
-    if (!existingRole) continue;
-    const result = await synchronizeBank(store, existingRole);
+    const result = await installCatalogue(store, catalogue.role.key);
     if (result.error) {
-      console.log(`[seed] ${catalogue.role.key}: ${result.error}`);
+      console.log(`[seed] ${catalogue.role.key}: ${result.code === 'inactive' ? 'deactivated in this workspace, left as is' : result.error}`);
       continue;
     }
-    console.log(`[seed] existing ${catalogue.role.key} bank synchronized: added ${result.added} question(s), repaired ${result.repaired} question flag(s), ${result.bank_total} total`);
-    synced += 1;
-  }
-  if (!synced) {
-    console.log('[seed] admin user already exists; no published roles found, so no seed migration was applied.');
+    if (result.created) {
+      console.log(`[seed] published track "${result.role.name}" added: ${result.competencies_added} competencies, ${result.bank_total} questions, default framework`);
+    } else {
+      console.log(`[seed] existing ${catalogue.role.key} bank synchronized: added ${result.added} question(s), repaired ${result.repaired} question flag(s), ${result.bank_total} total`);
+    }
   }
   process.exit(0);
 }
 
 // ---- role tracks -------------------------------------------------------
-// One batched write per table per track; per-row writes rewrote (and
-// persisted) the whole JSON store 350+ times on a fresh seed. Every
-// published catalogue (see src/api/catalogue-service.mjs) gets its role,
-// competencies, question bank and default framework. `role` below keeps
-// pointing at the RSA track, which the demo candidates/assessments use.
+// Every published catalogue (see src/api/catalogue-service.mjs) gets its
+// role, competencies, question bank and default framework — through the same
+// installCatalogue the migration path and the admin UI use, so a fresh seed
+// and a later "Add to workspace" produce identical tracks (batched writes
+// per table; per-row writes rewrote the whole JSON store 350+ times).
+// `role` below keeps pointing at the RSA track, which the demo
+// candidates/assessments use.
 const roleById = {};
-const rsaCompIds = {};
 for (const catalogue of Object.values(PUBLISHED_CATALOGUES)) {
-  const rec = await store.insert('roles', { ...catalogue.role, active: true });
-  const trackCompIds = {};
-  const compRecs = await bulkInsert(store, 'competencies',
-    catalogue.competencies.map((c) => ({ ...c, role_id: rec.id, active: true })));
-  compRecs.forEach((r) => { trackCompIds[r.key] = r.id; });
-  if (catalogue.role.key === RSA_ROLE.key) Object.assign(rsaCompIds, trackCompIds);
-  if (catalogue.questions.length) {
-    await bulkInsert(store, 'questions', catalogue.questions.map((q) => questionRecord(q, rec.id, trackCompIds)));
-  }
-  await store.insert('frameworks', { role_id: rec.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
+  const result = await installCatalogue(store, catalogue.role.key);
+  if (result.error) throw new Error(`[seed] ${catalogue.role.key}: ${result.error}`);
+  const rec = await store.get('roles', result.role.id);
   console.log(`[seed] role track "${rec.name}": ${catalogue.competencies.length} competencies, ${catalogue.questions.length} questions`);
   roleById[catalogue.role.key] = rec;
 }
 const role = roleById[RSA_ROLE.key];
+const rsaCompIds = Object.fromEntries(
+  (await store.list('competencies', { role_id: role.id })).map((c) => [c.key, c.id]));
 
 // ---- users -----------------------------------------------------------
 const userIds = {};

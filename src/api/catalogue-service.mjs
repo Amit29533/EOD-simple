@@ -3,6 +3,7 @@ import { AIBI_ROLE, AIBI_COMPETENCIES, AIBI_QUESTIONS } from '../content/ai-bi-g
 import { SC_ROLE, SC_COMPETENCIES, SC_QUESTIONS } from '../content/senior-consultant-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
+import { DEFAULT_FRAMEWORK_CONFIG } from '../core/constants.mjs';
 import { bulkInsert, bulkUpdate } from './helpers.mjs';
 
 /**
@@ -39,6 +40,13 @@ import { bulkInsert, bulkUpdate } from './helpers.mjs';
  *    never overridden) and no other admin customization is touched;
  *  - competencies the published questions rely on are created if missing;
  *  - users and assessment snapshots are never touched.
+ *
+ * A track that is published but not yet *in* the workspace is a different
+ * case: a workspace seeded before the track existed has no role for it, so
+ * there is nothing to sync and — until installCatalogue() below — no way to
+ * get it short of wiping the store. Installing creates the role, its default
+ * scoring framework, its competencies and its published questions (which may
+ * be none: a track can ship as competencies only, to be authored in-app).
  */
 
 /** Every published catalogue, keyed by role key. */
@@ -148,7 +156,22 @@ export async function catalogueStatus(store, roleKey) {
   const catalogue = catalogueForRoleKey(roleKey);
   if (!catalogue) return { available: false };
   const role = await catalogueRole(store, roleKey);
-  if (!role) return { available: false, catalogue_total: catalogue.questions.length };
+  if (!role) {
+    // Not installed (or deactivated): say which published track this is and
+    // whether it can be added, so the UI can offer the install instead of a
+    // bare "unavailable".
+    const inactive = (await store.list('roles', { key: catalogue.role.key }))
+      .find((r) => r.active === false) || null;
+    return {
+      available: false,
+      catalogue_total: catalogue.questions.length,
+      role_key: catalogue.role.key,
+      role_name: catalogue.role.name,
+      competency_total: catalogue.competencies.length,
+      installable: !inactive,
+      inactive_role: inactive ? { id: inactive.id, key: inactive.key, name: inactive.name } : null,
+    };
+  }
   const questions = await store.list('questions', { role_id: role.id });
   return {
     available: true,
@@ -157,6 +180,83 @@ export async function catalogueStatus(store, roleKey) {
     bank_total: questions.filter((q) => q.active !== false).length,
     missing: catalogueMissing(questions, roleKey),
   };
+}
+
+const publicRole = (r) => ({ id: r.id, key: r.key, name: r.name, active: r.active !== false });
+
+/**
+ * Every published track and where this workspace stands with it — the Roles &
+ * frameworks screen lists these so a track that shipped after the workspace
+ * was seeded can be added from the UI. One row per catalogue:
+ *   installed  — an active role with the catalogue's key exists
+ *   inactive   — the role exists but was deactivated (never re-created)
+ *   missing    — published questions the installed bank does not hold yet
+ *                (the whole catalogue when the track is not installed)
+ */
+export async function listCatalogues(store) {
+  const [roles, questions] = await Promise.all([store.list('roles'), store.list('questions')]);
+  return Object.values(PUBLISHED_CATALOGUES).map((catalogue) => {
+    const twins = roles.filter((r) => r.key === catalogue.role.key);
+    const role = twins.find((r) => r.active !== false) || twins[0] || null;
+    const bank = role ? questions.filter((q) => q.role_id === role.id) : [];
+    return {
+      role_key: catalogue.role.key,
+      role_name: catalogue.role.name,
+      technology: catalogue.role.technology || '',
+      description: catalogue.role.description || '',
+      competency_total: catalogue.competencies.length,
+      catalogue_total: catalogue.questions.length,
+      // A track published as competencies only: its bank is authored in-app.
+      authoring_only: catalogue.questions.length === 0,
+      installed: Boolean(role),
+      active: role ? role.active !== false : false,
+      role: role ? publicRole(role) : null,
+      bank_total: bank.filter((q) => q.active !== false).length,
+      missing: role ? catalogueMissing(bank, catalogue.role.key) : catalogue.questions.length,
+    };
+  });
+}
+
+/**
+ * Install a published track into the workspace, or bring an installed one up
+ * to date. Idempotent:
+ *  - no role with the catalogue's key → the role is created (from the
+ *    catalogue's role record), with the default scoring framework, every
+ *    competency and every published question — the same shape a fresh seed
+ *    produces, so `npm run seed` and the admin UI provision tracks identically;
+ *  - an active role already exists → plain synchronizeBank (top-up + repair);
+ *  - the role exists but is deactivated → refused with { code: 'inactive' }:
+ *    an admin who switched a track off must reactivate it deliberately, and a
+ *    second role with the same key would break every key-based lookup.
+ * Returns synchronizeBank's counters plus { created, role }.
+ */
+export async function installCatalogue(store, roleKey) {
+  const catalogue = catalogueForRoleKey(roleKey);
+  if (!catalogue) return { error: `No published catalogue for role key "${roleKey}".` };
+  const twins = await store.list('roles', { key: catalogue.role.key });
+  const active = twins.find((r) => r.active !== false);
+  if (active) {
+    const result = await synchronizeBank(store, active);
+    return result.error ? result : { ...result, created: false, role: publicRole(active) };
+  }
+  if (twins.length) {
+    return {
+      error: `The ${catalogue.role.name} track is already in this workspace but deactivated. Reactivate it under Roles & frameworks instead of adding a second copy.`,
+      code: 'inactive',
+      role: publicRole(twins[0]),
+    };
+  }
+  const role = await store.insert('roles', { ...catalogue.role, active: true });
+  const result = await synchronizeBank(store, role);
+  if (result.error) return result;
+  // Every track scores against a framework; a role without one cannot be
+  // allocated (buildSnapshot refuses). Same default POST /admin/roles uses.
+  if (!(await store.list('frameworks', { role_id: role.id })).length) {
+    await store.insert('frameworks', {
+      role_id: role.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
+    });
+  }
+  return { ...result, created: true, role: publicRole(role) };
 }
 
 /**
