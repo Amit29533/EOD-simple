@@ -143,6 +143,18 @@ row are held to identical rules. It dispatches on `Array.isArray(input.options)`
 canonical form object from a flat spreadsheet row — testing for `prompt` would misclassify
 the row, which has one too, and silently discard its option columns.
 
+Question *identity* is shared the same way. `core/prompt-key.mjs` holds the one "is this the same
+question?" rule — NFKC, leading labels stripped, curly quotes/dashes normalised, whitespace
+collapsed, and spaces around punctuation dropped — and the authoring route, the spreadsheet import,
+the published-catalogue sync and the serve-time dedupe all call it. That matters because the layers
+must agree: a row the importer accepts as distinct is later merged (and therefore never served) by
+the allocator, and a copy the dedupe cannot recognise is served as a second question on the same
+paper. The rule is deliberately conservative in the other direction too — it must never merge two
+different questions — and `tests/question-selection.test.mjs` pins that against the published
+catalogue. Both question banks enforce it: the module bank and the role's competency bank
+(`POST/PATCH /admin/questions`, which is what allocation draws a paper from: `409` on a duplicate,
+scoped to the role so the same prompt can be reused in another role's bank).
+
 `src/core/sheet-parser.mjs` reads `.xlsx` and `.csv` with no runtime dependency: it
 inflates the ZIP members with `node:zlib`, reads member sizes from the **central
 directory** (local headers may carry zeroes with a trailing data descriptor), and resolves

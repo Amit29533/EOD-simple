@@ -5,6 +5,8 @@ import {
 } from '../src/core/question-selection.mjs';
 import { promptKey as intakePromptKey } from '../src/core/question-intake.mjs';
 import { maxRunLength, maxRunOf } from '../src/core/paper-order.mjs';
+import { QUESTIONS } from '../src/content/rsa-question-bank.mjs';
+import { RSA_ORAL_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
 
 const comps = [
   { id: 'c1', name: 'Architecture', weight: 50 },
@@ -213,8 +215,30 @@ test('promptKey sees through typography, case and leading labels', () => {
     promptKey('A client gives you a vague requirement: “We want to modernize our data platform.”'),
     promptKey('“We want to modernize our data platform.”'),
   );
+  // Whitespace *around* punctuation is typography as well. A prompt retyped or
+  // pasted from a PDF arrives as "job ?", "recovery , and why?" or "( row
+  // filters )"; the plain whitespace collapse missed those, so the duplicate
+  // passed the authoring check and was then served as a second question — one
+  // paper asking the same thing twice.
+  const spacingVariants = [
+    'How would you size a cluster for a nightly batch job?',
+    'How would you size a cluster for a nightly batch job ?',
+    'How would you size a cluster for a nightly batch job  ?',
+    'How would you size a cluster  for a nightly batch job?',
+  ];
+  for (const v of spacingVariants) assert.equal(promptKey(v), promptKey(spacingVariants[0]), JSON.stringify(v));
+  assert.equal(promptKey('Which controls improve recovery , and why?'), promptKey('Which controls improve recovery, and why?'));
+  assert.equal(promptKey('Name the guards( row filters, masks ).'), promptKey('Name the guards(row filters, masks).'));
+  // Brackets are content, not spacing: adding them makes a different question.
+  assert.notEqual(promptKey('Explain the (trade-offs).'), promptKey('Explain the trade-offs.'));
+  assert.equal(promptKey('A client asks : \u201Cwhy Databricks?\u201D'), promptKey('A client asks: \u201Cwhy Databricks?\u201D'));
+
   // Genuinely different prompts must never collide.
   assert.notEqual(promptKey('Oral 1'), promptKey('Oral 2'));
+  // Word spacing still matters, and a trailing mark is left alone rather than
+  // risk merging two questions that only look alike.
+  assert.notEqual(promptKey('Version 1.2 rollout'), promptKey('Version 1 . 2 rollout'));
+  assert.notEqual(promptKey('Do you agree?'), promptKey('Do you agree'));
   assert.notEqual(
     promptKey('How would you explain a Databricks architecture to a CIO?'),
     promptKey('How would you explain a Databricks architecture to a data engineer?'),
@@ -280,4 +304,42 @@ test('the authoring path and the serve path agree on prompt identity', () => {
   }
   // And genuinely different prompts stay different.
   assert.notEqual(promptKey('What is a lakehouse?'), promptKey('What is a warehouse?'));
+});
+
+test('the published catalogue is collision-free under the prompt key', () => {
+  // The key exists to merge copies of one question, so the guard that matters
+  // is the other direction: it must never merge two *different* published
+  // prompts, or the allocator silently drops real questions from every paper.
+  // Every strictness added to the normalizer (including the punctuation-spacing
+  // rule) has to keep this true.
+  const moduleKeys = QUESTIONS.map((q) => promptKey(q.prompt));
+  const spokenKeys = RSA_ORAL_QUESTIONS.map((q) => promptKey(q.prompt));
+  assert.equal(new Set(moduleKeys).size, QUESTIONS.length, 'no two module-bank prompts may share a key');
+  assert.equal(new Set(spokenKeys).size, RSA_ORAL_QUESTIONS.length, 'no two spoken prompts may share a key');
+
+  // The spoken set is a curated copy of module-bank prompts — the same question
+  // published in both catalogues on purpose — so cross-catalogue overlaps are
+  // expected. What must not happen is a collision between two *module* prompts,
+  // or two *spoken* prompts; both are covered by the two assertions above, and
+  // every cross-overlap must be a genuine copy (same normalised prompt).
+  const spoken = new Set(spokenKeys);
+  const shared = moduleKeys.filter((k) => spoken.has(k));
+  assert.ok(shared.length <= RSA_ORAL_QUESTIONS.length,
+    `more cross-catalogue overlaps than spoken prompts (${shared.length})`);
+  for (const q of QUESTIONS.filter((x) => spoken.has(promptKey(x.prompt)))) {
+    const twin = RSA_ORAL_QUESTIONS.find((x) => promptKey(x.prompt) === promptKey(q.prompt));
+    assert.equal(promptKey(twin.prompt), promptKey(q.prompt), `${q.id} overlaps a spoken prompt on identity, not just a key`);
+  }
+});
+
+test('spacing-variant copies of one prompt are served once, however they were retyped', () => {
+  const rows = [
+    { id: 'q1', prompt: 'How would you size a cluster for a nightly batch job?', type: 'mcq_single', competency_id: 'c1' },
+    { id: 'q2', prompt: 'How would you size a cluster for a nightly batch job ?', type: 'mcq_single', competency_id: 'c2' },
+    { id: 'q3', prompt: 'How would you size a cluster for  a nightly batch job? ', type: 'mcq_single', competency_id: 'c3', audio_required: true, question_set: 'rsa-oral' },
+  ];
+  const picked = selectQuestions(rows, comps, null);
+  assert.equal(picked.length, 1, 'one question on the paper, not three');
+  assert.equal(picked[0].id, 'q1', 'the first occurrence keeps the row identity responses are keyed by');
+  assert.equal(picked[0].audio_required, true, 'metadata from the later copies still merges in');
 });

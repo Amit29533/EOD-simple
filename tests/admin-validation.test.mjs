@@ -6,6 +6,9 @@ import fs from 'node:fs';
 import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
+import { promptKey } from '../src/core/prompt-key.mjs';
+import { buildSnapshot } from '../src/api/assessment-service.mjs';
+import { sortedQuestions } from '../src/api/quiz-session.mjs';
 
 let app, store, adminToken;
 let roleA, roleB, compA, compB, candA, candB, userA;
@@ -413,4 +416,83 @@ test('a structured prompt is refused, not stringified into "[object Object]"', a
   });
   assert.equal(good.status, 201, JSON.stringify(good.body));
   assert.equal(good.body.prompt, 'Which governance layer owns row-level access?');
+});
+
+test('the role question bank refuses a duplicate prompt instead of asking it twice', async () => {
+  // The role bank is what allocation draws a paper from, so an admin storing
+  // the same prompt twice means the same question is asked twice in one
+  // assessment — with the responses keyed by two ids, so nothing downstream
+  // notices. The module-bank authoring route always refused duplicates; this
+  // route (and its patch) did not.
+  const first = await call('POST', '/admin/questions', { token: adminToken, body: validQuestion() });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+
+  const exact = await call('POST', '/admin/questions', { token: adminToken, body: validQuestion() });
+  assert.equal(exact.status, 409, `an identical prompt must be refused, got ${JSON.stringify(exact.body)}`);
+  assert.match(exact.body.error, /already exists/i);
+
+  // A re-typed or re-pasted copy is the realistic case: different typography,
+  // same question.
+  for (const prompt of [
+    'Pick the correct answer .',        // space before the closing mark
+    'Pick  the correct  answer.',       // doubled spaces
+    'Q4: Pick the correct answer.',     // leading label
+    'Pick the correct answer.\u00A0',   // non-breaking space
+  ]) {
+    const variant = await call('POST', '/admin/questions', { token: adminToken, body: validQuestion({ prompt }) });
+    assert.equal(variant.status, 409, `"${prompt}" is the same question and must be refused`);
+  }
+  // A changed terminal mark is a changed question and stays allowed — the key
+  // normalizes spacing, not wording.
+  const asked = await call('POST', '/admin/questions', {
+    token: adminToken, body: validQuestion({ prompt: 'Pick the correct answer?' }),
+  });
+  assert.equal(asked.status, 201, JSON.stringify(asked.body));
+
+  // Renaming one question onto another's prompt is the same duplicate by another door.
+  const second = await call('POST', '/admin/questions', {
+    token: adminToken, body: validQuestion({ prompt: 'Explain the medallion architecture.' }),
+  });
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  const rename = await call('PATCH', `/admin/questions/${second.body.id}`, {
+    token: adminToken, body: { prompt: 'Pick the correct answer?' },
+  });
+  assert.equal(rename.status, 409, JSON.stringify(rename.body));
+  assert.match(rename.body.error, /already uses this prompt/i);
+  // Its own prompt is not a duplicate of itself: saving without changing it works.
+  const same = await call('PATCH', `/admin/questions/${second.body.id}`, {
+    token: adminToken, body: { prompt: 'Explain the medallion architecture.', points: 5 },
+  });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal(same.body.points, 5);
+
+  // A genuinely different question still lands, and the identical prompt in a
+  // different role's bank is a deliberate reuse, not a duplicate.
+  const other = await call('POST', '/admin/questions', { token: adminToken, body: validQuestion({ prompt: 'Name two Spark tuning flags.' }) });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const otherRole = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ role_id: roleB.id, competency_id: compB.id }),
+  });
+  assert.equal(otherRole.status, 201, `the same prompt in another role's bank must be allowed: ${JSON.stringify(otherRole.body)}`);
+
+  const rows = await store.list('questions', { role_id: roleA.id });
+  const keys = rows.map((q) => promptKey(q.prompt));
+  assert.equal(new Set(keys).size, keys.length, 'the stored bank has no duplicate prompt keys');
+});
+
+test('a duplicate prompt cannot reach a served paper through the API', async () => {
+  // End to end: two questions in one role bank, the second a re-pasted copy of
+  // the first. The paper must ask it once.
+  const q = validQuestion({ prompt: 'How would you migrate a legacy warehouse to a lakehouse?' });
+  assert.equal((await call('POST', '/admin/questions', { token: adminToken, body: q })).status, 201);
+  const copy = await call('POST', '/admin/questions', {
+    token: adminToken, body: validQuestion({ prompt: 'How would you migrate a legacy warehouse to a lakehouse ?' }),
+  });
+  assert.equal(copy.status, 409, 'the copy is refused at authoring time');
+
+  const snap = await buildSnapshot(store, roleA.id);
+  const served = sortedQuestions(snap);
+  const keys = served.map((x) => promptKey(x.prompt));
+  assert.equal(new Set(keys).size, keys.length, 'the served paper repeats no question');
 });

@@ -39,11 +39,53 @@ straight into a spinner that could never resolve. The submit now stores only the
 changed, in one batch per table (7 955 ms → 299 ms on the same paper), the candidate's autosave
 and the assessor's score entry are batched the same way, and the exam's own requests carry a
 deadline so a submit that is never answered lands on a retry screen instead of a dead panel.
+A follow-up audit of the question path — *do questions ever repeat?* — found the published content
+clean but closed two gaps that could still ask one question twice on a single paper: the role
+question bank accepted duplicate prompts outright, and the shared prompt-identity rule ignored
+whitespace around punctuation, so a retyped copy slipped past the duplicate check.
 
-Current verification: **362/362 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+Current verification: **366/366 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
-## 🕒 Exam submit freeze — "stuck on Submitting your assessment…" (latest)
+## 🔁 Duplicate questions — audit and two gaps closed (latest)
+
+Prompted by *"can you check if questions repeat?"*, the whole question path was audited end to end.
+The published content is clean: 348 module-bank prompts, the 10-question spoken set and the 115
+role-bank questions all have distinct normalized prompt keys; **1 200 generated papers** (limits
+null/50/30/15/10/5), 40 module-bank previews, the freshly built snapshot and the demo assessment
+were checked and served **zero** repeated questions. The serve-time dedupe also still heals a
+legacy snapshot that holds two copies of one prompt (verified by injecting a twin: 111 snapshot
+rows → 110 served, and the surviving row kept the microphone requirement its copy had lost).
+
+Two real gaps did surface, both of which could put the same question on one paper twice:
+
+1. **The role question bank accepted duplicates.** `POST /admin/questions` — the bank allocation
+   draws a paper from — had no duplicate check at all: the identical prompt, a curly-quote variant,
+   a label-prefixed copy and a re-punctuated copy were all stored as new questions (the
+   module-bank authoring route refused duplicates, which is why the gap went unnoticed). Creating
+   a question whose prompt already exists in that role's bank is now **409** ("A question with this
+   prompt already exists for this role…"), and so is renaming one question onto another's prompt.
+   Scoped to the role: the same prompt in a different role's bank is a deliberate reuse, and a
+   question may still be saved unchanged with its own prompt.
+2. **The prompt-identity rule missed whitespace around punctuation.** It collapsed runs of spaces,
+   case, curly quotes, dashes and leading labels, but `"…a nightly batch job ?"`,
+   `"…improve recovery , and why?"` and `"( row filters, masks )"` keyed as *different* questions —
+   so a prompt pasted from a PDF or retyped by an author passed the duplicate check and was then
+   served as a second question on the same paper. Spaces before a closing mark and after an opening
+   bracket are now dropped (all four layers — authoring, import, catalogue sync and serve-time
+   dedupe — share the one key, so the fix applies everywhere at once). Deliberately conservative:
+   word spacing, brackets and terminal punctuation stay meaningful (`"Version 1.2"` ≠ `"Version
+   1 . 2"`, `"Do you agree"` ≠ `"Do you agree?"`), and the guard that matters was re-verified —
+   the stricter key still produces **351 distinct keys for the 351 distinct published prompts**, so
+   it can never merge two different questions and silently drop one from a paper.
+
+Pinned by the extended `tests/question-selection.test.mjs` (punctuation-spacing variants collapse;
+a bank of retyped copies serves one question; the published catalogue stays collision-free under
+the stricter key) and two new tests in `tests/admin-validation.test.mjs` (the role bank refuses
+duplicates on create and on patch, allows a genuine reuse in another role, and a retyped copy
+cannot reach a served paper).
+
+## 🕒 Exam submit freeze — "stuck on Submitting your assessment…"
 
 **Symptom.** Candidates finished the paper and got stuck on *Submitting your assessment…*: the
 panel never changed, no error ever arrived, and there was nothing to press.

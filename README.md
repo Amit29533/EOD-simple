@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 362 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 366 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -209,7 +209,12 @@ is never touched.
 Both paths run the same validation as the API, so a question added by hand and one
 imported from a sheet are held to identical rules: known module, resolvable family,
 a prompt of real length, and a type-appropriate answer key. Duplicate prompts are
-rejected against the whole effective bank.
+rejected against the whole effective bank — and against the role's competency bank
+(`POST /admin/questions`), which is what allocation draws a paper from: the identity
+rule is shared by authoring, import, catalogue sync and the serve-time dedupe
+(`core/prompt-key.mjs`), so a copy retyped with curly quotes, a label, doubled spaces
+or a space before the closing punctuation is recognised as the same question and
+refused rather than asked twice in one assessment.
 
 **Optional pool.** The previous 115-question competency catalogue is no longer part
 of a generated test. Each retired competency becomes a `Legacy - …` family inside its
@@ -401,7 +406,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (362 Node tests), then with a local server up
+Verify before you ship: `npm test` (366 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks
