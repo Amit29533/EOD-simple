@@ -10,7 +10,16 @@ role/competency/question frameworks, assessor allocation, assessor workspace, th
 assessment engine, automated scoring, gap generation, admin dashboard and full
 role-based access with strict **compartmentalization** between participants.
 
-The first assessment track is **Databricks — Resident Solutions Architect (RSA)**.
+The published assessment tracks are:
+
+- **Databricks — Resident Solutions Architect (RSA)** (`databricks-rsa`) — 115-question
+  served bank + the 348-question module Question Bank,
+- **Senior Databricks AI/BI & Genie Consultant** (`databricks-ai-bi-genie`) — 100-question
+  served bank + the 100-question module Question Bank (generated from
+  `AI BI G Question bank 1.1.xlsx`),
+- **Senior Consultant** (`senior-consultant`) — competency framework published; its
+  question bank is authored from the Admin UI as the track ships.
+
 New technologies, roles, competencies, questions, weights and scoring frameworks are
 **configuration data, managed from the Admin UI — no development required.**
 
@@ -21,9 +30,9 @@ New technologies, roles, competencies, questions, weights and scoring frameworks
 Requires Node.js ≥ 20. No `npm install` needed for local development.
 
 ```bash
-npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
+npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 366 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 379 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -139,9 +148,9 @@ Deliberately deferred to the next phases (architecture already supports them): E
 module, Independent Validation module, candidate-facing enrichment plan, client/commercial
 entities. There are no `clients`/commercial tables anywhere — nobody can stumble into them.
 
-## Question Bank v1.4 — modules, families and test generation
+## Question Banks — modules, families and test generation
 
-The finalized bank ships as published content (`src/content/rsa-question-bank.mjs`),
+The finalized RSA bank ships as published content (`src/content/rsa-question-bank.mjs`),
 generated from the published source workbook (`Question bank 1.4.xlsx`):
 **348 questions across 20 modules**, organised **module → family → question**, and
 listed module by module: `T01`–`T10`, `C01`–`C04`, `P01`–`P04`, `F01`–`F02`.
@@ -173,6 +182,28 @@ each module's families while that structure is held exactly — nothing is pinne
 no question is guaranteed to appear. The paper is then **interleaved** by answer
 type, so MCQs and open questions never arrive in blocks; `sections` still reports the
 per-module structure in module order (`T01`→`F02`) for the admin preview.
+
+The module bank is **per track**. The Question Bank screen offers one bank per
+published track (Admin → Question Bank → *Track* selector), each with its own tree,
+plan, preview, import and authoring — admin additions and removals are stored scoped
+by track, so the banks can never bleed into each other:
+
+- **RSA v1.4** — the 20-module bank above (50-question paper), plus the retired
+  115-question catalogue kept as its optional fallback pool.
+- **AI/BI & Genie v1.1** — 100 questions across 10 modules
+  (`G01`, `G02`, `A01`, `S01`, `S02`, `Q01`, `R01` technical — 3 objective + 1 open
+  each; `F01`, `C01`, `D01` consulting — 1 open each), generated from the published
+  `AI BI G Question bank 1.1.xlsx` workbook; every generated test contains
+  **exactly 31 questions** (21 technical objective + 10 open). Regenerate it with:
+
+  ```bash
+  node scripts/extract-ai-bi-bank-from-xlsx.mjs "AI BI G Question bank 1.1.xlsx" data/ai-bi-bank.json
+  python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
+  ```
+
+Both the module bank and each track's *served* question bank (what allocation
+actually draws from — 115 questions for RSA, 100 for AI/BI & Genie) ship as published
+content and are kept in sync by `npm run seed` and the in-app catalogue top-up.
 
 Browse it under **Admin → Question Bank** — one screen for every question in the
 platform: the module/family tree, and below it the role-based *served question set*
@@ -406,7 +437,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (366 Node tests), then with a local server up
+Verify before you ship: `npm test` (379 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks

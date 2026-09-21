@@ -84,9 +84,27 @@ than the configured 50. Sync semantics live in `src/api/catalogue-service.mjs` a
 mirror `npm run seed`: match the track by key, insert only prompts that are absent,
 never touch existing records or snapshots.
 
-## 2c. Question Bank v1.4 — module → family → question
+## 2c. Question Banks — module → family → question
 
-The finalized bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
+**One bank per published track.** `src/content/module-banks.mjs` is the registry:
+each published track (role key) maps to its generated bank (modules, families,
+questions, version, optional pool, authored-id prefix). The RSA bank is the
+historical default — every unscoped read and call resolves to it, which keeps
+single-track workspaces (and existing clients) byte-for-byte as before. The
+AI/BI & Genie bank (`src/content/ai-bi-genie-question-bank.mjs`, 100 questions
+across 10 modules, generated from `AI BI G Question bank 1.1.xlsx` with the same
+`extract → build` pipeline: `scripts/extract-ai-bi-bank-from-xlsx.mjs` +
+`scripts/build-question-bank.py` + `scripts/ai-bi-bank-config.json`) is a
+first-class entry: its own tree, plan, preview, import and authoring. All
+`/admin/question-bank/*` routes accept `role_key` (query or body); authored
+`bank_questions` rows and published-visibility overrides carry a `role_key`
+column (legacy rows without it belong to the default RSA bank), so the banks
+can never bleed into each other. The per-track paper shape is derived from the
+bank's own module list (`blueprintFor()` in `core/test-generation.mjs`) — RSA
+computes 50 questions as before, AI/BI & Genie 31 (21 technical objective +
+7 technical open + 3 consulting open).
+
+The finalized RSA bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
 the published `Question bank 1.4.xlsx` workbook) is organised **MODULE → FAMILY →
 QUESTION** and drives a *fixed-shape* paper, rather than the weight-proportional
 apportionment described in 2b:

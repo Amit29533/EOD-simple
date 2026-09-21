@@ -1,7 +1,11 @@
 /**
  * Seed the ECOD store with:
  *  - admin / assessor / candidate accounts (usernames only ever provisioned here or by admin UI)
- *  - the Databricks RSA track: role, competencies (weights), question bank, scoring framework
+ *  - every published track (role, competencies, question bank, scoring framework):
+ *      * Databricks RSA (databricks-rsa)
+ *      * Senior Databricks AI/BI & Genie Consultant (databricks-ai-bi-genie)
+ *      * Senior Consultant (senior-consultant) — competencies only; its
+ *        question bank is authored from the Admin UI
  *  - three demo candidates at different pipeline stages, one with a fully scored example report
  *
  * Usage:
@@ -15,7 +19,7 @@ import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
 import { requiresSpokenAnswer } from '../src/core/spoken-answer.mjs';
 import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
-import { synchronizeBank } from '../src/api/catalogue-service.mjs';
+import { synchronizeBank, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
 import { bulkInsert } from '../src/api/helpers.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
 
@@ -48,27 +52,47 @@ const questionRecord = (q, roleId, compIds) => ({
 // synchronizeBank — shared with the in-app published-catalogue sync).
 const existingAdmin = await store.list('users', { username: 'admin' });
 if (existingAdmin.length) {
-  const existingRole = (await store.list('roles', { key: RSA_ROLE.key }))[0];
-  if (!existingRole) {
-    console.log('[seed] admin user already exists; no RSA role found, so no seed migration was applied.');
-    process.exit(0);
+  let synced = 0;
+  for (const catalogue of Object.values(PUBLISHED_CATALOGUES)) {
+    const existingRole = (await store.list('roles', { key: catalogue.role.key }))[0];
+    if (!existingRole) continue;
+    const result = await synchronizeBank(store, existingRole);
+    if (result.error) {
+      console.log(`[seed] ${catalogue.role.key}: ${result.error}`);
+      continue;
+    }
+    console.log(`[seed] existing ${catalogue.role.key} bank synchronized: added ${result.added} question(s), repaired ${result.repaired} question flag(s), ${result.bank_total} total`);
+    synced += 1;
   }
-  const result = await synchronizeBank(store, existingRole);
-  console.log(`[seed] existing RSA bank synchronized: added ${result.added} question(s), repaired ${result.repaired} question flag(s), ${result.bank_total} total`);
+  if (!synced) {
+    console.log('[seed] admin user already exists; no published roles found, so no seed migration was applied.');
+  }
   process.exit(0);
 }
 
-// ---- role track ------------------------------------------------------
-// One batched write per table; per-row writes rewrote (and persisted) the
-// whole JSON store 350+ times on a fresh seed.
-const role = await store.insert('roles', { ...RSA_ROLE, active: true });
-const compIds = {};
-const compRecs = await bulkInsert(store, 'competencies',
-  RSA_COMPETENCIES.map((c) => ({ ...c, role_id: role.id, active: true })));
-compRecs.forEach((rec) => { compIds[rec.key] = rec.id; });
-await bulkInsert(store, 'questions', RSA_QUESTIONS.map((q) => questionRecord(q, role.id, compIds)));
-await store.insert('frameworks', { role_id: role.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
-console.log(`[seed] role track "${role.name}": ${RSA_COMPETENCIES.length} competencies, ${RSA_QUESTIONS.length} questions`);
+// ---- role tracks -------------------------------------------------------
+// One batched write per table per track; per-row writes rewrote (and
+// persisted) the whole JSON store 350+ times on a fresh seed. Every
+// published catalogue (see src/api/catalogue-service.mjs) gets its role,
+// competencies, question bank and default framework. `role` below keeps
+// pointing at the RSA track, which the demo candidates/assessments use.
+const roleById = {};
+const rsaCompIds = {};
+for (const catalogue of Object.values(PUBLISHED_CATALOGUES)) {
+  const rec = await store.insert('roles', { ...catalogue.role, active: true });
+  const trackCompIds = {};
+  const compRecs = await bulkInsert(store, 'competencies',
+    catalogue.competencies.map((c) => ({ ...c, role_id: rec.id, active: true })));
+  compRecs.forEach((r) => { trackCompIds[r.key] = r.id; });
+  if (catalogue.role.key === RSA_ROLE.key) Object.assign(rsaCompIds, trackCompIds);
+  if (catalogue.questions.length) {
+    await bulkInsert(store, 'questions', catalogue.questions.map((q) => questionRecord(q, rec.id, trackCompIds)));
+  }
+  await store.insert('frameworks', { role_id: rec.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true });
+  console.log(`[seed] role track "${rec.name}": ${catalogue.competencies.length} competencies, ${catalogue.questions.length} questions`);
+  roleById[catalogue.role.key] = rec;
+}
+const role = roleById[RSA_ROLE.key];
 
 // ---- users -----------------------------------------------------------
 const userIds = {};
@@ -123,7 +147,7 @@ const fallbackAnswer = (q) => {
 
 const answers = new Map();
 const scores = new Map();   // manual assessor scores per question id
-for (const [compKey, compId] of Object.entries(compIds)) {
+for (const [compKey, compId] of Object.entries(rsaCompIds)) {
   // The worked example addresses the first three questions per competency; a
   // thinner bank (or a future catalogue trim) must degrade to fallback answers
   // rather than crash the seed on an undefined question.
@@ -183,7 +207,8 @@ console.log(`[seed] example report for Neha Kulkarni: ${report.band.label} @ ${r
 
 await store.insert('audit_log', {
   actor_id: userIds.admin, actor_name: 'Platform Admin', action: 'platform_seeded',
-  entity: 'roles', entity_id: role.id, message: 'ECOD seeded with Databricks RSA track and demo data',
+  entity: 'roles', entity_id: role.id,
+  message: `ECOD seeded with ${Object.values(PUBLISHED_CATALOGUES).map((c) => c.role.name).join(', ')} and demo data`,
 });
 
 console.log('\n[seed] done. Sign in with:');

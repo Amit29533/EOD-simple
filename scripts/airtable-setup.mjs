@@ -50,13 +50,13 @@ export const SCHEMA = {
                          { name: 'correct_option_ids', ...long }, { name: 'rubric', ...long },
                          { name: 'points', ...num }, { name: 'order', ...num },
                          { name: 'active', ...chk }, { name: 'pin_first', ...chk }, { name: 'audio_required', ...chk }]),
-  bank_questions: ['module', 'family_id', 'family', 'type', 'band', 'mode', 'gap_tag', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  bank_questions: ['role_key', 'module', 'family_id', 'family', 'type', 'band', 'mode', 'gap_tag', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'prompt', ...long }, { name: 'options', ...long }, { name: 'correct_option_ids', ...long },
                          { name: 'rationale', ...long }, { name: 'probes', ...long }, { name: 'rubric', ...long },
                          { name: 'tags', ...long }, { name: 'red_flags', ...long }, { name: 'enrichment', ...long },
                          { name: 'difficulty', ...num }, { name: 'minutes', ...num },
                          { name: 'active', ...chk }, { name: 'randomizable', ...chk }, { name: 'needs_option_review', ...chk }]),
-  bank_question_overrides: ['question_id', 'created_by', 'created_at'].map((f) => ({ name: f, ...txt }))
+  bank_question_overrides: ['question_id', 'role_key', 'created_by', 'created_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'active', ...chk }]),
   frameworks:   ['role_id', 'name', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'config', ...long }, { name: 'active', ...chk }]),

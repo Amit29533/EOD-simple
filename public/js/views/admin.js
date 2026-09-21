@@ -298,7 +298,9 @@ export async function allocateAssessorModal(c, presetRoleId) {
           if (syncBtn) syncBtn.onclick = async () => {
             syncBtn.disabled = true;
             syncBtn.textContent = 'Adding…';
-            const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
+            // Sync the track the dialog is allocating for — never the default.
+            const roleKey = activeRoles.find((r) => r.id === roleId)?.key;
+            const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: { role_key: roleKey } }));
             if (!out) { syncBtn.disabled = false; syncBtn.textContent = `＋ Add ${missing} published question${missing === 1 ? '' : 's'}`; return; }
             toast(out.added
               ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
@@ -1035,16 +1037,26 @@ export async function modulesView(view) {
   // view; below it sits the role/competency question set that allocation
   // actually serves today (the same retired catalogue the tree lists as its
   // optional pool). `role` in the query string is what the Roles screen links
-  // here with, and it only filters that lower panel.
+  // here with. For tracks with a published module bank it selects that bank;
+  // for the served panel it filters by role either way.
   const roleParam = new URLSearchParams(location.hash.split('?')[1] || '').get('role') || '';
-  const [bank, plan, rolesOut, servedOut, catalogue] = await Promise.all([
-    api('/admin/question-bank/modules?include_optional=1'),
-    attempt(() => api('/admin/question-bank/plan')),
-    attempt(() => api('/admin/roles')),
-    attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`, 'questions')),
-    attempt(() => api('/admin/content/catalogue')),
-  ]);
+  const rolesOut = await attempt(() => api('/admin/roles'));
   const roles = rolesOut?.roles || [];
+  const banks = M()?.moduleBanks || [];
+  const defaultBankKey = M()?.defaultModuleBankRoleKey || banks[0]?.role_key || '';
+  const viewedRole = roles.find((r) => r.id === roleParam) || null;
+  // The module bank is addressed by the track's stable role key; a viewed
+  // role without a module bank (e.g. Senior Consultant) keeps the default
+  // bank while its served set is still filterable below.
+  const roleKey = viewedRole && banks.some((b) => b.role_key === viewedRole.key)
+    ? viewedRole.key
+    : defaultBankKey;
+  const [bank, plan, servedOut, catalogue] = await Promise.all([
+    api(`/admin/question-bank/modules?include_optional=1&role_key=${roleKey}`),
+    attempt(() => api(`/admin/question-bank/plan?role_key=${roleKey}`)),
+    attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`, 'questions')),
+    attempt(() => api(`/admin/content/catalogue${viewedRole ? `?role_key=${viewedRole.key}` : ''}`)),
+  ]);
   const served = servedOut || [];
   const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
 
@@ -1072,13 +1084,20 @@ export async function modulesView(view) {
       <div>
         <div class="eyebrow">Assessment design</div>
         <h1>Question bank</h1>
-        <p>v${esc(bank.version)} — ${bank.bank_total} questions in
+        <p>v${esc(bank.version)} — ${esc(bank.role_name || '')} — ${bank.bank_total} questions in
            ${modules.length} modules, organised into ${bank.family_total} families.
            A new question belongs to exactly one family inside one module; the
            role-based set that allocation serves today is managed at the bottom
            of this same screen.</p>
       </div>
       <div class="heading-actions">
+        ${banks.length > 1 ? `
+        <label class="f" style="margin:0">
+          <span class="lbl">Track</span>
+          <select id="mv-bank" aria-label="Module bank track">
+            ${banks.map((b) => `<option value="${esc(b.role_key)}" ${b.role_key === roleKey ? 'selected' : ''}>${esc(b.role_name)} (v${esc(b.version)})</option>`).join('')}
+          </select>
+        </label>` : ''}
         <button class="btn secondary" id="mv-import">Import (.xlsx / .csv)</button>
         <button class="btn secondary" id="mv-add">Add question</button>
         <button class="btn" id="mv-preview">Preview a test</button>
@@ -1135,12 +1154,12 @@ export async function modulesView(view) {
     </div>
 
     <div class="card flat">
-      <div class="panel-head"><div><h2>Optional pool</h2>
+      ${bank.optional && bank.optional.total ? `<div class="panel-head"><div><h2>Optional pool</h2>
         <p class="small muted">The retired catalogue, mapped onto these modules and kept as a
         fallback. Never served while a family can fill its module's quota — only drawn to cover a
         shortfall.</p></div>
         <span class="chip chip-optional">${bank.optional.total} questions</span></div>
-    </div>
+    </div>` : ''}
 
     <div class="card" id="served-set">
       <div class="panel-head">
@@ -1182,15 +1201,25 @@ export async function modulesView(view) {
   // what was just added rather than going stale until the next navigation.
   const refresh = () => modulesView(view);
 
+  // Switching the track re-renders with the other bank. The hash carries the
+  // role record id (what the Roles screen links with), so the served panel
+  // below follows the same track.
+  const bankSelect = view.querySelector('#mv-bank');
+  if (bankSelect) bankSelect.onchange = (e) => {
+    const key = e.target.value;
+    const r = roles.find((x) => x.key === key);
+    location.hash = r ? `#/modules?role=${r.id}` : '#/modules';
+  };
+
   view.querySelector('#mv-preview').onclick = async () => {
-    const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: {} }));
+    const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: { role_key: roleKey } }));
     if (out) previewModal(out);
   };
   view.querySelector('#mv-add').onclick = () => addQuestionModal(bank, {}, refresh);
-  view.querySelector('#mv-import').onclick = () => importQuestionsModal(refresh);
+  view.querySelector('#mv-import').onclick = () => importQuestionsModal(refresh, bank);
   for (const btn of view.querySelectorAll('[data-family]')) {
     btn.onclick = async () => {
-      const out = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(btn.dataset.family)}`));
+      const out = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(btn.dataset.family)}?role_key=${roleKey}`));
       if (out) familyModal(out, bank, refresh);
     };
   }
@@ -1209,7 +1238,7 @@ export async function modulesView(view) {
   if (syncBtn) syncBtn.onclick = async () => {
     syncBtn.disabled = true;
     syncBtn.textContent = 'Adding…';
-    const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: {} }));
+    const out = await attempt(() => api('/admin/content/sync', { method: 'POST', body: { role_key: viewedRole?.key } }));
     if (!out) { syncBtn.disabled = false; syncBtn.textContent = 'Add published questions'; return; }
     toast(out.added
       ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
@@ -1298,11 +1327,14 @@ function familyModal({ family, questions }, bank, onChanged) {
       }] : []),
     ],
     onOpen: (root, close) => {
+      // Every bank call in this dialog is scoped to the bank the family came
+      // from (the `bank` object carries its role_key from the modules call).
+      const qs = bank?.role_key ? `?role_key=${encodeURIComponent(bank.role_key)}` : '';
       // After any change the dialog re-opens on fresh data (and the tree
       // behind it refreshes), so the header counts and row states never go
       // stale — a removed question flips to Removed + Restore in place.
       const reload = async () => {
-        const fresh = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(family.id)}`));
+        const fresh = await attempt(() => api(`/admin/question-bank/families/${encodeURIComponent(family.id)}${qs}`));
         if (onChanged) onChanged();
         close();
         if (fresh) familyModal(fresh, bank, onChanged);
@@ -1321,7 +1353,7 @@ function familyModal({ family, questions }, bank, onChanged) {
           );
           if (!okToDelete) return;
           const out = await attempt(
-            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.del)}`, { method: 'DELETE' }),
+            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.del)}${qs}`, { method: 'DELETE' }),
             { okMessage: isPublished ? 'Question removed — restore it any time' : 'Question deleted' },
           );
           if (!out) return;
@@ -1331,7 +1363,7 @@ function familyModal({ family, questions }, bank, onChanged) {
       for (const btn of root.querySelectorAll('[data-restore]')) {
         btn.onclick = async () => {
           const out = await attempt(
-            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.restore)}`, { method: 'PATCH', body: { active: true } }),
+            () => api(`/admin/question-bank/questions/${encodeURIComponent(btn.dataset.restore)}${qs}`, { method: 'PATCH', body: { active: true } }),
             { okMessage: 'Question restored' },
           );
           if (!out) return;
@@ -1487,6 +1519,7 @@ function addQuestionModal(bank, { module: presetModule, familyId: presetFamily }
 
           const type = el('aq-type').value;
           const payload = {
+            role_key: bank?.role_key || undefined,
             module: el('aq-module').value,
             family: el('aq-family').value.trim(),
             type,
@@ -1610,9 +1643,10 @@ function addQuestionModal(bank, { module: presetModule, familyId: presetFamily }
  * the per-row outcome and can only commit once something was actually
  * accepted. Nothing is written until they press Import.
  */
-function importQuestionsModal(onImported) {
+function importQuestionsModal(onImported, bank = null) {
   let checked = null;      // last dry-run report
   let payload = null;      // { file_base64 | csv, filename }
+  const bankKey = bank?.role_key || undefined;   // which published bank this import lands in
 
   const body = `
     <p class="modal-intro">Upload an .xlsx or .csv. The first row must be a header.
@@ -1647,7 +1681,7 @@ function importQuestionsModal(onImported) {
           }
           btn.disabled = true;
           const out = await attempt(
-            () => api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: false } }),
+            () => api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: false, role_key: bankKey } }),
           );
           btn.disabled = false;
           if (!out) return;
@@ -1722,7 +1756,7 @@ function importQuestionsModal(onImported) {
         }
 
         try {
-          const out = await api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: true } });
+          const out = await api('/admin/question-bank/import', { method: 'POST', body: { ...payload, dry_run: true, role_key: bankKey } });
           checked = out;
           renderReport(out);
         } catch (err) {
@@ -1745,7 +1779,7 @@ function importQuestionsModal(onImported) {
       });
       root.querySelector('#iq-template').onclick = async (e) => {
         e.preventDefault();
-        const tpl = await attempt(() => api('/admin/question-bank/import-template'));
+        const tpl = await attempt(() => api(`/admin/question-bank/import-template${bankKey ? `?role_key=${encodeURIComponent(bankKey)}` : ''}`));
         if (tpl) downloadText(tpl.filename, tpl.csv, tpl.content_type);
       };
     },

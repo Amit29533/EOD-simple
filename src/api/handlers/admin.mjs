@@ -15,13 +15,15 @@ import {
   buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
-import { catalogueStatus, catalogueMissing, syncCatalogue } from '../catalogue-service.mjs';
-import { RSA_ROLE, RSA_QUESTIONS } from '../../content/rsa-catalogue.mjs';
 import {
-  MODULE_GROUPS, MODULES, QUESTIONS, QUESTION_BANK_VERSION,
-} from '../../content/rsa-question-bank.mjs';
-import { OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary } from '../../content/rsa-optional-bank.mjs';
-import { generateTest, testPlan, TEST_BLUEPRINT, isActive } from '../../core/test-generation.mjs';
+  catalogueStatus, catalogueMissing, syncCatalogue, catalogueForRoleKey,
+} from '../catalogue-service.mjs';
+import {
+  moduleBankFor, DEFAULT_MODULE_BANK_ROLE_KEY,
+} from '../../content/module-banks.mjs';
+import {
+  generateTest, testPlan, TEST_BLUEPRINT, blueprintFor, isActive,
+} from '../../core/test-generation.mjs';
 import {
   validateQuestion as validateBankQuestion, validateBatch, promptKey,
 } from '../../core/question-intake.mjs';
@@ -120,34 +122,59 @@ function mergeForPatch(current, body = {}) {
  * Overrides are found by `question_id` rather than record id so the Airtable
  * adapter — which mints its own record ids — works the same as the rest.
  */
-async function setPublishedVisibility(store, questionId, active, actorId) {
-  const rows = await store.list('bank_question_overrides', { question_id: questionId });
+/**
+ * Remove/restore is scoped by role key: a question id only exists inside one
+ * published bank, but the override row carries the key so the two banks can
+ * never hide each other's questions, and legacy rows (pre role-scoping)
+ * resolve to the default bank.
+ */
+async function setPublishedVisibility(store, questionId, active, actorId, roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
+  const rows = (await store.list('bank_question_overrides', { question_id: questionId }))
+    .filter((r) => (r.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === key);
   if (active) {
     for (const r of rows) await store.remove('bank_question_overrides', r.id);
     return null;
   }
   if (rows[0]) return rows[0];
   return store.insert('bank_question_overrides', {
-    question_id: questionId, active: false, created_by: actorId || null,
+    question_id: questionId, role_key: key, active: false, created_by: actorId || null,
   });
 }
 
-/** A downloadable CSV template with the header row and one example of each type. */
-function importTemplateCsv() {
+/**
+ * A downloadable CSV template with the header row and one example of each
+ * type. The example module/family names are derived from the bank's own
+ * published structure (first technical module, first non-technical module),
+ * so the starter rows always point at a real module and family.
+ */
+function importTemplateCsv(bank) {
   const esc = (v) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   const header = IMPORT_COLUMNS.map((c) => c.key);
+  const firstTechnical = bank.modules.find((m) => m.technical === true) || bank.modules[0];
+  const firstNonTechnical = bank.modules.find((m) => m.technical !== true) || bank.modules[0];
+  const techFamily = (firstTechnical?.families[0]?.name) || '';
+  const openFamily = (firstNonTechnical?.families[0]?.name) || '';
   const example = [
-    ['T01', 'Advanced Technical Judgment', 'objective',
+    [firstTechnical?.key || 'T01', techFamily, 'objective',
       'Which Unity Catalog object is the boundary for cross-workspace data sharing?',
       'The cluster', 'The metastore', 'The notebook', 'The job',
       'B', '', '4', 'Advanced', 'governance,unity-catalog'],
-    ['C01', 'Customer Solutioning', 'open',
+    [firstNonTechnical?.key || 'C01', openFamily, 'open',
       'A client cannot articulate their success criteria. How do you run the discovery?',
       '', '', '', '', '',
       'Structures discovery, maps stakeholders, converts vague goals into measurable criteria.',
       '4', 'Intermediate', 'discovery'],
   ];
   return [header, ...example].map((r) => r.map((c) => esc(String(c))).join(',')).join('\n');
+}
+
+/** The Module column note for a bank: its real module keys, not RSA's. */
+function importColumnsFor(bank) {
+  const moduleKeys = bank.modules.map((m) => m.key).join(', ');
+  return IMPORT_COLUMNS.map((c) => (c.key === 'Module'
+    ? { ...c, note: moduleKeys }
+    : c));
 }
 
 /**
@@ -990,12 +1017,15 @@ export function adminHandlers(route) {
     // role has more than the product maximum, the preview never promises more
     // than the 50-question allocation cap.
     const previewLimit = limit === null ? null : Math.min(limit, MAX_ASSESSMENT_QUESTIONS);
-    // Catalogue context: when this track matches the published catalogue and
-    // the bank is smaller than the allocation cap, the UI can offer a one-click
-    // top-up instead of leaving the admin stuck below the cap.
-    const isCatalogueRole = bank.role.key === RSA_ROLE.key;
-    const catalogue = isCatalogueRole
-      ? { total: RSA_QUESTIONS.length, missing: catalogueMissing(await store.list('questions', { role_id: bank.role.id })) }
+    // Catalogue context: when this track has a published catalogue with
+    // questions and the bank is smaller than the allocation cap, the UI can
+    // offer a one-click top-up instead of leaving the admin stuck below the cap.
+    const catalogueEntry = catalogueForRoleKey(bank.role.key);
+    const catalogue = catalogueEntry && catalogueEntry.questions.length
+      ? {
+          total: catalogueEntry.questions.length,
+          missing: catalogueMissing(await store.list('questions', { role_id: bank.role.id }), bank.role.key),
+        }
       : null;
     return ok({
       role: { id: bank.role.id, name: bank.role.name },
@@ -1006,39 +1036,53 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ question bank
-  // The module-structured bank: modules, families and the fixed 50-question
-  // paper shape.
-  //
+  // The module-structured bank: modules, families and the fixed per-module
+  // paper shape. Every route is scoped by `role_key` (query or body); the
+  // default is the historical RSA bank, so unscoped calls behave exactly as
+  // before banks were role-aware. A role key without a published module bank
+  // is a 400, not an empty bank.
+  const roleKeyOf = (src) => {
+    const key = (src && (src.role_key || src.roleKey)) || '';
+    return key || DEFAULT_MODULE_BANK_ROLE_KEY;
+  };
+  const requireBank = (roleKey) => moduleBankFor(roleKey) || null;
+
   // The published catalogue in src/content is generated and read-only, so
   // every read below goes through effectiveBank(), which merges it with the
   // admin-authored questions in the `bank_questions` table. One source of
   // truth for the tree, the drill-down, the plan, the preview and generation.
-  const bankContext = async (store) => {
-    const questions = await effectiveBank(store);
-    return { questions, modules: composeModules(questions), families: composeFamilies(questions) };
+  const bankContext = async (store, roleKey) => {
+    const questions = await effectiveBank(store, roleKey);
+    return { questions, modules: composeModules(questions, roleKey), families: composeFamilies(questions, roleKey) };
   };
 
   route('GET', '/admin/question-bank/modules', A, async ({ store, query }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
     const includeOptional = bool(query.include_optional);
-    const { questions, modules } = await bankContext(store);
+    const { questions, modules } = await bankContext(store, roleKey);
 
     const optionalByFamily = new Map();
     const optionalByModule = new Map();
-    if (includeOptional) {
-      for (const q of OPTIONAL_QUESTIONS) {
+    if (includeOptional && bank.optional) {
+      for (const q of bank.optional.questions) {
         optionalByFamily.set(q.family_id, (optionalByFamily.get(q.family_id) || 0) + 1);
         optionalByModule.set(q.module, (optionalByModule.get(q.module) || 0) + 1);
       }
     }
 
+    const technicalCount = bank.modules.filter((m) => m.technical === true).length;
     return ok({
-      version: QUESTION_BANK_VERSION,
-      blueprint: TEST_BLUEPRINT,
+      role_key: roleKey,
+      role_name: bank.role_name,
+      version: bank.version,
+      blueprint: blueprintFor(bank.modules),
       // How many modules the paper-wide blueprint totals are spread across,
       // so a client can show the per-module quota without hardcoding it.
-      technical_modules: MODULE_TEST_STRUCTURE.technical_modules,
-      non_technical_modules: MODULE_TEST_STRUCTURE.non_technical_modules,
-      groups: MODULE_GROUPS,
+      technical_modules: technicalCount,
+      non_technical_modules: bank.modules.length - technicalCount,
+      groups: bank.groups,
       modules: modules.map((m) => {
         const own = m.families.map((f) => ({ ...f, optional: optionalByFamily.get(f.id) || 0 }));
         // Legacy families are appended after the curated ones so the tree shows
@@ -1046,8 +1090,8 @@ export function adminHandlers(route) {
         // place to add a new question. Their members are all optional, so
         // `objective`/`open` describe what the family holds while `optional`
         // carries the same total - otherwise the row would read 0/0.
-        const legacy = includeOptional
-          ? OPTIONAL_FAMILIES.filter((f) => f.module === m.key).map((f) => ({
+        const legacy = includeOptional && bank.optional
+          ? bank.optional.families.filter((f) => f.module === m.key).map((f) => ({
               ...f, optional: optionalByFamily.get(f.id) || 0,
             }))
           : [];
@@ -1061,20 +1105,24 @@ export function adminHandlers(route) {
       published_total: questions.filter((q) => !q.authored && isActive(q)).length,
       authored_total: questions.filter((q) => q.authored && isActive(q)).length,
       inactive_total: questions.filter((q) => !isActive(q)).length,
-      family_total: composeFamilies(questions).length,
-      optional: optionalSummary(),
+      family_total: composeFamilies(questions, roleKey).length,
+      optional: bank.optional ? bank.optional.summary : { total: 0, families: 0, modules: [] },
     });
   });
 
   // One family's questions, so an admin can review a family before adding to
   // it. Families are addressed by their compound `<MODULE>:<slug>` id.
-  route('GET', '/admin/question-bank/families/:id', A, async ({ store, params }) => {
-    const { questions } = await bankContext(store);
-    const family = resolveFamily(params.id, questions)
-      || OPTIONAL_FAMILIES.find((f) => f.id === params.id)
+  route('GET', '/admin/question-bank/families/:id', A, async ({ store, params, query }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const { questions } = await bankContext(store, roleKey);
+    const family = resolveFamily(params.id, questions, roleKey)
+      || (bank.optional ? bank.optional.families.find((f) => f.id === params.id) : null)
       || null;
     if (!family) return notFound('Family not found.');
-    const rows = [...questions, ...OPTIONAL_QUESTIONS].filter((q) => q.family_id === family.id);
+    const optionalQuestions = bank.optional ? bank.optional.questions : [];
+    const rows = [...questions, ...optionalQuestions].filter((q) => q.family_id === family.id);
     return ok({
       family,
       questions: rows.map((q) => ({
@@ -1092,18 +1140,26 @@ export function adminHandlers(route) {
 
   // What a generated paper would look like, and whether every module can meet
   // its quota - the module-based equivalent of /roles/:id/question-plan.
-  route('GET', '/admin/question-bank/plan', A, async ({ store }) => {
-    const { questions } = await bankContext(store);
-    return ok(testPlan({ modules: MODULES, questions: [...questions, ...OPTIONAL_QUESTIONS] }));
+  route('GET', '/admin/question-bank/plan', A, async ({ store, query }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const { questions } = await bankContext(store, roleKey);
+    const optionalQuestions = bank.optional ? bank.optional.questions : [];
+    return ok(testPlan({ modules: bank.modules, questions: [...questions, ...optionalQuestions] }));
   });
 
   // Draw a sample paper so an admin can inspect the structure before relying
   // on it. Never persisted - allocation builds its own paper.
-  route('POST', '/admin/question-bank/preview', A, async ({ store }) => {
-    const { questions } = await bankContext(store);
+  route('POST', '/admin/question-bank/preview', A, async ({ store, body }) => {
+    const roleKey = roleKeyOf(body);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const { questions } = await bankContext(store, roleKey);
+    const optionalQuestions = bank.optional ? bank.optional.questions : [];
     const result = generateTest({
-      modules: MODULES,
-      questions: [...questions, ...OPTIONAL_QUESTIONS],
+      modules: bank.modules,
+      questions: [...questions, ...optionalQuestions],
     });
     return ok({
       counts: result.counts,
@@ -1121,8 +1177,11 @@ export function adminHandlers(route) {
   // Validated by exactly the same code the bulk import uses, so the two can
   // never diverge on what counts as a usable question.
   route('POST', '/admin/question-bank/questions', A, async ({ store, body, auth }) => {
-    const { questions, families } = await bankContext(store);
-    const result = validateBankQuestion(body, { modules: MODULES, families });
+    const roleKey = roleKeyOf(body);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const { questions, families } = await bankContext(store, roleKey);
+    const result = validateBankQuestion(body, { modules: bank.modules, families });
     if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
 
     const key = promptKey(result.question.prompt);
@@ -1130,20 +1189,24 @@ export function adminHandlers(route) {
       return conflict('A question with this prompt already exists in the bank.');
     }
 
-    const id = nextAuthoredId(result.question.module, await store.list('bank_questions'));
-    const rec = await store.insert('bank_questions', toStoredRecord(result.question, { id, actorId: auth.user.id }));
+    const id = nextAuthoredId(result.question.module, await store.list('bank_questions'), roleKey);
+    const rec = await store.insert('bank_questions', toStoredRecord(result.question, { id, actorId: auth.user.id, roleKey }));
     await audit(store, auth.user, 'bank_question_created', 'bank_questions', rec.id,
       `Question added to ${rec.module} / ${rec.family}`);
     return created({ question: hydrate(rec) });
   });
 
-  route('PATCH', '/admin/question-bank/questions/:id', A, async ({ store, body, params, auth }) => {
-    const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
+  route('PATCH', '/admin/question-bank/questions/:id', A, async ({ store, body, params, query, auth }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const existing = (await store.list('bank_questions'))
+      .find((q) => q.id === params.id && (q.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === roleKey);
     if (!existing) {
       // Published questions are read-only except for visibility: an admin can
       // remove one from circulation ({ active: false }) and restore it later
       // ({ active: true }). Anything else is rejected, not silently ignored.
-      const published = QUESTIONS.find((q) => q.id === params.id);
+      const published = bank.questions.find((q) => q.id === params.id);
       if (!published) return notFound('Question not found.');
       if (body.active === undefined) {
         return bad('Published questions are read-only; only visibility (active) can be changed. Remove it to hide it from tests, or restore it.');
@@ -1151,33 +1214,37 @@ export function adminHandlers(route) {
       const extra = Object.keys(body || {}).filter((k) => k !== 'active');
       if (extra.length) return bad(`Published questions are read-only; cannot change: ${extra.join(', ')}.`);
       const restore = bool(body.active);
-      await setPublishedVisibility(store, params.id, restore, auth.user.id);
+      await setPublishedVisibility(store, params.id, restore, auth.user.id, roleKey);
       await audit(store, auth.user, restore ? 'bank_question_restored' : 'bank_question_removed',
         'bank_questions', params.id,
         restore
           ? `Published question restored to ${published.module}`
           : `Published question removed from ${published.module} (can be restored)`);
-      const updated = (await effectiveBank(store)).find((q) => q.id === params.id);
+      const updated = (await effectiveBank(store, roleKey)).find((q) => q.id === params.id);
       return ok({ question: updated });
     }
-    const { questions, families } = await bankContext(store);
+    const { questions, families } = await bankContext(store, roleKey);
     const merged = mergeForPatch(hydrate(existing), body);
-    const result = validateBankQuestion(merged, { modules: MODULES, families });
+    const result = validateBankQuestion(merged, { modules: bank.modules, families });
     if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
 
     const key = promptKey(result.question.prompt);
     if (questions.some((q) => q.id !== params.id && promptKey(q.prompt) === key)) {
       return conflict('Another question already uses this prompt.');
     }
-    const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by });
+    const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by, roleKey });
     if (body.active !== undefined) patch.active = bool(body.active);
     const rec = await store.update('bank_questions', params.id, patch);
     await audit(store, auth.user, 'bank_question_updated', 'bank_questions', params.id, 'Question updated');
     return ok({ question: hydrate(rec) });
   });
 
-  route('DELETE', '/admin/question-bank/questions/:id', A, async ({ store, params, auth }) => {
-    const existing = (await store.list('bank_questions')).find((q) => q.id === params.id);
+  route('DELETE', '/admin/question-bank/questions/:id', A, async ({ store, params, query, auth }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    const existing = (await store.list('bank_questions'))
+      .find((q) => q.id === params.id && (q.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === roleKey);
     if (existing) {
       await store.remove('bank_questions', params.id);
       await audit(store, auth.user, 'bank_question_deleted', 'bank_questions', params.id,
@@ -1187,9 +1254,9 @@ export function adminHandlers(route) {
     // Published questions live in a generated file, so DELETE removes them
     // from circulation (hidden from counts and generation) rather than
     // destroying anything — restoring is PATCH { active: true }.
-    const published = QUESTIONS.find((q) => q.id === params.id);
+    const published = bank.questions.find((q) => q.id === params.id);
     if (!published) return notFound('Question not found.');
-    await setPublishedVisibility(store, params.id, false, auth.user.id);
+    await setPublishedVisibility(store, params.id, false, auth.user.id, roleKey);
     await audit(store, auth.user, 'bank_question_removed', 'bank_questions', params.id,
       `Published question removed from ${published.module} (can be restored)`);
     return ok({ ok: true, removed: true });
@@ -1200,6 +1267,9 @@ export function adminHandlers(route) {
   // without writing, which is what the UI calls first so an admin sees the
   // per-row outcome before committing.
   route('POST', '/admin/question-bank/import', A, async ({ store, body, auth }) => {
+    const roleKey = roleKeyOf(body);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
     let parsed;
     try {
       parsed = readImportPayload(body);
@@ -1215,9 +1285,9 @@ export function adminHandlers(route) {
       return unprocessable(`This file has ${parsed.rows.length} rows; the limit is ${MAX_IMPORT_ROWS} per import.`);
     }
 
-    const { questions, families } = await bankContext(store);
+    const { questions, families } = await bankContext(store, roleKey);
     const report = validateBatch(parsed.rows, {
-      modules: MODULES, families, existingPrompts: questions.map((q) => q.prompt),
+      modules: bank.modules, families, existingPrompts: questions.map((q) => q.prompt),
     });
 
     const dryRun = bool(body.dry_run);
@@ -1243,8 +1313,8 @@ export function adminHandlers(route) {
     const existingRows = await store.list('bank_questions');
     const allocated = [...existingRows];
     const batch = report.accepted.map(({ question }) => {
-      const id = nextAuthoredId(question.module, allocated);
-      const rec = toStoredRecord(question, { id, actorId: auth.user.id });
+      const id = nextAuthoredId(question.module, allocated, roleKey);
+      const rec = toStoredRecord(question, { id, actorId: auth.user.id, roleKey });
       allocated.push(rec);
       return rec;
     });
@@ -1258,24 +1328,31 @@ export function adminHandlers(route) {
   });
 
   // A ready-to-fill template, so an admin never has to guess the columns.
-  route('GET', '/admin/question-bank/import-template', A, async () => ok({
-    filename: 'ecod-question-import-template.csv',
-    content_type: 'text/csv',
-    columns: IMPORT_COLUMNS,
-    csv: importTemplateCsv(),
-  }));
+  route('GET', '/admin/question-bank/import-template', A, async ({ query }) => {
+    const roleKey = roleKeyOf(query);
+    const bank = requireBank(roleKey);
+    if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
+    return ok({
+      filename: `ecod-question-import-template-${roleKey}.csv`,
+      content_type: 'text/csv',
+      columns: importColumnsFor(bank),
+      csv: importTemplateCsv(bank),
+    });
+  });
 
 
   // ------------------------------------------------ published catalogue
   // The effective allocation ceiling is min(cap, bank size). These endpoints
-  // let an admin top a small bank up to the published catalogue from inside
+  // let an admin top a small bank up to its published catalogue from inside
   // the app — the same sync `npm run seed` performs, available to deployments
-  // (e.g. Netlify) where there is no CLI.
-  route('GET', '/admin/content/catalogue', A, async ({ store }) =>
-    ok(await catalogueStatus(store)));
+  // (e.g. Netlify) where there is no CLI. Scoped by role_key (query or body);
+  // the default is the historical RSA catalogue.
+  route('GET', '/admin/content/catalogue', A, async ({ store, query }) =>
+    ok(await catalogueStatus(store, roleKeyOf(query))));
 
-  route('POST', '/admin/content/sync', A, async ({ store, auth }) => {
-    const result = await syncCatalogue(store);
+  route('POST', '/admin/content/sync', A, async ({ store, body, auth }) => {
+    const roleKey = roleKeyOf(body);
+    const result = await syncCatalogue(store, roleKey);
     if (result.error) return bad(result.error);
     await audit(store, auth.user, 'catalogue_synced', 'questions', result.role_id,
       `Published catalogue synced: ${result.added} question(s) added, bank now ${result.bank_total}`);

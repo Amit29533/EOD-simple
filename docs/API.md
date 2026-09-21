@@ -21,12 +21,12 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | CRUD   | /admin/roles[/:id]            | tracks; detail includes competencies + framework  |
 | POST/PATCH/DELETE | /admin/competencies[/:id] | weights, target levels, enrichment hints          |
 | GET/POST/PATCH/DELETE | /admin/questions[/:id] | role/competency question bank, validated per type               |
-| GET/POST/PATCH/DELETE | /admin/question-bank/* | module/family question bank (modules, family detail, plan, preview, single add/edit/delete, import) — `POST …/import` accepts raw `csv` or base64 `file_base64`, honors `dry_run` before committing, and accepts both the template columns and the published workbook export headers (including `• A) …` inline options) |
+| GET/POST/PATCH/DELETE | /admin/question-bank/* | module/family question bank (modules, family detail, plan, preview, single add/edit/delete, import) — **scoped by `role_key`** (query or body; the default is the historical RSA bank, `databricks-rsa`; a key without a published bank is a 400). `POST …/import` accepts raw `csv` or base64 `file_base64`, honors `dry_run` before committing, and accepts both the template columns and the published workbook export headers (including `• A) …` inline options) |
 | GET/PUT | /admin/frameworks?role_id=   | scoring framework (validated)                     |
 | GET    | /admin/roles/:id/question-plan | preview an allocation: `?limit=X` → served total, points and per-competency split (no `limit` = full bank; capped previews are limited to 50). Also returns `max_questions` and, for the published-catalogue track, `catalogue: { total, missing }` |
 | GET/POST | /admin/assessments          | allocation builds immutable snapshot; optional `question_count` (1–50, and never more than the track's active bank) serves a random weighted sample of X questions, apportioned across competencies by weight |
-| GET    | /admin/content/catalogue     | published-catalogue status: whether a track matches, its bank size vs the catalogue, and how many published questions are missing |
-| POST   | /admin/content/sync          | add the published questions the matching track is missing (idempotent; never duplicates, reactivates or edits existing records; audited as `catalogue_synced`) |
+| GET    | /admin/content/catalogue     | published-catalogue status: whether a track matches, its bank size vs the catalogue, and how many published questions are missing — `?role_key=` scopes to a track (default RSA) |
+| POST   | /admin/content/sync          | add the published questions the matching track is missing (body `role_key` scopes to a track, default RSA; idempotent; never duplicates, reactivates or edits existing records; audited as `catalogue_synced`) |
 | PATCH/DELETE | /admin/assessments/:id    | reassign assessor (unscored); delete (pre-submit) |
 | GET    | /admin/reports/:id            | full report incl. assessor + comments             |
 | GET    | /admin/audit                  | audit trail                                       |
