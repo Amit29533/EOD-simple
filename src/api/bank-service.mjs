@@ -1,20 +1,29 @@
 /**
  * The effective question bank = published content + admin-authored additions.
  *
- * src/content/rsa-question-bank.mjs is generated from the source PDF and is
- * never written to at runtime. Questions an admin adds (singly or by importing
- * a spreadsheet) are stored in the `bank_questions` table and merged over the
- * published set here, so:
+ * Published module banks live in src/content (generated from the source
+ * workbooks, keyed by role key in src/content/module-banks.mjs) and are never
+ * written to at runtime. Questions an admin adds (singly or by importing a
+ * spreadsheet) are stored in the `bank_questions` table, scoped by the
+ * `role_key` of the bank they belong to, and merged over the published set
+ * here, so:
  *
- *   - regenerating the published bank never destroys admin work;
+ *   - regenerating a published bank never destroys admin work;
  *   - one function answers "what is in the bank?" for the module tree, the
  *     family drill-down, the plan, the preview and generation alike — they
  *     cannot disagree about what exists;
  *   - a stored question is shaped exactly like a published one, so nothing
- *     downstream needs to know where a question came from.
+ *     downstream needs to know where a question came from;
+ *   - rows without a `role_key` (authored before banks were role-scoped)
+ *     belong to the historical default bank, RSA.
+ *
+ * Every function takes an optional `roleKey`; omitting it means the default
+ * (RSA), which keeps single-track workspaces behaving exactly as before.
  */
 
-import { MODULES, QUESTIONS, FAMILIES, QUESTION_BANK_VERSION } from '../content/rsa-question-bank.mjs';
+import {
+  moduleBankFor, publishedModuleBanks, authoredIdPrefix, DEFAULT_MODULE_BANK_ROLE_KEY,
+} from '../content/module-banks.mjs';
 import { slug } from '../core/question-intake.mjs';
 import { isActive } from '../core/test-generation.mjs';
 
@@ -36,7 +45,7 @@ export function hydrate(row) {
     active: row.active !== false,
     // Authored rows carry the version of the published bank they were added
     // against, so the tree never shows a mixture of version labels.
-    version: QUESTION_BANK_VERSION,
+    version: moduleBankFor(row.role_key || DEFAULT_MODULE_BANK_ROLE_KEY)?.version || '',
     randomizable: row.randomizable !== false,
     prompt: row.prompt,
     tags: Array.isArray(row.tags) ? row.tags : [],
@@ -44,6 +53,7 @@ export function hydrate(row) {
     red_flags: row.red_flags || '',
     enrichment: row.enrichment || '',
     authored: true,
+    role_key: row.role_key || DEFAULT_MODULE_BANK_ROLE_KEY,
     created_at: row.created_at,
     ...(type === 'objective'
       ? {
@@ -59,26 +69,33 @@ export function hydrate(row) {
   };
 }
 
-/** Every authored question, hydrated. */
-export async function authoredQuestions(store) {
+/** Every authored question for one bank, hydrated. */
+export async function authoredQuestions(store, roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
   const rows = await store.list('bank_questions');
-  return rows.map(hydrate);
+  // Legacy rows (pre role-scoping) belong to the default bank only.
+  const scoped = rows.filter((r) => (r.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === key);
+  return scoped.map(hydrate);
 }
 
 /**
  * Visibility overrides for published questions, as a set of removed ids.
  * Stored as rows ({ question_id, active: false }) rather than keyed by record
  * id so every adapter — including Airtable, which mints its own record ids —
- * can hold them.
+ * can hold them. Scoped by role_key the same way authored rows are.
  */
-export async function removedPublishedIds(store) {
+export async function removedPublishedIds(store, roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
   const rows = await store.list('bank_question_overrides');
-  return new Set(rows.filter((r) => r.active === false && r.question_id).map((r) => r.question_id));
+  return new Set(
+    rows.filter((r) => r.active === false && r.question_id
+      && (r.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === key).map((r) => r.question_id),
+  );
 }
 
 /**
- * The full effective bank: published questions (minus admin-removed ones)
- * plus authored ones.
+ * The full effective bank for one role: published questions (minus
+ * admin-removed ones) plus authored ones.
  * Ordered by module (configured order), then by family, then published before
  * authored — so an addition appears at the end of the family it joined rather
  * than scattered through the list.
@@ -88,12 +105,15 @@ export async function removedPublishedIds(store) {
  * drill-down can offer a Restore, and generation (which only draws active
  * questions) skips it.
  */
-export async function effectiveBank(store) {
-  const [authored, removed] = await Promise.all([authoredQuestions(store), removedPublishedIds(store)]);
+export async function effectiveBank(store, roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
+  const bank = moduleBankFor(key);
+  if (!bank) throw new Error(`No published module bank for role key "${key}".`);
+  const [authored, removed] = await Promise.all([authoredQuestions(store, key), removedPublishedIds(store, key)]);
   const published = removed.size
-    ? QUESTIONS.map((q) => (removed.has(q.id) ? { ...q, active: false, status: 'Inactive', removed: true } : q))
-    : QUESTIONS;
-  const order = new Map(MODULES.map((m, i) => [m.key, i]));
+    ? bank.questions.map((q) => (removed.has(q.id) ? { ...q, active: false, status: 'Inactive', removed: true } : q))
+    : bank.questions;
+  const order = new Map(bank.modules.map((m, i) => [m.key, i]));
   const all = [...published, ...authored];
   all.sort((a, b) => (order.get(a.module) ?? 99) - (order.get(b.module) ?? 99)
     || String(a.family_id).localeCompare(String(b.family_id))
@@ -111,7 +131,10 @@ export async function effectiveBank(store) {
  * questions themselves, never carried over from the published metadata, so a
  * family row can never disagree with its own drill-down.
  */
-export function composeModules(questions) {
+export function composeModules(questions, roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
+  const bank = moduleBankFor(key);
+  if (!bank) throw new Error(`No published module bank for role key "${key}".`);
   const byFamily = new Map();
   for (const q of questions) {
     const row = byFamily.get(q.family_id)
@@ -128,7 +151,7 @@ export function composeModules(questions) {
     byFamily.set(q.family_id, row);
   }
 
-  return MODULES.map((m) => {
+  return bank.modules.map((m) => {
     const published = m.families.map((f) => ({
       ...f,
       ...(byFamily.get(f.id) || { objective: 0, open: 0, authored: 0, inactive: 0 }),
@@ -163,8 +186,8 @@ export function composeModules(questions) {
 }
 
 /** Every family in the effective bank, flattened (published + authored). */
-export function composeFamilies(questions) {
-  return composeModules(questions).flatMap((m) =>
+export function composeFamilies(questions, roleKey) {
+  return composeModules(questions, roleKey).flatMap((m) =>
     m.families.map((f) => ({ ...f, module: m.key, group: m.group })));
 }
 
@@ -173,18 +196,20 @@ export function composeFamilies(questions) {
  * an authored one, or a `<MODULE>:<slug>` that does not exist yet (so the
  * "add a question here" form can target a family before it has members).
  */
-export function resolveFamily(familyId, questions) {
+export function resolveFamily(familyId, questions, roleKey) {
   const id = String(familyId || '');
-  const found = composeFamilies(questions).find((f) => f.id === id);
+  const found = composeFamilies(questions, roleKey).find((f) => f.id === id);
   if (found) return found;
-  const published = FAMILIES.find((f) => f.id === id);
+  const bank = moduleBankFor(roleKey || DEFAULT_MODULE_BANK_ROLE_KEY);
+  const published = bank?.families.find((f) => f.id === id);
   if (published) return { ...published, objective: 0, open: 0, authored: 0, inactive: 0 };
   return null;
 }
 
-/** Next id for an authored question in a module: RSA-T01-A001, -A002, ... */
-export function nextAuthoredId(moduleKey, existing = []) {
-  const prefix = `RSA-${moduleKey}-A`;
+/** Next id for an authored question in a module: e.g. RSA-T01-A001 / AIBI-G01-A001. */
+export function nextAuthoredId(moduleKey, existing = [], roleKey) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
+  const prefix = `${authoredIdPrefix(key)}-${moduleKey}-A`;
   let max = 0;
   for (const q of existing) {
     const m = new RegExp(`^${prefix}(\\d+)$`).exec(q.id || '');
@@ -194,9 +219,11 @@ export function nextAuthoredId(moduleKey, existing = []) {
 }
 
 /** Build the stored record for a validated question. */
-export function toStoredRecord(question, { id, actorId }) {
+export function toStoredRecord(question, { id, actorId, roleKey }) {
+  const key = roleKey || DEFAULT_MODULE_BANK_ROLE_KEY;
   return {
     id,
+    role_key: key,
     module: question.module,
     family_id: question.family_id,
     family: question.family,
@@ -227,4 +254,4 @@ export function toStoredRecord(question, { id, actorId }) {
   };
 }
 
-export { slug };
+export { slug, publishedModuleBanks, moduleBankFor, DEFAULT_MODULE_BANK_ROLE_KEY };

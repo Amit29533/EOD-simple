@@ -1,88 +1,122 @@
 #!/usr/bin/env python3
 """
-Build src/content/rsa-question-bank.mjs from the extracted question JSON.
+Build a published module question bank (src/content/*.mjs) from extracted
+question JSON.
 
-Pipeline:
-    node scripts/extract-question-bank-from-xlsx.mjs \
+One generator serves every published bank; per-bank differences (title,
+version, module groups/order/titles, technical vs non-technical modules,
+paper-shape note) live in a small JSON config rather than in the code.
+RSA keeps its historical behaviour: with no config argument the built-in
+RSA config is used, and `scripts/rsa-bank-config.json` (committed) is the
+same config written out, so a regeneration of the RSA bank reproduces the
+committed file byte for byte.
+
+Pipeline (RSA bank):
+    node scripts/extract-question-bank-from-xlsx.mjs \\
         "Question bank 1.4.xlsx"  data/bank.json
-    python3 scripts/build-question-bank.py data/bank.json \
-        src/content/rsa-question-bank.mjs 1.4
+    python3 scripts/build-question-bank.py data/bank.json \\
+        src/content/rsa-question-bank.mjs 1.4 [scripts/rsa-bank-config.json]
 
-The old PDF pipeline (scripts/extract-question-bank.py) is kept for reference;
-the current source of truth is the published "Question bank <n>.xlsx" workbook
-or an equivalent CSV export.
+Pipeline (AI/BI & Genie bank):
+    node scripts/extract-ai-bi-bank-from-xlsx.mjs \\
+        "AI BI G Question bank 1.1.xlsx"  data/ai-bi-bank.json
+    python3 scripts/build-question-bank.py data/ai-bi-bank.json \\
+        src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
 
-The emitted module is organised MODULE -> FAMILY -> QUESTION, which is also the
-order questions appear in the file, so the catalogue reads the same way the
-Admin UI presents it and a new question has exactly one place to go.
+The emitted module is organised MODULE -> FAMILY -> QUESTION, which is also
+the order questions appear in the file, so the catalogue reads the same way
+the Admin UI presents it and a new question has exactly one place to go.
 
-A family name is only unique *within* a module: "Advanced Technical Judgment"
-exists in all ten technical modules, and "Customer Solutioning" in nine
-non-technical ones. Families are therefore addressed by the compound id
-`<MODULE>:<family-slug>` (e.g. `T05:delta-lake-physical-design`), which is what
-makes "add this question to that family" unambiguous.
+A family name is only unique *within* a module, so families are addressed by
+the compound id `<MODULE>:<family-slug>` (e.g. `T05:delta-lake-physical-design`),
+which is what makes "add this question to that family" unambiguous.
 
-The published version printed into the generated module is the third argument
-and defaults to DEFAULT_VERSION, so a re-extract of a new source PDF is one
-command and the version it stamps cannot drift from the file it is named after.
-
-Usage:  python3 scripts/build-question-bank.py <bank.json> <output.mjs> [version]
+Usage:  python3 scripts/build-question-bank.py <bank.json> <output.mjs> [version] [config.json]
 """
 import json
 import re
 import sys
 from collections import OrderedDict
 
-# There is NO mandatory/common question. Every question in the bank belongs to
-# one of the twenty modules (T01-T10, C01-C04, P01-P04, F01-F02) and is drawn
-# only by its module's quota. The item the source PDF labels "Common Question"
-# is an ordinary F01 open question.
-
-# Top-level grouping of modules. These are *groups*, not families: "family"
-# is reserved throughout for the per-module question families the PDF names in
-# its own "Question Family" column.
-GROUPS = [
-    ('technical',    'Technical',                        1,
-     'Databricks platform depth: architecture, engineering, governance, performance and AI.'),
-    ('consulting',   'Consulting & Client Skills',       2,
-     'Discovery, solution options, objection handling and engagement accountability.'),
-    ('professional', 'Professional & Communication',     3,
-     'Executive communication, listening, presentation and technical translation.'),
-    ('foundation',   'Foundation & Integrated Judgment', 4,
-     'Databricks value, the RSA role and whole-engagement judgment.'),
-]
-
-MODULE_TITLES = {
-    'F01': 'Databricks Value & RSA Role',
-    'F02': 'Integrated Client Engagement & Validation',
-    'T01': 'Databricks Architecture, Lakehouse & Data Intelligence',
-    'T02': 'Data Ingestion, Streaming & Change Processing',
-    'T03': 'Lakeflow Pipelines, Jobs & Data Quality',
-    'T04': 'SQL, PySpark & Data Engineering',
-    'T05': 'Delta Lake, Performance, Compute & Cost Optimization',
-    'T06': 'Unity Catalog, Security & Data Governance',
-    'T07': 'APIs, Integration & Serving',
-    'T08': 'Migration, Troubleshooting & Production Operations',
-    'T09': 'AI/BI, Semantic Layer & Genie',
-    'T10': 'GenAI, RAG & Agent Operations',
-    'C01': 'Discovery & Requirement Structuring',
-    'C02': 'Solution Options & Commercial Judgment',
-    'C03': 'Objection Handling & Consultative Influence',
-    'C04': 'Engagement Communication & Accountability',
-    'P01': 'Executive Communication & Value Framing',
-    'P02': 'Active Listening & Conflict Navigation',
-    'P03': 'Architecture Presentation & Whiteboarding',
-    'P04': 'Technical-to-Business Translation',
+# ---------------------------------------------------------------------------
+# Built-in RSA config: identical to scripts/rsa-bank-config.json. Kept inline
+# so the historical three-argument invocation keeps working, and the committed
+# config file exists so regeneration is reproducible from the repo alone.
+# ---------------------------------------------------------------------------
+RSA_CONFIG = {
+    'title': 'ECOD RSA Question Bank',
+    'version': '1.4',
+    'header': [
+        ' * ECOD RSA Question Bank v{version} - the published, finalized catalogue.',
+        ' *',
+        ' * Organised MODULE -> FAMILY -> QUESTION. Generated by',
+        ' * scripts/build-question-bank.py from the published source workbook/CSV;',
+        ' * edit the generator (or the Admin UI), not this file by hand.',
+        ' *',
+        ' *   T01-T10   Technical     3 objective + 1 open served per module',
+        ' *   C01-C04   Consulting    1 open served per module',
+        ' *   P01-P04   Professional  1 open served per module',
+        ' *   F01-F02   Foundation    1 open served per module',
+        ' *',
+        ' * Every generated test is (10 x 4) + (10 x 1) = 50 questions, shuffled so',
+        ' * objective and open questions interleave rather than arriving in blocks.',
+        ' * See src/core/test-generation.mjs for the selection logic.',
+        ' *',
+        ' * FAMILIES ARE SCOPED TO A MODULE. A family name is not unique on its own -',
+        ' * "Advanced Technical Judgment" exists in all ten technical modules - so the',
+        ' * addressable unit is the compound id `<MODULE>:<family-slug>`, e.g.',
+        ' * `T05:delta-lake-physical-design`. A new question is added to exactly one',
+        ' * such family, and `family_id` is what pins it there.',
+        ' *',
+        ' * `needs_option_review` marks an objective question that still needs an admin',
+        ' * to complete its distractor text. The published v1.4 workbook carries all',
+        ' * four options, so published objectives no longer set it.',
+    ],
+    'groups': [
+        ('technical', 'Technical', 1,
+         'Databricks platform depth: architecture, engineering, governance, performance and AI.'),
+        ('consulting', 'Consulting & Client Skills', 2,
+         'Discovery, solution options, objection handling and engagement accountability.'),
+        ('professional', 'Professional & Communication', 3,
+         'Executive communication, listening, presentation and technical translation.'),
+        ('foundation', 'Foundation & Integrated Judgment', 4,
+         'Databricks value, the RSA role and whole-engagement judgment.'),
+    ],
+    'moduleTitles': {
+        'F01': 'Databricks Value & RSA Role',
+        'F02': 'Integrated Client Engagement & Validation',
+        'T01': 'Databricks Architecture, Lakehouse & Data Intelligence',
+        'T02': 'Data Ingestion, Streaming & Change Processing',
+        'T03': 'Lakeflow Pipelines, Jobs & Data Quality',
+        'T04': 'SQL, PySpark & Data Engineering',
+        'T05': 'Delta Lake, Performance, Compute & Cost Optimization',
+        'T06': 'Unity Catalog, Security & Data Governance',
+        'T07': 'APIs, Integration & Serving',
+        'T08': 'Migration, Troubleshooting & Production Operations',
+        'T09': 'AI/BI, Semantic Layer & Genie',
+        'T10': 'GenAI, RAG & Agent Operations',
+        'C01': 'Discovery & Requirement Structuring',
+        'C02': 'Solution Options & Commercial Judgment',
+        'C03': 'Objection Handling & Consultative Influence',
+        'C04': 'Engagement Communication & Accountability',
+        'P01': 'Executive Communication & Value Framing',
+        'P02': 'Active Listening & Conflict Navigation',
+        'P03': 'Architecture Presentation & Whiteboarding',
+        'P04': 'Technical-to-Business Translation',
+    },
+    'groupOf': {'T': 'technical', 'C': 'consulting', 'P': 'professional', 'F': 'foundation'},
+    'technicalModules': ['T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10'],
+    # [module key, display order] pairs. RSA historically numbered T01-T10 as
+    # 11-20, C01-C04 as 21-24, P01-P04 as 31-34 and F01-F02 as 41-42; the
+    # numbers are part of the committed generated file, so they stay explicit.
+    'moduleOrder': [
+        ['T01', 11], ['T02', 12], ['T03', 13], ['T04', 14], ['T05', 15],
+        ['T06', 16], ['T07', 17], ['T08', 18], ['T09', 19], ['T10', 20],
+        ['C01', 21], ['C02', 22], ['C03', 23], ['C04', 24],
+        ['P01', 31], ['P02', 32], ['P03', 33], ['P04', 34],
+        ['F01', 41], ['F02', 42],
+    ],
 }
-
-GROUP_OF = {'T': 'technical', 'C': 'consulting',
-            'P': 'professional', 'F': 'foundation'}
-
-# Version stamped into the generated module. The source workbook's Version
-# column is a per-question metadata field (and can carry Excel float
-# artifacts), so the *published* bank version remains an argument (defaulted
-# here) rather than read off the rows.
-DEFAULT_VERSION = '1.4'
 
 
 def slug(text):
@@ -100,12 +134,6 @@ def js(value):
     return "'" + text.replace('\\', '\\\\').replace("'", "\\'") + "'"
 
 
-def module_order(key):
-    """Modules ordered T01-T10, then C01-C04, P01-P04, F01-F02."""
-    base = {'T': 10, 'C': 20, 'P': 30, 'F': 40}[key[0]]
-    return base + int(key[1:])
-
-
 def family_role(questions):
     """What a family supplies, which drives the default type when authoring."""
     has_objective = any(q['objective'] for q in questions)
@@ -115,8 +143,27 @@ def family_role(questions):
     return 'objective' if has_objective else 'open'
 
 
-def build(bank_path, out_path, version=DEFAULT_VERSION):
+def build(bank_path, out_path, version=None, config=None):
+    if config is None:
+        config = RSA_CONFIG
+    if version is None:
+        version = config.get('version')
+    version = str(version)
+    titles = config['moduleTitles']
+    order_pairs = config['moduleOrder']
+    order_index = {key: i for i, (key, _) in enumerate(order_pairs)}
+    order_value = {key: num for key, num in order_pairs}
+    technical = set(config['technicalModules'])
+    group_of = config['groupOf']
+
     bank = json.load(open(bank_path, encoding='utf-8'))
+
+    # Modules present in the bank but absent from the config are a config
+    # drift, not something to guess at - fail loudly.
+    bank_modules = {q['module'] for q in bank}
+    unknown = bank_modules - set(order_index)
+    if unknown:
+        sys.exit(f"config lists no order for module(s): {', '.join(sorted(unknown))}")
 
     # ---- group questions: module -> family -> [questions] --------------
     modules = OrderedDict()
@@ -124,7 +171,7 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
         key = question['module']
         modules.setdefault(key, OrderedDict())
 
-    for key in sorted(modules, key=module_order):
+    for key in sorted(modules, key=lambda k: order_index[k]):
         rows = [q for q in bank if q['module'] == key]
         families = OrderedDict()
         # Objective-holding families first (a module's core), then the open
@@ -145,38 +192,16 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
     w = lines.append
 
     w('/**')
-    w(f' * ECOD RSA Question Bank v{version} - the published, finalized catalogue.')
-    w(' *')
-    w(' * Organised MODULE -> FAMILY -> QUESTION. Generated by')
-    w(' * scripts/build-question-bank.py from the published source workbook/CSV;')
-    w(' * edit the generator (or the Admin UI), not this file by hand.')
-    w(' *')
-    w(' *   T01-T10   Technical     3 objective + 1 open served per module')
-    w(' *   C01-C04   Consulting    1 open served per module')
-    w(' *   P01-P04   Professional  1 open served per module')
-    w(' *   F01-F02   Foundation    1 open served per module')
-    w(' *')
-    w(' * Every generated test is (10 x 4) + (10 x 1) = 50 questions, shuffled so')
-    w(' * objective and open questions interleave rather than arriving in blocks.')
-    w(' * See src/core/test-generation.mjs for the selection logic.')
-    w(' *')
-    w(' * FAMILIES ARE SCOPED TO A MODULE. A family name is not unique on its own -')
-    w(' * "Advanced Technical Judgment" exists in all ten technical modules - so the')
-    w(' * addressable unit is the compound id `<MODULE>:<family-slug>`, e.g.')
-    w(' * `T05:delta-lake-physical-design`. A new question is added to exactly one')
-    w(' * such family, and `family_id` is what pins it there.')
-    w(' *')
-    w(' * `needs_option_review` marks an objective question that still needs an admin')
-    w(' * to complete its distractor text. The published v1.4 workbook carries all')
-    w(' * four options, so published objectives no longer set it.')
+    for raw in config['header']:
+        w(raw.format(version=version))
     w(' */')
     w('')
     w(f"export const QUESTION_BANK_VERSION = '{version}';")
     w('')
     w('/** Top-level grouping of modules (not to be confused with question families). */')
     w('export const MODULE_GROUPS = [')
-    for key, name, order, description in GROUPS:
-        w(f"  {{ key: '{key}', name: {js(name)}, order: {order},")
+    for key, name, ord_, description in config['groups']:
+        w(f"  {{ key: '{key}', name: {js(name)}, order: {ord_},")
         w(f"    description: {js(description)} }},")
     w('];')
     w('')
@@ -188,20 +213,19 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
     w(" * 'objective', 'open', or 'mixed'.")
     w(' */')
     w('export const MODULES = [')
-    for key in sorted(modules, key=module_order):
+    for key in sorted(modules, key=lambda k: order_index[k]):
         families = modules[key]
-        group = GROUP_OF[key[0]]
-        technical = 'true' if key[0] == 'T' else 'false'
-        w(f"  {{ key: '{key}', name: {js(MODULE_TITLES[key])}, group: '{group}', order: {module_order(key)},")
-        w(f"    technical: {technical},")
+        group = group_of[key[0]]
+        is_technical = 'true' if key in technical else 'false'
+        w(f"  {{ key: '{key}', name: {js(titles[key])}, group: '{group}', order: {order_value[key]},")
+        w(f"    technical: {is_technical},")
         w('    families: [')
         for name, members in families.items():
             # Counts describe what the family actually holds, so a family row
             # and its drill-down can never disagree.
             objective = sum(1 for q in members if q['objective'])
             w(f"      {{ id: '{key}:{slug(name)}', key: '{slug(name)}', name: {js(name)},")
-            w(f"        role: '{family_role(members)}',"
-              f" objective: {objective}, open: {len(members) - objective} }},")
+            w(f"        role: '{family_role(members)}', objective: {objective}, open: {len(members) - objective} }},")
         w('    ] },')
     w('];')
     w('')
@@ -209,12 +233,12 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
     # ---- the questions themselves, module by module, family by family ---
     w('/** Every question, ordered by module and then by family. */')
     w('export const QUESTIONS = [')
-    for key in sorted(modules, key=module_order):
+    for key in sorted(modules, key=lambda k: order_index[k]):
         families = modules[key]
         total = sum(len(v) for v in families.values())
         w(f'  // ==================================================================')
-        w(f'  // {key} - {flat(MODULE_TITLES[key])}')
-        w(f'  // {total} question{"" if total == 1 else "s"}'
+        w(f'  // {key} - {flat(titles[key])}')
+        w(f'  // {total} question{"s" if total != 1 else ""}'
           f' across {len(families)} famil{"y" if len(families) == 1 else "ies"}')
         w(f'  // ==================================================================')
         for name, members in families.items():
@@ -225,8 +249,7 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
                 w('  {')
                 w(f"    id: '{q['id']}', module: '{key}',")
                 w(f"    family_id: '{key}:{slug(name)}', family: {js(name)},")
-                w(f"    type: '{'objective' if q['objective'] else 'open'}',"
-                  f" source_type: {js(q['type'])},")
+                w(f"    type: '{'objective' if q['objective'] else 'open'}', source_type: {js(q['type'])},")
                 w(f"    difficulty: {q['difficulty']}, band: {js(q['band'])}, mode: {js(q['mode'])},")
                 w(f"    minutes: {q['minutes']}, status: {js(q['status'])}, version: {js(q['version'])},")
                 w(f"    randomizable: {'true' if q['randomizable'] else 'false'},")
@@ -270,6 +293,9 @@ def build(bank_path, out_path, version=DEFAULT_VERSION):
 
 
 if __name__ == '__main__':
-    if not 3 <= len(sys.argv) <= 4:
+    if not 3 <= len(sys.argv) <= 5:
         sys.exit(__doc__)
-    build(sys.argv[1], sys.argv[2], *(sys.argv[3:]))
+    cfg = None
+    if len(sys.argv) >= 5:
+        cfg = json.load(open(sys.argv[4], encoding='utf-8'))
+    build(sys.argv[1], sys.argv[2], *(sys.argv[3:4]), config=cfg)

@@ -1,10 +1,17 @@
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
+import { AIBI_ROLE, AIBI_COMPETENCIES, AIBI_QUESTIONS } from '../content/ai-bi-genie-catalogue.mjs';
+import { SC_ROLE, SC_COMPETENCIES, SC_QUESTIONS } from '../content/senior-consultant-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 import { bulkInsert, bulkUpdate } from './helpers.mjs';
 
 /**
  * Published-catalogue service.
+ *
+ * Every published track (role + competencies + question bank) is registered in
+ * PUBLISHED_CATALOGUES, keyed by the role's stable `key`. The RSA catalogue is
+ * the historical default: a call without an explicit role key resolves to it,
+ * so single-track workspaces and existing clients behave exactly as before.
  *
  * An assessment may be capped at up to MAX_ASSESSMENT_QUESTIONS questions, but
  * the effective ceiling is always the size of the track's active question bank.
@@ -34,6 +41,23 @@ import { bulkInsert, bulkUpdate } from './helpers.mjs';
  *  - users and assessment snapshots are never touched.
  */
 
+/** Every published catalogue, keyed by role key. */
+export const PUBLISHED_CATALOGUES = {
+  [RSA_ROLE.key]: { role: RSA_ROLE, competencies: RSA_COMPETENCIES, questions: RSA_QUESTIONS },
+  [AIBI_ROLE.key]: { role: AIBI_ROLE, competencies: AIBI_COMPETENCIES, questions: AIBI_QUESTIONS },
+  [SC_ROLE.key]: { role: SC_ROLE, competencies: SC_COMPETENCIES, questions: SC_QUESTIONS },
+};
+
+export const DEFAULT_CATALOGUE_ROLE_KEY = RSA_ROLE.key;
+
+/** The published catalogue for a role key, or null (unknown key). */
+export function catalogueForRoleKey(roleKey) {
+  const key = roleKey === undefined || roleKey === null || roleKey === ''
+    ? DEFAULT_CATALOGUE_ROLE_KEY
+    : roleKey;
+  return PUBLISHED_CATALOGUES[key] || null;
+}
+
 const questionRecord = (q, roleId, compIds) => ({
   role_id: roleId, competency_id: compIds[q.competency],
   type: q.type, prompt: q.prompt, help_text: q.help_text || '',
@@ -46,10 +70,11 @@ const questionRecord = (q, roleId, compIds) => ({
   audio_required: requiresSpokenAnswer(q),
 });
 
-/** The workspace track that matches the published catalogue, or null. */
-async function catalogueRole(store) {
+/** The workspace track that matches a published catalogue, or null. */
+async function catalogueRole(store, roleKey) {
+  const catalogue = catalogueForRoleKey(roleKey);
   const roles = await store.list('roles');
-  return roles.find((r) => r.key === RSA_ROLE.key && r.active !== false) || null;
+  return roles.find((r) => r.key === catalogue.role.key && r.active !== false) || null;
 }
 
 /**
@@ -59,9 +84,10 @@ async function catalogueRole(store) {
  * typography-insensitively: a bank row that only differs by quote style,
  * dashes or spacing is the same published question, not a missing one.
  */
-export function catalogueMissing(bankQuestions = []) {
+export function catalogueMissing(bankQuestions = [], roleKey) {
+  const catalogue = catalogueForRoleKey(roleKey);
   const prompts = new Set(bankQuestions.map((q) => promptKey(q.prompt)));
-  return RSA_QUESTIONS.filter((q) => !prompts.has(promptKey(q.prompt))).length;
+  return catalogue.questions.filter((q) => !prompts.has(promptKey(q.prompt))).length;
 }
 
 /** Published spoken-question contract keyed by normalized prompt. */
@@ -118,16 +144,18 @@ export function applySpokenContract(questions = []) {
 export const applyOralContract = applySpokenContract;
 
 /** Status payload for the admin UI: what a sync would (and would not) do. */
-export async function catalogueStatus(store) {
-  const role = await catalogueRole(store);
-  if (!role) return { available: false, catalogue_total: RSA_QUESTIONS.length };
+export async function catalogueStatus(store, roleKey) {
+  const catalogue = catalogueForRoleKey(roleKey);
+  if (!catalogue) return { available: false };
+  const role = await catalogueRole(store, roleKey);
+  if (!role) return { available: false, catalogue_total: catalogue.questions.length };
   const questions = await store.list('questions', { role_id: role.id });
   return {
     available: true,
     role: { id: role.id, key: role.key, name: role.name },
-    catalogue_total: RSA_QUESTIONS.length,
+    catalogue_total: catalogue.questions.length,
     bank_total: questions.filter((q) => q.active !== false).length,
-    missing: catalogueMissing(questions),
+    missing: catalogueMissing(questions, roleKey),
   };
 }
 
@@ -159,19 +187,24 @@ function repairPatch(row, published) {
 }
 
 /**
- * Synchronize a track's bank with the published catalogue: create missing
+ * Synchronize a track's bank with its published catalogue: create missing
  * competencies, add genuinely missing questions and repair the oral/spoken
  * contract flags on existing copies. Shared by the in-app admin action and
- * `scripts/seed.mjs` so both paths heal legacy banks identically.
+ * `scripts/seed.mjs` so both paths heal legacy banks identically. The
+ * catalogue is chosen by the role's stable `key`.
  * Returns { added, repaired, competencies_added, bank_total, role_id }.
  */
 export async function synchronizeBank(store, role) {
+  const catalogue = PUBLISHED_CATALOGUES[role.key];
+  if (!catalogue) {
+    return { error: `No published catalogue matches role key "${role.key}".` };
+  }
   const existingCompetencies = await store.list('competencies', { role_id: role.id });
   const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
 
   // Competencies the published questions rely on must exist before inserting.
   // Batch: only the ones actually missing.
-  const missingComps = RSA_COMPETENCIES.filter((c) => !compIds[c.key]);
+  const missingComps = catalogue.competencies.filter((c) => !compIds[c.key]);
   if (missingComps.length) {
     const recs = await bulkInsert(store, 'competencies',
       missingComps.map((c) => ({ ...c, role_id: role.id, active: true })));
@@ -188,7 +221,7 @@ export async function synchronizeBank(store, role) {
   const toAdd = [];
   const toRepair = [];
   let repaired = 0;
-  for (const q of RSA_QUESTIONS) {
+  for (const q of catalogue.questions) {
     const twin = byPrompt.get(promptKey(q.prompt));
     if (twin) {
       // Same published question is already in the bank: repair its spoken-
@@ -218,8 +251,10 @@ export async function synchronizeBank(store, role) {
  * Returns { added, repaired, competencies_added, bank_total }.
  * No-op when the workspace already has the full catalogue.
  */
-export async function syncCatalogue(store) {
-  const role = await catalogueRole(store);
-  if (!role) return { error: `No active track matches the published catalogue (${RSA_ROLE.name}).` };
+export async function syncCatalogue(store, roleKey) {
+  const catalogue = catalogueForRoleKey(roleKey);
+  if (!catalogue) return { error: `No published catalogue for role key "${roleKey}".` };
+  const role = await catalogueRole(store, roleKey);
+  if (!role) return { error: `No active track matches the published catalogue (${catalogue.role.name}).` };
   return synchronizeBank(store, role);
 }

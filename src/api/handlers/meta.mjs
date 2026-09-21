@@ -3,6 +3,7 @@ import {
   MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE, APP_VERSION,
 } from '../../core/constants.mjs';
 import { MODULE_GROUPS, MODULES, FAMILIES } from '../../content/rsa-question-bank.mjs';
+import { publishedModuleBanks, DEFAULT_MODULE_BANK_ROLE_KEY } from '../../content/module-banks.mjs';
 import { ok } from '../helpers.mjs';
 
 export function metaHandlers(route) {
@@ -17,10 +18,15 @@ export function metaHandlers(route) {
     difficulties: DIFFICULTIES,
     maxAssessmentQuestions: MAX_ASSESSMENT_QUESTIONS,
     // Question Bank: module -> family structure and the fixed paper shape.
+    // The top-level `modules`/`families` are the historical RSA bank (kept for
+    // existing clients); `moduleBanks` is the per-role registry the Question
+    // Bank screen uses to offer one bank per published track.
     moduleGroups: MODULE_GROUPS,
     modules: MODULES,
     families: FAMILIES,
     moduleTestStructure: MODULE_TEST_STRUCTURE,
+    defaultModuleBankRoleKey: DEFAULT_MODULE_BANK_ROLE_KEY,
+    moduleBanks: publishedModuleBanks(),
   }));
   route('GET', '/health', 'public', async () => ok({
     ok: true,

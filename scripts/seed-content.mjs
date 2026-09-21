@@ -2,7 +2,8 @@
  * Seed-only content: demo accounts and demo candidates.
  *
  * The published RSA assessment catalogue (role, competencies, the full
- * 105-question bank) now lives in src/content/rsa-catalogue.mjs so the running
+ * 115-question bank: 105 standard + 10 spoken customer-advisory) now lives in
+ * src/content/rsa-catalogue.mjs so the running
  * application can offer it too — see the "sync published catalogue" admin
  * action. This module keeps the historical import surface for scripts/seed.mjs.
  */

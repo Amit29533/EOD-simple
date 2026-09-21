@@ -59,6 +59,33 @@ export const TEST_BLUEPRINT = {
   total: MODULE_TEST_STRUCTURE.total,
 };
 
+/**
+ * Paper-wide totals derived from a SPECIFIC module list: the same numbers
+ * TEST_BLUEPRINT carries, but computed from the modules actually present, so
+ * a track whose module set differs (e.g. the AI/BI & Genie bank's 10 modules:
+ * 7 technical + 3 consulting) reports its own paper shape instead of RSA's.
+ * For the RSA 20-module bank this returns exactly TEST_BLUEPRINT.
+ */
+export function blueprintFor(modules = []) {
+  let technicalObjective = 0;
+  let technicalOpen = 0;
+  let nonTechnicalOpen = 0;
+  for (const mod of modules) {
+    if (mod.technical === true) {
+      technicalObjective += TECHNICAL_OBJECTIVE_PER_MODULE;
+      technicalOpen += TECHNICAL_OPEN_PER_MODULE;
+    } else {
+      nonTechnicalOpen += NON_TECHNICAL_OPEN_PER_MODULE;
+    }
+  }
+  return {
+    technical_objective: technicalObjective,
+    technical_open: technicalOpen,
+    non_technical_open: nonTechnicalOpen,
+    total: technicalObjective + technicalOpen + nonTechnicalOpen,
+  };
+}
+
 const isObjective = (q) => q?.type === 'objective';
 const isOpen = (q) => q?.type === 'open';
 const isOptional = (q) => q?.optional === true;
@@ -199,7 +226,9 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
     from_optional: usedOptional,
   };
 
-  return { questions: paper, sections, warnings, counts, blueprint: TEST_BLUEPRINT };
+  // Derived from the module list, so a bank with a different module set
+  // reports its own paper shape (identical to TEST_BLUEPRINT for RSA's).
+  return { questions: paper, sections, warnings, counts, blueprint: blueprintFor(modules) };
 }
 
 /**
@@ -241,7 +270,7 @@ export function testPlan({ modules = [], questions = [] } = {}) {
 
   const all = questions.filter(isActive);
   return {
-    blueprint: TEST_BLUEPRINT,
+    blueprint: blueprintFor(modules),
     modules: rows,
     bank_total: all.length,
     optional_total: all.filter(isOptional).length,
