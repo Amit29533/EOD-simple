@@ -211,15 +211,15 @@ const server = http.createServer(async (req, res) => {
 
   // Health check - fast, no auth
   // Served directly (ahead of rate limiting) so a monitor can always get a
-  // verdict. The field set matches `GET /health` in the router — the Netlify
-  // function has no such short-circuit and reaches the router instead, so the
-  // two surfaces must agree or a check passes locally and fails in production.
+  // verdict. The field set is IDENTICAL to `GET /health` in the router — the
+  // Netlify function has no such short-circuit and reaches the router instead,
+  // so the two surfaces must agree or a check passes locally and fails in
+  // production. Do not add fields here without adding them to meta.mjs too
+  // (tests/health-route.test.mjs pins the app-level shape).
   if (url.pathname === '/api/health' || url.pathname === '/health') {
     send(res, 200, {
       ok: true,
       version: APP_VERSION,
-      storage: store.kind,
-      env: NODE_ENV,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     });
