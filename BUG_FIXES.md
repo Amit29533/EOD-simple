@@ -43,11 +43,117 @@ A follow-up audit of the question path — *do questions ever repeat?* — found
 clean but closed two gaps that could still ask one question twice on a single paper: the role
 question bank accepted duplicate prompts outright, and the shared prompt-identity rule ignored
 whitespace around punctuation, so a retyped copy slipped past the duplicate check.
+The newest whole-project pass (below) reproduced and fixed 17 further defects across the API,
+the storage adapters, both transports and the SPA — headed by a served-but-unscoreable question
+class (questions left under a deactivated competency were still dealt onto papers, hidden from
+the allocation preview, ignored by the report and crashed the assessor's scoring screen), a
+0-point question the API would store from a blank points field, a scripted open answer that
+bypassed the spoken-answer integrity flag, an Airtable adapter that never stamped `created_at`
+(so every "newest first" list on that backend was unordered), production CORS that reflected any
+origin, and a page-load blip that silently signed people out.
 
-Current verification: **366/366 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+Current verification: **396/396 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
-## 🔁 Duplicate questions — audit and two gaps closed (latest)
+## 🧭 Whole-project audit pass — 17 defects reproduced and fixed (latest)
+
+Method: every source module (API handlers, services, core, storage adapters, both transports,
+the SPA) was read end to end; each suspected defect was then reproduced against the real
+in-process app before it was touched, and each fix is pinned by a regression in the new
+`tests/audit-regressions.test.mjs` (API) and `tests/ui-resilience.test.mjs` (jsdom), plus
+extensions to `tests/airtable-adapter.test.mjs` and `tests/deployment-hardening.test.mjs`.
+Without the fixes, 12 of the 13 API regressions and both UI regressions fail.
+
+### Assessment integrity
+
+1. **Questions under a deactivated competency were still served** (`assessment-service.mjs`
+   `roleBank`). Deactivating a competency hid it from the plan and the report, but its questions
+   stayed eligible: they were dealt onto papers (`plan.total` disagreed with the per-competency
+   rows), the report — which walks the snapshot's competencies — could not score them, and the
+   assessor's scoring screen, grouped by competency, threw on the first missing score input and
+   rendered nothing scorable. The bank now only contains questions whose competency is active
+   on the track; the assessor view additionally renders any unclaimed questions of an *existing*
+   paper under an "Other questions" section (scorable, labelled as not counted) instead of dying.
+2. **A blank points field stored a 0-point question** (`admin.mjs` `normalizeQuestion`).
+   Validation read `points: ""` as the 4-point default, persistence ran the same value through
+   `num("", 4)` — and `Number("")` is `0`. A competency made only of such questions reported
+   **0% / critical gap** regardless of the answers. Both paths now share `questionPoints()`.
+3. **A bare-string open answer skipped the spoken-answer contract** (`candidate.mjs`
+   `persistableAnswer`). The exam UI always posts `{ text, transcript, … }`, but the API also
+   accepted a plain string for an open question and stored it verbatim, so `audio_missing` was
+   never set, the `spoken_answer_missing` counter, exam trail and audit entry stayed silent, and
+   the assessor saw no "no recording" warning. Strings are normalised into the object shape
+   (`source: 'typed'`) and flagged like any typed-only answer.
+4. **Opening the exam re-minted the clock of a legacy quiz state on every load**
+   (`GET /candidate/assessments/:id`). `ensureQuizState` backfilled a missing
+   `question_started_at` but the GET only persisted a *missing* state, so each refresh returned a
+   fresh full budget and the server-side expiry for that question could never fire. The healed
+   state is now written, and the GET runs under the assessment lock like every other
+   read-modify-write on the paper (it starts the exam and seeds the state).
+5. **An assessor could not clear a score entered by mistake** (`PUT /assessor/…/scores`).
+   `score: null` was ignored, so the screen showed the question as unscored while the stored
+   score still counted at finalisation. An explicit blank now clears it; finalize then reports the
+   question as missing again.
+6. **Switching a choice question to an open one kept its stale options and answer key**
+   (`normalizeQuestion`), which the candidate projection then served alongside the open prompt.
+   Non-choice types store empty `options` / `correct_option_ids`.
+
+### Admin data & access
+
+7. **Passwords were not required to be strings** (`POST`/`PATCH /admin/users`). The check was
+   `String(body.password).length >= 8`, so `{}` / an array / a number was accepted and hashed as
+   `"[object Object]"` (or `"1,2,3,…"`) — a login nobody could type. Refused with a 400.
+8. **An admin could deactivate their own account** and was locked out the moment the response
+   landed (with no other admin, permanently). Self-deactivation is refused; a peer admin can still
+   deactivate the account.
+9. **Roles and competencies could be edited into a blank name** (PATCH accepted `name: ""`, the
+   record then rendered as an unnamed track / area everywhere). Rejected on edit as on create.
+10. **Editing a deactivated authored bank question silently re-activated it**
+    (`PATCH /admin/question-bank/questions/:id`): `toStoredRecord` describes a fresh row
+    (`active: true`), and the PATCH copied that over the stored flag unless the body carried
+    `active`. The row's own `active` / `randomizable` flags are preserved unless changed.
+11. **Deleting a role left candidates pointing at it** (`target_role_id` dangling: a blank track
+    in the list, and auto-allocation for them failed with "no track" instead of using the
+    workspace default). The delete clears the reference.
+12. **Framework config saved with numeric strings was stored as strings** (`PUT /admin/frameworks`
+    validates `"80"` but stored it as-is). Bands, thresholds and gap cut-offs are stored as the
+    numbers the validator checked.
+13. **Deleting a candidate cascaded over open papers without the assessment lock**, so an
+    in-flight `/next` or autosave could interleave with the cascade and re-insert a response row
+    for a deleted assessment. The portal login is removed first (so the exam cannot keep writing),
+    then each paper is removed under its own lock.
+
+### Storage & transports
+
+14. **The Airtable adapter never stamped `created_at`** (`insert`/`insertMany` only forwarded a
+    caller-supplied value, and no caller supplies one — the file and blob adapters stamp it). On
+    that backend every "newest first" list (candidates, assessments, audit log, dashboard recent
+    activity) sorted on `undefined`, and the per-user session cap evicted an arbitrary session.
+    Stamped on both paths; `updateMany` was also added (10-record batch PATCH, per-row fallback
+    for a chunk Airtable rejects) so the batched exam submit and score entry are batched on
+    Airtable too.
+15. **Production CORS reflected any `Origin`** (`server.mjs` in production, and the Netlify
+    function always), turning the API — the login endpoint included — into a cross-site target.
+    Both transports now share `src/api/cors.mjs`: the request's own host is granted, plus any
+    origin listed in a new `CORS_ORIGINS` environment variable (`*` opts back into reflecting);
+    the local dev server stays permissive. The SPA is same-origin, so nothing user-facing changes.
+16. **The Netlify wrapper memoised a failed start.** The `createStore().then(…)` promise was
+    cached even when it rejected, so one transient failure (or a bad Airtable env) meant every
+    later invocation of that warm instance returned a 500 until it was recycled. A rejected start
+    is no longer cached, and a configuration error surfaces as the existing 503 with instructions.
+
+### SPA
+
+17. **A blip while restoring the session signed people out** (`app.js` `boot()`): any failure of
+    `/auth/me` at page load — a 5xx, a cold start, a rate limit, the network — wiped the token and
+    showed the sign-in form. Only a 401 (already handled by `api()`) ends the session; anything
+    else keeps the token and shows *Could not restore your session* with **Try again** / sign-in-
+    as-someone-else. Also: the candidates list filter fetched a single 200-row page while the
+    initial load walked every page (filtered views of a large workspace were silently truncated)
+    and let a slow earlier response overwrite a newer filter — it now pages like the initial load
+    and only the newest request paints.
+
+## 🔁 Duplicate questions — audit and two gaps closed
 
 Prompted by *"can you check if questions repeat?"*, the whole question path was audited end to end.
 The published content is clean: 348 module-bank prompts, the 10-question spoken set and the 115

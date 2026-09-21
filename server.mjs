@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
+import { corsAllowOrigin, corsHeaders } from './src/api/cors.mjs';
 import {
   DEFAULT_PORT, MAX_SPREADSHEET_BYTES, APP_VERSION,
 } from './src/core/constants.mjs';
@@ -192,15 +193,16 @@ const server = http.createServer(async (req, res) => {
   const start = Date.now();
   res.setHeader('x-request-id', reqId);
 
-  // CORS for API (allow same origin, but also handle preflight)
-  const origin = req.headers.origin;
-  if (origin) {
-    // In production, you may want to restrict origins. For now allow all but with safe defaults
-    res.setHeader('access-control-allow-origin', IS_PROD ? origin : '*');
-    res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('access-control-allow-headers', 'content-type, authorization');
-    res.setHeader('access-control-max-age', '86400');
-  }
+  // CORS: same-origin requests (and any origin listed in CORS_ORIGINS) get a
+  // grant; in development every origin does. Production used to reflect any
+  // Origin header back, which made the API callable from any web page.
+  const allowOrigin = corsAllowOrigin({
+    origin: req.headers.origin,
+    host: req.headers['x-forwarded-host'] || req.headers.host,
+    allowlist: process.env.CORS_ORIGINS,
+    permissive: !IS_PROD,
+  });
+  for (const [k, v] of Object.entries(corsHeaders(allowOrigin))) res.setHeader(k, v);
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'content-length': '0', ...securityHeaders(true) });
     res.end();

@@ -127,10 +127,17 @@ export async function candidatesView(view) {
   };
   renderList(candidates);
 
+  // Debounced input can have several fetches in flight; only the newest one
+  // may paint, otherwise a slow earlier response overwrites the latest filter.
+  let filterSeq = 0;
   const refilter = async () => {
     const q = view.querySelector('#cand-q').value, stage = view.querySelector('#cand-stage').value;
-    const d = await attempt(() => api(`/admin/candidates?q=${encodeURIComponent(q)}&stage=${encodeURIComponent(stage)}`));
-    if (d) renderList(d.candidates);
+    const seq = ++filterSeq;
+    // Walk every page like the initial load does: a single request is capped
+    // at one page (200 rows), so a filtered view of a large workspace used to
+    // be silently truncated.
+    const rows = await attempt(() => apiAll(`/admin/candidates?q=${encodeURIComponent(q)}&stage=${encodeURIComponent(stage)}`, 'candidates'));
+    if (rows && seq === filterSeq) renderList(rows);
   };
   view.querySelector('#cand-q').oninput = debounce(refilter, 350);
   view.querySelector('#cand-stage').onchange = refilter;
@@ -903,7 +910,10 @@ export async function usersView(view) {
         { label: '', cls: 'actions', render: (u) => `
             <button class="btn ghost sm" data-edit="${u.id}">Edit</button>
             <button class="btn ghost sm" data-pw="${u.id}">Reset password</button>
-            ${u.active !== false ? `<button class="btn ghost sm" style="color:var(--red)" data-off="${u.id}">Deactivate</button>` : `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`}` },
+            ${u.active === false ? `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`
+    // The signed-in admin cannot deactivate their own login (the API refuses
+    // the self-lockout), so do not offer it.
+    : u.id === state.user?.id ? '' : `<button class="btn ghost sm" style="color:var(--red)" data-off="${u.id}">Deactivate</button>`}` },
       ], users)}
     </div>`;
 

@@ -67,6 +67,18 @@ function mockAirtable() {
       rec.fields = { ...rec.fields, ...payload.fields };
       json(200, rec); return;
     }
+    if (req.method === 'PATCH' && !id) {
+      // Batch update: Airtable rejects the whole request when any id is unknown.
+      const wanted = payload.records || [];
+      if (wanted.length > 10) { json(422, { error: 'max 10 records' }); return; }
+      if (wanted.some((r) => !t.has(r.id))) { json(404, { error: 'MODEL_ID_NOT_FOUND' }); return; }
+      const updated = wanted.map((r) => {
+        const rec = t.get(r.id);
+        rec.fields = { ...rec.fields, ...r.fields };
+        return rec;
+      });
+      json(200, { records: updated }); return;
+    }
     if (req.method === 'DELETE' && id) {
       if (!t.has(id)) { json(404, {}); return; }
       t.delete(id);
@@ -86,6 +98,11 @@ test('airtable adapter: full CRUD contract + pagination + JSON fields', async ()
     const role = await store.insert('roles', { key: 'databricks-rsa', name: 'RSA', active: true });
     assert.ok(role.id.startsWith('rec'));
     assert.equal((await store.get('roles', role.id)).name, 'RSA');
+    // The storage contract stamps created_at (every "newest first" list sorts
+    // by it); the adapter used to leave it blank unless the caller passed one.
+    assert.ok(role.created_at && !Number.isNaN(Date.parse(role.created_at)), 'insert stamps created_at');
+    const dated = await store.insert('roles', { key: 'dated', name: 'Dated', created_at: '2020-01-01T00:00:00.000Z' });
+    assert.equal(dated.created_at, '2020-01-01T00:00:00.000Z', 'an explicit created_at is kept');
 
     // JSON field round-trip on questions.options
     const q = await store.insert('questions', {
@@ -116,6 +133,20 @@ test('airtable adapter: full CRUD contract + pagination + JSON fields', async ()
     assert.equal(recs.length, 12);
     assert.deepEqual(recs.map((r) => r.entity_id), batch.map((r) => r.entity_id), 'order preserved across chunks');
     assert.equal((await store.list('audit_log', { action: 'bulk' })).length, 12);
+    assert.ok(recs.every((r) => r.created_at), 'insertMany stamps created_at on every row');
+
+    // updateMany: 10-record batches, caller order, null for unknown ids, and a
+    // chunk with an unknown id still applies the known rows in it.
+    const patched = await store.updateMany('audit_log', recs.map((r, i) => ({ id: r.id, patch: { message: `m${i}` } })));
+    assert.equal(patched.length, 12);
+    assert.deepEqual(patched.map((r) => r.message), recs.map((_, i) => `m${i}`), 'updateMany keeps caller order');
+    assert.ok(patched.every((r) => r.updated_at), 'updateMany stamps updated_at');
+    const mixed = await store.updateMany('audit_log', [
+      { id: recs[0].id, patch: { message: 'again' } },
+      { id: 'recDOESNOTEXIST', patch: { message: 'nope' } },
+    ]);
+    assert.equal(mixed[0]?.message, 'again', 'known row in a rejected chunk is still updated');
+    assert.equal(mixed[1], null, 'unknown id maps to null');
 
     // pagination across >100 rows
     for (let i = 0; i < 150; i++) await store.insert('audit_log', { actor_name: 't', action: 'a', entity: 'e', entity_id: `id-${i}` });

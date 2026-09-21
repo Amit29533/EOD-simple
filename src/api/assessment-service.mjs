@@ -20,11 +20,20 @@ export async function roleBank(store, roleId) {
   ]);
   const framework = frameworks.find((f) => f.active !== false)
     || { name: 'ECOD Readiness Framework (default)', config: DEFAULT_FRAMEWORK_CONFIG, role_id: roleId };
+  const activeCompetencies = competencies.filter((c) => c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // A question only counts as bank content while its competency is part of
+  // the track. Questions left under a deactivated (or deleted) competency used
+  // to stay eligible: they were served to candidates, yet the allocation
+  // preview could not list them, the report could not score them (it walks the
+  // snapshot's competencies) and the assessor's scoring screen — grouped by
+  // competency — crashed on the ungrouped rows.
+  const competencyIds = new Set(activeCompetencies.map((c) => c.id));
+  const eligible = questions.filter((q) => q.active !== false && competencyIds.has(q.competency_id));
   return {
     role,
     framework,
-    competencies: competencies.filter((c) => c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-    questions: applySpokenContract(dedupeQuestions(questions.filter((q) => q.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))),
+    competencies: activeCompetencies,
+    questions: applySpokenContract(dedupeQuestions(eligible.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))),
   };
 }
 

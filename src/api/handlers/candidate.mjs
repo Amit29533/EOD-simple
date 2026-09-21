@@ -54,16 +54,24 @@ function blankAnswerFor(q) {
 const responseIndex = (rows) => new Map(rows.map((r) => [r.question_id, r]));
 
 function persistableAnswer(q, value) {
-  if (q.type === 'text' && value && typeof value === 'object') {
+  // A bare string is a typed-only open answer. It used to be stored verbatim,
+  // which skipped the spoken-answer contract below: a client that posted
+  // `answer: "..."` instead of the `{ text, transcript }` object was never
+  // flagged `audio_missing`, so the integrity counter, the exam trail and the
+  // assessor's "no recording" warning all stayed silent for it.
+  const open = q.type === 'text' && typeof value === 'string'
+    ? { text: value, transcript: '', source: 'typed' }
+    : value;
+  if (q.type === 'text' && open && typeof open === 'object') {
     const out = {
-      text: String(value.text || ''),
-      transcript: String(value.transcript || ''),
-      source: value.source === 'audio' ? 'audio' : 'typed',
+      text: String(open.text || ''),
+      transcript: String(open.transcript || ''),
+      source: open.source === 'audio' ? 'audio' : 'typed',
     };
-    const b64 = String(value.audio_b64 || '').replace(/\s/g, '');
+    const b64 = String(open.audio_b64 || '').replace(/\s/g, '');
     if (b64 && b64.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(b64)) {
       out.audio_b64 = b64;
-      out.audio_mime = String(value.audio_mime || 'audio/webm').slice(0, 80);
+      out.audio_mime = String(open.audio_mime || 'audio/webm').slice(0, 80);
     }
     if (requiresSpokenAnswer(q) && !hasSpokenEvidence(out)) out.audio_missing = true;
     return out;
@@ -119,7 +127,11 @@ export function candidateHandlers(route) {
     });
   });
 
-  route('GET', '/candidate/assessments/:id', R, async ({ store, auth, params }) => {
+  // Under the assessment lock like every mutation: opening the exam is a
+  // read-modify-write too (it starts the paper and seeds the quiz state), so
+  // an unlocked GET racing a /next could persist a stale cursor over the
+  // advance's write.
+  route('GET', '/candidate/assessments/:id', R, locked(async ({ store, auth, params }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     const snap = a.snapshot_json;
@@ -132,7 +144,11 @@ export function candidateHandlers(route) {
       a.started_at = patch.started_at;
     }
     const quiz = ensureQuizState(a, questions);
-    if (!a.quiz_state) patch.quiz_state = quiz;
+    // Persist the state whenever ensureQuizState had to create or heal it. A
+    // legacy/corrupt state whose clock was backfilled used to be returned but
+    // never written, so every reload minted a fresh `question_started_at` and
+    // the server-side budget for that question could never run out.
+    if (!a.quiz_state || quiz.question_started_at !== a.quiz_state.question_started_at) patch.quiz_state = quiz;
     if (Object.keys(patch).length) await store.update('assessments', a.id, patch);
 
     const responses = await store.list('responses', { assessment_id: a.id });
@@ -168,7 +184,7 @@ export function candidateHandlers(route) {
       competencies: competency ? [competencyForCandidate(competency)] : [],
       answers: current && answers[current.id] !== undefined ? { [current.id]: answers[current.id] } : {},
     });
-  });
+  }));
 
   route('PUT', '/candidate/assessments/:id/answers', R, locked(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);

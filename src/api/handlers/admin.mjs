@@ -1,7 +1,7 @@
 import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
-  str, num, bool, missing, bulkInsert, isTextish, textField,
+  str, num, bool, missing, bulkInsert, bulkUpdate, isTextish, textField,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import { withLock } from '../mutex.mjs';
@@ -579,16 +579,22 @@ export function adminHandlers(route) {
     if (assessments.some((a) => ['scored', 'validated'].includes(a.status)))
       return conflict('This candidate has finalized assessment reports and cannot be deleted.');
 
-    let removedAssessments = 0;
-    for (const a of assessments) {
-      for (const r of await store.list('responses', { assessment_id: a.id })) await store.remove('responses', r.id);
-      await store.remove('assessments', a.id);
-      removedAssessments += 1;
-    }
+    // The portal login goes first so an exam the candidate has open cannot
+    // keep writing (every candidate route re-resolves the session), then each
+    // paper is removed under its own assessment lock so an in-flight /next or
+    // autosave cannot interleave with the cascade and leave an orphan row.
     const users = await store.list('users', { candidate_id: params.id });
     for (const u of users) {
       for (const s of await store.list('sessions', { user_id: u.id })) await store.remove('sessions', s.id);
       await store.remove('users', u.id);
+    }
+    let removedAssessments = 0;
+    for (const a of assessments) {
+      await withLock(`assessment:${a.id}`, async () => {
+        for (const r of await store.list('responses', { assessment_id: a.id })) await store.remove('responses', r.id);
+        await store.remove('assessments', a.id);
+      });
+      removedAssessments += 1;
     }
     await store.remove('candidates', params.id);
 
@@ -624,7 +630,8 @@ export function adminHandlers(route) {
     if (structured) return bad(`User ${structured} must be plain text.`);
     const username = str(body.username, 100).toLowerCase();
     if (!/^[a-z0-9._-]{3,}$/.test(username)) return bad('Username must be 3+ chars: a-z 0-9 . _ -');
-    if (String(body.password).length < 8) return bad('Password must be at least 8 characters.');
+    const passwordProblem = passwordError(body.password);
+    if (passwordProblem) return bad(passwordProblem);
     if ((await store.list('users', { username })).length) return conflict('Username already exists.');
     let candidate_id = null;
     if (body.role === 'candidate') {
@@ -694,7 +701,8 @@ export function adminHandlers(route) {
     if (body.email !== undefined) patch.email = str(body.email, 200);
     if (body.active !== undefined) patch.active = bool(body.active);
     if (body.password !== undefined && body.password !== '') {
-      if (String(body.password).length < 8) return bad('Password must be at least 8 characters.');
+      const passwordProblem = passwordError(body.password);
+      if (passwordProblem) return bad(passwordProblem);
       patch.password_hash = await hashPasswordAsync(body.password);
     }
     if (body.candidate_id !== undefined && u.role === 'candidate') {
@@ -707,6 +715,10 @@ export function adminHandlers(route) {
       patch.candidate_id = body.candidate_id;
     }
     if (u.username === 'admin' && patch.active === false) return bad('The primary admin account cannot be deactivated.');
+    // An admin deactivating their own login is locked out the moment the
+    // response lands (every session check requires an active user), and with
+    // no other admin there is nobody left to undo it. Refuse the self-lockout.
+    if (u.id === auth.user.id && patch.active === false) return bad('You cannot deactivate your own account.');
     const updated = await store.update('users', params.id, patch);
     await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`);
     return ok(publicUser(updated));
@@ -752,6 +764,9 @@ export function adminHandlers(route) {
     if (!r) return notFound('Role not found.');
     const structured = textField(body, ['name', 'technology', 'description']);
     if (structured) return bad(`Role ${structured} must be plain text.`);
+    // Creation requires a name; an edit must not be able to blank it (the role
+    // then renders as an unnamed track everywhere it is listed).
+    if (body.name !== undefined && !str(body.name)) return bad('Role name is required.');
     const patch = {};
     for (const f of ['name', 'technology', 'description']) if (body[f] !== undefined) patch[f] = str(body[f], f === 'description' ? 2000 : 120);
     if (body.active !== undefined) patch.active = bool(body.active);
@@ -768,6 +783,12 @@ export function adminHandlers(route) {
     for (const q of await store.list('questions', { role_id: params.id })) await store.remove('questions', q.id);
     for (const c of await store.list('competencies', { role_id: params.id })) await store.remove('competencies', c.id);
     for (const f of await store.list('frameworks', { role_id: params.id })) await store.remove('frameworks', f.id);
+    // Candidates pointed at the track would otherwise keep a dangling
+    // target_role_id: the list shows a blank track and auto-allocation for
+    // them fails with "no track" instead of falling back to the workspace
+    // default.
+    const pointed = await store.list('candidates', { target_role_id: params.id });
+    await bulkUpdate(store, 'candidates', pointed.map((c) => ({ id: c.id, patch: { target_role_id: null } })));
     await store.remove('roles', params.id);
     await audit(store, auth.user, 'role_deleted', 'roles', params.id, `Role "${r.name}" deleted`);
     return ok({ ok: true });
@@ -820,6 +841,7 @@ export function adminHandlers(route) {
     if (!c) return notFound('Competency not found.');
     const structured = textField(body, Object.keys(COMPETENCY_TEXT_FIELDS));
     if (structured) return bad(`Competency ${structured} must be plain text.`);
+    if (body.name !== undefined && !str(body.name)) return bad('Competency name is required.');
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return bad('Weight must be 0-100.');
     if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return bad('Target level must be 1-5.');
     const patch = {};
@@ -848,9 +870,7 @@ export function adminHandlers(route) {
     if (!isTextish(body.prompt)) return 'Question prompt must be plain text.';
     if (body.help_text !== undefined && !isTextish(body.help_text)) return 'Question help text must be plain text.';
     if (body.rubric !== undefined && !isTextish(body.rubric)) return 'Question rubric must be plain text.';
-    const points = body.points === undefined || body.points === ''
-      ? 4
-      : Number(body.points);
+    const points = questionPoints(body);
     if (!Number.isFinite(points) || points < 1 || points > 20) return 'Points must be between 1 and 20.';
     if (DIFFICULTIES.includes(body.difficulty) === false && body.difficulty !== undefined && body.difficulty !== '')
       return `Difficulty must be one of: ${DIFFICULTIES.join(', ')}`;
@@ -956,9 +976,21 @@ export function adminHandlers(route) {
   route('PUT', '/admin/frameworks', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
     if (body.name !== undefined && !isTextish(body.name)) return bad('Framework name must be plain text.');
-    const config = body.config;
-    const problems = validateFrameworkConfig(config);
+    const problems = validateFrameworkConfig(body.config);
     if (problems.length) return unprocessable('Invalid framework configuration.', { problems });
+    // Validation accepts numeric strings (a form posts "80"), so store the
+    // numbers the validator actually checked: the scoring engine compares and
+    // sorts on these, and the editor re-renders them.
+    const config = {
+      ...body.config,
+      readiness_bands: body.config.readiness_bands.map((b) => ({ ...b, min: Number(b.min) })),
+      level_thresholds: body.config.level_thresholds.map(Number),
+      gap_severity: {
+        ...body.config.gap_severity,
+        moderate: Number(body.config.gap_severity.moderate),
+        critical: Number(body.config.gap_severity.critical),
+      },
+    };
     const rows = await store.list('frameworks', { role_id: body.role_id });
     const active = rows.find((f) => f.active !== false);
     let rec;
@@ -1233,7 +1265,12 @@ export function adminHandlers(route) {
       return conflict('Another question already uses this prompt.');
     }
     const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by, roleKey });
-    if (body.active !== undefined) patch.active = bool(body.active);
+    // `toStoredRecord` describes a freshly authored row (active, randomizable);
+    // an edit must keep the row's own flags unless the request changes them —
+    // fixing a typo on a deactivated question used to put it back into
+    // circulation.
+    patch.active = body.active !== undefined ? bool(body.active) : existing.active !== false;
+    patch.randomizable = body.randomizable !== undefined ? bool(body.randomizable) : existing.randomizable !== false;
     const rec = await store.update('bank_questions', params.id, patch);
     await audit(store, auth.user, 'bank_question_updated', 'bank_questions', params.id, 'Question updated');
     return ok({ question: hydrate(rec) });
@@ -1488,6 +1525,18 @@ function yearsExperience(value) {
   return num(value, null);
 }
 
+/**
+ * A password must be a real string of 8+ characters. The old check was
+ * `String(body.password).length >= 8`, so a structured value posted by a
+ * scripted client (`{}`, `[...]`, `12345678`) was accepted and hashed as its
+ * string form ("[object Object]", "1,2,3,…") — a login nobody could type.
+ */
+function passwordError(value) {
+  if (typeof value !== 'string') return 'Password must be a string.';
+  if (value.length < 8) return 'Password must be at least 8 characters.';
+  return null;
+}
+
 /** Validate years-of-experience input the same way the bulk import does. */
 function yearsError(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -1519,18 +1568,35 @@ function cleanOptions(raw) {
     .filter((o) => o.label !== '');
 }
 
+/**
+ * The points a request means, exactly as validation reads them: a missing or
+ * blank value is the 4-point default. Persistence used to run the same input
+ * through `num(body.points, 4)`, and `Number('')` is 0 — so a form that posted
+ * `points: ""` passed validation as "default 4" and was stored as a 0-point
+ * question, which then scored its competency at 0% (a critical gap) no matter
+ * how the candidate answered.
+ */
+function questionPoints(body) {
+  return body.points === undefined || body.points === '' ? 4 : Number(body.points);
+}
+
 function normalizeQuestion(body, existing = {}) {
-  const options = cleanOptions(body.options);
+  const type = body.type || existing.type;
+  // Options and answer keys only mean something on a choice question. A row
+  // switched from mcq_* to text/scale used to keep its stale option list and
+  // key, which the candidate projection then served alongside the open prompt.
+  const isChoice = type === 'mcq_single' || type === 'mcq_multi';
+  const options = isChoice ? cleanOptions(body.options) : [];
   return {
     role_id: body.role_id || existing.role_id,
     competency_id: body.competency_id || existing.competency_id,
-    type: body.type || existing.type,
+    type,
     prompt: str(body.prompt, 2000), help_text: str(body.help_text, 1000),
     options,
-    correct_option_ids: Array.isArray(body.correct_option_ids)
+    correct_option_ids: isChoice && Array.isArray(body.correct_option_ids)
       ? body.correct_option_ids.filter(isTextish).map((x) => str(x, 40))
       : [],
-    points: num(body.points, 4), difficulty: body.difficulty || 'intermediate',
+    points: questionPoints(body), difficulty: body.difficulty || 'intermediate',
     rubric: str(body.rubric, 3000), order: num(body.order, existing.order ?? 0),
     active: body.active !== undefined ? bool(body.active) : true,
     // Oral/spoken-question metadata must survive an edit: an admin fixing a

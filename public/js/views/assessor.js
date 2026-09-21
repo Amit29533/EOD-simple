@@ -77,7 +77,19 @@ export async function assessmentView(view, { id }) {
       if (!qs.length) return '';
       return `<div class="comp-header"><h3>${esc(c.name)}</h3><div class="meta">weight ${esc(c.weight)} · target L${esc(c.target_level)}</div></div>
         ${qs.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id]); }).join('')}`;
-    }).join('')}`;
+    }).join('')}
+    ${(() => {
+      // A paper frozen before its competency was deactivated (or by an older
+      // build that still served such questions) can carry answers no
+      // competency section claims. They must still be shown — and scorable —
+      // otherwise the score inputs the wiring below expects do not exist and
+      // the whole scoring screen dies on the first missing element.
+      const grouped = new Set(d.competencies.map((c) => c.id));
+      const orphans = d.questions.filter((q) => !grouped.has(q.competency_id));
+      if (!orphans.length) return '';
+      return `<div class="comp-header"><h3>Other questions</h3><div class="meta">competency no longer part of this track · not counted in the report</div></div>
+        ${orphans.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id]); }).join('')}`;
+    })()}`;
 
   const updateProgress = () => {
     const scored = manualQs.filter((q) => scores[q.id] !== null && scores[q.id] !== '').length;
@@ -92,6 +104,7 @@ export async function assessmentView(view, { id }) {
   for (const q of manualQs) {
     const input = view.querySelector(`#score-${q.id}`);
     const comment = view.querySelector(`#comment-${q.id}`);
+    if (!input || !comment) continue;
     const save = async () => {
       const out = await attempt(() => api(`/assessor/assessments/${id}/scores`, {
         method: 'PUT',

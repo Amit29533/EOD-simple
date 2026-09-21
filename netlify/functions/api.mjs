@@ -1,5 +1,6 @@
 import { createStore } from '../../src/storage/index.mjs';
 import { createApp } from '../../src/api/app.mjs';
+import { corsAllowOrigin, corsHeaders } from '../../src/api/cors.mjs';
 
 /**
  * Netlify Function wrapper around the transport-agnostic app.
@@ -15,10 +16,18 @@ let appPromise;
  * with misleading errors. Fail fast with the fix instead — reads and writes
  * alike, since an empty store would only serve convincing-looking lies.
  */
-const getApp = () => (appPromise ||= createStore().then(async (store) => ({
-  kind: store.kind,
-  app: await createApp(store),
-})));
+const getApp = () => (appPromise ||= createStore()
+  .then(async (store) => ({ kind: store.kind, app: await createApp(store) }))
+  .catch((err) => {
+    // A failed start (bad Airtable env, a transient error while the first
+    // request warmed the store) must not be memoised: the rejected promise
+    // used to be reused by every later invocation of the same warm function
+    // instance, so one hiccup meant 500s until the instance was recycled.
+    appPromise = undefined;
+    throw err;
+  }));
+
+const isConfigError = (err) => /STORAGE=|AIRTABLE_|Netlify Blobs|@netlify\/blobs/i.test(String(err?.message || ''));
 
 const storageMisconfigured = () => ({
   statusCode: 503,
@@ -31,23 +40,30 @@ const storageMisconfigured = () => ({
 const MAX_BODY = 12_000_000; // 12MB max for uploads
 
 export async function handler(event) {
+  const cors = corsHeaders(corsAllowOrigin({
+    origin: event.headers?.origin,
+    host: event.headers?.['x-forwarded-host'] || event.headers?.host,
+    allowlist: process.env.CORS_ORIGINS,
+  }));
   try {
     // CORS preflight
     if (event.httpMethod === 'OPTIONS') {
       return {
         statusCode: 204,
-        headers: {
-          'access-control-allow-origin': event.headers?.origin || '*',
-          'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-          'access-control-allow-headers': 'content-type, authorization',
-          'access-control-max-age': '86400',
-          'cache-control': 'no-store',
-        },
+        headers: { ...cors, 'cache-control': 'no-store' },
         body: '',
       };
     }
 
-    const { kind, app } = await getApp();
+    let started;
+    try {
+      started = await getApp();
+    } catch (err) {
+      console.error('[api] store init failed:', err);
+      if (isConfigError(err)) return storageMisconfigured();
+      throw err;
+    }
+    const { kind, app } = started;
     if (kind === 'json-file') return storageMisconfigured();
     let body;
     if (event.body) {
@@ -85,9 +101,7 @@ export async function handler(event) {
         'x-frame-options': 'SAMEORIGIN',
         'referrer-policy': 'strict-origin-when-cross-origin',
         'permissions-policy': 'camera=(), microphone=(self), geolocation=()',
-        'access-control-allow-origin': event.headers?.origin || '*',
-        'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-        'access-control-allow-headers': 'content-type, authorization',
+        ...cors,
       },
       body: JSON.stringify(result.body),
     };

@@ -459,6 +459,9 @@ Verify before you ship: `npm test` (379 Node tests), then with a local server up
 - AuthN: opaque 256-bit bearer tokens, 12 h sessions, stored server-side; deactivation is immediate.
 - AuthZ: route-level role guards + per-resource ownership checks; existence hiding (404 ≠ 403).
 - Login throttling (per-username), payload size cap, input validation on every mutation.
+- CORS: the API only grants its own origin (the SPA is same-origin). To call it from another
+  site, list the origins in `CORS_ORIGINS` (comma-separated; `*` reflects every origin). The
+  local dev server is permissive.
 - No self-registration anywhere: **accounts are created by admins only**.
 - Before production: rotate seeded credentials, serve only via HTTPS (Netlify default),
   and treat `DATA_FILE`/Airtable PATs as secrets (Netlify env vars, never in Git).
