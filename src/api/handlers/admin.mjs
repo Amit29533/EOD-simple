@@ -857,6 +857,24 @@ export function adminHandlers(route) {
     });
   });
 
+  /**
+   * Is another question in this role's bank already this prompt?
+   *
+   * This bank is what allocation draws the paper from, so a duplicate here is
+   * literally the same question asked twice in one assessment — and the admin
+   * question form had no such check at all (the module-bank authoring route
+   * did, which is why the gap went unnoticed). Compared by the shared prompt
+   * key so a re-typed or re-pasted copy is caught, not just a byte-identical
+   * one; scoped to the role, because the identical prompt in another role's
+   * bank is a deliberate reuse, not a duplicate.
+   */
+  const duplicatePromptInRole = async (store, roleId, prompt, exceptId = null) => {
+    const key = promptKey(prompt);
+    if (!key) return null;
+    const rows = await store.list('questions', { role_id: roleId });
+    return rows.find((q) => q.id !== exceptId && promptKey(q.prompt) === key) || null;
+  };
+
   route('POST', '/admin/questions', A, async ({ store, body, auth }) => {
     if (!body.role_id || !(await store.get('roles', body.role_id))) return bad('A valid role is required.');
     const comp = body.competency_id ? await store.get('competencies', body.competency_id) : null;
@@ -864,6 +882,9 @@ export function adminHandlers(route) {
     if (comp.role_id !== body.role_id) return bad('Competency must belong to the selected role.');
     const problem = validateQuestion(body);
     if (problem) return bad(problem);
+    if (await duplicatePromptInRole(store, body.role_id, body.prompt)) {
+      return conflict('A question with this prompt already exists for this role. Edit the existing question instead of adding a second copy.');
+    }
     const rec = await store.insert('questions', normalizeQuestion(body));
     await audit(store, auth.user, 'question_created', 'questions', rec.id, `Question added (${rec.type})`);
     return created(rec);
@@ -879,6 +900,11 @@ export function adminHandlers(route) {
     if (comp.role_id !== merged.role_id) return bad('Competency must belong to the selected role.');
     const problem = validateQuestion(merged);
     if (problem) return bad(problem);
+    // Renaming one question onto another's prompt would put the same question
+    // in the bank twice — refused for the same reason as the create path.
+    if (await duplicatePromptInRole(store, merged.role_id, merged.prompt, params.id)) {
+      return conflict('Another question for this role already uses this prompt.');
+    }
     const rec = await store.update('questions', params.id, normalizeQuestion(merged, q));
     await audit(store, auth.user, 'question_updated', 'questions', params.id, 'Question updated');
     return ok(rec);

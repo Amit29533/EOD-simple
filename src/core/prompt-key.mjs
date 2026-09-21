@@ -41,6 +41,18 @@ export function stripPromptLabel(prompt) {
  * microphone control, once without (the older copy predated `audio_required`).
  * Comparing normalized keys closes that gap; verified collision-free across the
  * published catalogue.
+ *
+ * Whitespace AROUND punctuation is typography too, and the one variant the
+ * plain whitespace collapse missed: a prompt pasted from a PDF or retyped by
+ * an author commonly carries `"job ?"`, `"recovery , and why?"` or `"( row
+ * filters )"`. Those passed the duplicate check and were then served as a
+ * second question, so one paper asked the same thing twice. Spaces before a
+ * closing mark and after an opening bracket are dropped here, which collapses
+ * them without touching word spacing — a genuinely different question (`"…to a
+ * CIO?"` vs `"…to a data engineer?"`, `"1.2 GB"` vs `"1 . 2 GB"`) still keys
+ * differently. Trailing punctuation is deliberately left alone: `"Do you
+ * agree"` and `"Do you agree?"` stay distinct rather than risk merging two
+ * questions that only look alike.
  */
 export function promptKey(prompt) {
   return stripPromptLabel(prompt)
@@ -49,5 +61,8 @@ export function promptKey(prompt) {
     .replace(/[\u2013\u2014\u2015\u2212]/g, '-')
     .replace(/\u2026/g, '...')
     .replace(/\s+/g, ' ')
+    // No space before a closing mark / ellipsis, none after an opening bracket.
+    .replace(/\s+([,.;:!?%)\]}\u2026])/g, '$1')
+    .replace(/([([{])\s+/g, '$1')
     .toLowerCase();
 }
