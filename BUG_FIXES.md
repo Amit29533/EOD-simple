@@ -31,12 +31,77 @@ the moment the server starts the clock, so a candidate who read the rules for 20
 one already 20s in. The gate now renders from the non-mutating assessments list (status, role,
 question count) and the exam GET — the actual clock start — fires only when the candidate
 presses *Enter exam hall*; a jsdom regression pins that no exam fetch happens before
-acknowledgement.
+acknowledgement. The latest pass chased the candidate's *"stuck on Submitting your assessment…"*
+report to the end-of-exam submit, which rewrote every response row individually — 112 whole-store
+rewrites (~1 GB of JSON, 7.4 s locally) for a 110-question paper, and on a serverless function
+110 read-modify-write round trips of a multi-megabyte table, past the invocation timeout and
+straight into a spinner that could never resolve. The submit now stores only the rows that
+changed, in one batch per table (7 955 ms → 299 ms on the same paper), the candidate's autosave
+and the assessor's score entry are batched the same way, and the exam's own requests carry a
+deadline so a submit that is never answered lands on a retry screen instead of a dead panel.
 
-Current verification: **341/341 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
+Current verification: **362/362 Node tests**, **39/39 smoke tests**, **216/216 feature tests**,
 and **76/76 final-gauntlet checks** pass.
 
-## ⚔️ Final gauntlet (latest)
+## 🕒 Exam submit freeze — "stuck on Submitting your assessment…" (latest)
+
+**Symptom.** Candidates finished the paper and got stuck on *Submitting your assessment…*: the
+panel never changed, no error ever arrived, and there was nothing to press.
+
+**Cause — the finalisation loop rewrote the whole store once per question.** The submit handler
+walked the paper and wrote each response row on its own (`await store.update` / `insert` per
+question). Every adapter rewrites a whole table per single-row write — the JSON file store
+re-serialises the *entire* database, the blob store re-uploads the whole table blob, Airtable
+patches one record per call — so a 110-question paper cost 112 whole-store rewrites (110 response rows, the assessment
+status, the audit entry): measured at ~1 GB of JSON written and **7.4 s** locally with a 9.6 MB store, on an in-process
+app with no network in the way. On the deployed serverless function that same work is 110
+read-modify-write round trips of the whole `responses` table (multi-megabyte once recorded
+answers are in it) and runs past the invocation timeout: the platform kills the POST, the
+browser's `fetch` has no deadline of its own, and the candidate is left on a spinner that can
+never resolve. Nothing was wrong with the answers — every one of them was already persisted
+when it was locked; the submit was rewriting rows that had not changed.
+
+**Fix.**
+
+1. **The submit writes only what changed, in one batch per table.** The finalisation loop now
+   collects the rows that actually need storing (an answer that differs, a blank for a question
+   that timed out, an auto-score the lock did not compute) and persists them through
+   `bulkUpdate`/`bulkInsert`, which the file, blob and Airtable adapters implement as one write
+   (Airtable's fallback still skips unchanged rows). Answers are compared with the new
+   `stableJson` helper, so an equivalent answer whose object keys arrived in a different order
+   is not mistaken for a change. Measured on the same 110-question, 9.6 MB store:
+   **7 955 ms → 299 ms** (11 ms for the same submit in the browser-level journey), with the
+   identical persisted result — locked answers, `timed_out` blanks, auto-scores, audit entry.
+2. **The same batching for the other per-row loops on the critical path**: the candidate's
+   autosave (`PUT /answers`, the chatty route while a recording stops), the assessor's score
+   entry (one whole-table rewrite per scored question) and `finalizeScoring`, which rewrote every
+   response row of the paper to store its `final_score` — so the assessor's *Finalize* crawled on
+   exactly the papers the candidate's submit did. A refused finalize (open questions still
+   unscored) now writes nothing at all instead of a partial set of rows.
+3. **The client can no longer sit on a spinner forever.** `api()` takes an optional
+   `timeoutMs` (AbortController) and the exam's own requests use it — each submit attempt gets a
+   20 s deadline, so a submit that is never answered fails like any other network error, is
+   retried, and lands on the retry screen that already existed (*Try submitting again* / *Back
+   to My Journey*) instead of spinning forever. The handover panel also tells the candidate it
+   is still working after 8 s rather than staying silent.
+4. **The handover panel is painted only once the server has taken the final lock.** It used to
+   be rendered *before* the final `/next` was sent, so a lock that failed (offline, timeout, 5xx)
+   replaced the candidate's answer with a fake "Submitting…" panel. The click now shows
+   *Locking…* in place, and a failure returns the candidate to their question with the typed
+   text (and any recording) still in hand — nothing is repainted, so nothing is thrown away —
+   while the retry is safe because advances are idempotent server-side. The same recovery covers
+   a failed refetch of the next question.
+
+Pinned by `tests/exam-submit-batching.test.mjs` — seven tests over the real API surface (a
+completed paper submits in one batch and never rewrites an unchanged row; a reordered-key legacy
+row is not rewritten; an autosaved paper gets its auto-scores in a single batch; an all-blank
+paper inserts its blanks in a single batch; a refused early submit writes nothing; the assessor's
+score entry and finalize batch the same way; `stableJson` compares meaning, not spelling) — plus
+a failed-lock recovery test in `tests/exam-screen.test.mjs`
+and two in `tests/submit-handover.test.mjs` (a submit that never answers must land on the retry
+screen, and a slow submit must say it is still working).
+
+## ⚔️ Final gauntlet
 
 A self-contained black-box suite (`tests/final-gauntlet.py`, `npm run test:gauntlet`) that builds
 its own namespaced fixtures, so it passes on any database state and cleans up after itself. It
@@ -68,7 +133,7 @@ Also verified in this pass: Netlify preflight + 503 matrix, setup-script exit co
 import safety, path-traversal fallback, corrupt-file backup-and-boot, misshapen-row tolerance
 (all fail closed, zero 5xx), a 50-way `/health` burst, and seed re-run idempotency.
 
-## 🚀 Deployment-readiness hardening pass (latest)
+## 🚀 Deployment-readiness hardening pass
 
 A sweep over every write path, storage backend, intake route and exam transition with one
 question in mind: *what breaks, corrupts or silently mis-serves in production?* Eleven defect

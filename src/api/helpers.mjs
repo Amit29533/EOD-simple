@@ -76,6 +76,25 @@ export async function bulkInsert(store, table, rows = []) {
  * rewrite it once instead of once per row; others fall back to the loop, so a
  * repair pass over hundreds of rows never becomes hundreds of full writes.
  */
+/**
+ * Canonical JSON for a stored field, with object keys sorted at every level.
+ *
+ * The exam's write paths compare an incoming answer against the row already on
+ * disk and skip the write when they are equal. A plain `JSON.stringify`
+ * comparison would call two identical answers different whenever their key
+ * order differs (a legacy row written by an older field order, a value that
+ * travelled through a different canonicalizer), and every such false positive
+ * is a full-table rewrite on the file/blob adapters — the write amplification
+ * that made a finished exam crawl at the submit. Sorting keys makes the
+ * comparison mean "same answer", not "same spelling".
+ */
+export function stableJson(value) {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
+}
+
 export async function bulkUpdate(store, table, patches = []) {
   if (!patches.length) return [];
   if (typeof store.updateMany === 'function') return store.updateMany(table, patches);

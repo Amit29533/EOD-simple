@@ -3,6 +3,7 @@ import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
 import { selectQuestions, dedupeQuestions } from '../core/question-selection.mjs';
 import { sortedQuestions } from './quiz-session.mjs';
 import { applySpokenContract } from './catalogue-service.mjs';
+import { bulkUpdate } from './helpers.mjs';
 
 /**
  * The active question bank for a role, in display order, with its competencies.
@@ -264,23 +265,28 @@ export async function finalizeScoring(store, assessment) {
   // duplicate protection never double-count a question in the report.
   const questions = sortedQuestions(assessment.snapshot_json);
 
+  // One batched write for the whole paper. Per-row updates here meant one
+  // whole-table rewrite per question on the file/blob adapters — the assessor's
+  // "Finalize" crawled on exactly the same papers the candidate's submit did.
+  const updates = [];
   for (const q of questions) {
     const r = byQid.get(q.id);
     if (isAutoQuestion(q)) {
       const score = autoScore(q, r?.answer) ?? 0;
       finalByQid[q.id] = { ...(r || { question_id: q.id, answer: null }), auto_score: score, final_score: score };
-      if (r) await store.update('responses', r.id, { auto_score: score, final_score: score });
+      if (r) updates.push({ id: r.id, patch: { auto_score: score, final_score: score } });
     } else {
       const score = r?.assessor_score;
       if (score === undefined || score === null || Number.isNaN(Number(score))) {
         missingScores.push({ question_id: q.id, prompt: q.prompt });
       } else {
         finalByQid[q.id] = { ...r, final_score: Number(score) };
-        await store.update('responses', r.id, { final_score: Number(score) });
+        updates.push({ id: r.id, patch: { final_score: Number(score) } });
       }
     }
   }
   if (missingScores.length) return { missing: missingScores };
+  await bulkUpdate(store, 'responses', updates);
 
   const report = computeReport({ ...assessment.snapshot_json, questions }, finalByQid);
   const updated = await store.update('assessments', assessment.id, {

@@ -62,7 +62,7 @@ const META = {
  * The route hash matches the exam so that app.js's own boot render paints the
  * same screen instead of racing a second renderer into `#view`.
  */
-function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [] } = {}) {
+function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [], nextError = null } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <aside id="sidebar"></aside><header id="topbar"></header><div id="nav-scrim"></div>
     <main id="view"></main><div id="modal-root"></div><div id="toast-root"></div>
@@ -74,6 +74,8 @@ function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [
   const calls = [];
   const intervals = [];
   let page = 0;
+  // Mutable so a test can fail a lock and then let the retry through.
+  const harness = { nextError };
   const globals = {
     window, document: window.document, location: window.location,
     localStorage: window.localStorage, sessionStorage: window.sessionStorage,
@@ -96,7 +98,12 @@ function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [
       if (path.includes('/meta/bootstrap')) return json(META);
       if (path.includes('/auth/me')) return json({ user: { username: 'cand', role: 'candidate' }, candidate: { id: 'c1', name: 'Cand', stage: 'assessment' } });
       if (/\/candidate\/assessments$/.test(path)) return json({ candidate: { id: 'c1', name: 'Cand', stage: 'assessment' }, assessments });
-      if (method === 'POST' && path.includes('/next')) { calls.push({ method, path, body: JSON.parse(opts.body || '{}') }); page += 1; return json(current()); }
+      if (method === 'POST' && path.includes('/next')) {
+        calls.push({ method, path, body: JSON.parse(opts.body || '{}') });
+        if (harness.nextError) return json(harness.nextError.body ?? { error: 'lock failed' }, harness.nextError.status ?? 500);
+        page += 1;
+        return json(current());
+      }
       if (method === 'POST' && path.includes('/phase')) { calls.push({ method, path, body: JSON.parse(opts.body || '{}') }); return json(current()); }
       if (method === 'GET') { calls.push({ method, path }); return json(current()); }
       calls.push({ method, path, body: JSON.parse(opts.body || '{}') });
@@ -110,7 +117,7 @@ function setup({ pages = [payload()], token = 'tok', ack = true, assessments = [
   // render goes straight to the paper, like a candidate mid-exam.
   if (ack) window.sessionStorage.setItem('ecod.exam.ack.asm1', '1');
   return {
-    dom, window, calls,
+    dom, window, calls, harness,
     async teardown() {
       // Leave the DOM globals in place (app.js's router may still be finishing a
       // render and must not find `document` undefined) and only hand the timer
@@ -299,5 +306,44 @@ test('the submit carries no duplicated answers (locked answers already persist s
     const submits = h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit'));
     assert.equal(submits.length, 1, 'a completed paper must auto-submit');
     assert.deepEqual(submits[0].body, { answers: {} }, `the submit must not resend the transcript, got ${JSON.stringify(submits[0].body)}`);
+  } finally { await h.teardown(); }
+});
+
+test('a failed final lock keeps the candidate on their answer, not on a dead handover', { skip: SKIP }, async () => {
+  // The handover panel used to be painted before the final /next was even
+  // sent, so a lock that failed (offline, timeout, 5xx) left the candidate on
+  // "Submitting your assessment…" with no error to read and nothing to press:
+  // the reported freeze. The lock is now awaited first — the panel appears
+  // once the server has taken the paper — and a failure returns the candidate
+  // to their question with the answer still in hand, ready to send again.
+  const h = setup({
+    pages: [payload({ index: 2, total: 3 }), payload({ index: 2, total: 3, complete: true })],
+    nextError: { status: 500, body: { error: 'lock failed' } },
+  });
+  try {
+    const view = await paint(h);
+    view.querySelector('.opt').click();
+    await flush(40);
+    const btn = view.querySelector('#exam-next');
+    assert.equal(btn.textContent.trim(), 'Lock & submit', 'the last question offers Lock & submit');
+    btn.click();
+    assert.equal(btn.textContent.trim(), 'Locking…', 'the click is acknowledged immediately');
+    assert.ok(!h.window.document.querySelector('.submit-handover'), 'the handover waits for the server to take the lock');
+    await flush(150);
+
+    assert.ok(!h.window.document.querySelector('.submit-handover'), 'a failed lock must not fake a submission');
+    assert.match(textOf(view), /medallion tables/, 'the question must still be on screen');
+    const rearmed = view.querySelector('#exam-next');
+    assert.ok(rearmed && !rearmed.disabled, 'the button must be re-armed for a retry');
+    assert.equal(rearmed.textContent.trim(), 'Lock & submit', 'the label must be restored');
+    assert.equal(view.querySelector('.opt input').checked, true, 'the selected answer must survive the failure');
+    assert.equal(h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit')).length, 0, 'nothing may submit after a failed lock');
+
+    // The retry (server healthy again) advances the paper and submits once.
+    h.harness.nextError = null;
+    rearmed.click();
+    for (let i = 0; i < 40 && !/journey/.test(String(h.window.location.hash)); i += 1) await flush(50);
+    assert.equal(h.calls.filter((c) => c.method === 'POST' && c.path.includes('/submit')).length, 1, 'the retry must finalise the paper');
+    assert.match(String(h.window.location.hash), /#\/journey/, 'the candidate lands on My Journey');
   } finally { await h.teardown(); }
 });

@@ -1,4 +1,6 @@
-import { ok, bad, notFound, conflict, unprocessable, audit, num, str, isTextish } from '../helpers.mjs';
+import {
+  ok, bad, notFound, conflict, unprocessable, audit, num, str, isTextish, bulkInsert, bulkUpdate,
+} from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring } from '../assessment-service.mjs';
@@ -81,6 +83,8 @@ export function assessorHandlers(route) {
     const responses = await store.list('responses', { assessment_id: a.id });
     const byQid = new Map(responses.map((r) => [r.question_id, r]));
     const qById = new Map(a.snapshot_json.questions.map((q) => [q.id, q]));
+    const updates = [];
+    const inserts = [];
     for (const e of entries) {
       // A null (or otherwise non-object) entry used to throw a TypeError on
       // `.question_id` and 500 the endpoint; it is malformed input instead.
@@ -100,9 +104,17 @@ export function assessorHandlers(route) {
         patch.assessor_comment = str(e.comment, 1500);
       }
       const existing = byQid.get(e.question_id);
-      if (existing) await store.update('responses', existing.id, patch);
-      else await store.insert('responses', { assessment_id: a.id, question_id: e.question_id, answer: null, ...patch });
+      // Batched, like the candidate's submit: scoring a 30-question open set
+      // used to be 30 whole-table rewrites on the file/blob adapters. An entry
+      // carrying neither a score nor a comment has nothing to store.
+      if (existing) {
+        if (Object.keys(patch).length) updates.push({ id: existing.id, patch });
+      } else {
+        inserts.push({ assessment_id: a.id, question_id: e.question_id, answer: null, ...patch });
+      }
     }
+    await bulkUpdate(store, 'responses', updates);
+    await bulkInsert(store, 'responses', inserts);
     return ok({ ok: true });
   }));
 

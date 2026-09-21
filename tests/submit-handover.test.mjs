@@ -53,6 +53,16 @@ test('submit handover: retrying submit + both finalizeExam outcomes', { skip: SK
       return { ok: true, status: 200, json: async () => ({ pipelineStages: [], assessmentStatuses: [], readinessLevels: [] }) };
     }
     const out = handler(String(url), opts.body ? JSON.parse(opts.body) : undefined);
+    if (out.pending) {
+      // A server that never answers — a serverless invocation killed mid-write,
+      // a proxy holding the connection open. The only way out is the caller's
+      // own deadline, so honor the abort signal exactly like a real fetch.
+      return new Promise((_, reject) => {
+        const abort = () => reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+        if (opts.signal?.aborted) abort();
+        else opts.signal?.addEventListener('abort', abort, { once: true });
+      });
+    }
     if (out.delayMs) await new Promise((r) => setTimeout(r, out.delayMs));
     return { ok: out.status < 400, status: out.status, json: async () => out.body ?? {} };
   };
@@ -126,5 +136,37 @@ test('submit handover: retrying submit + both finalizeExam outcomes', { skip: SK
     assert.ok(retry, 'explicit retry affordance');
     assert.match(document.getElementById('view').textContent, /couldn't submit your assessment/);
     assert.ok(document.querySelector('a[href="#/journey"]'), 'escape hatch to My Journey');
+  });
+
+  await t.test('a submit that never answers times out onto the retry screen, never a dead spinner', async () => {
+    // The reported freeze: the submit POST is never answered (a serverless
+    // function killed mid-write, a stalled proxy), the browser's fetch has no
+    // deadline, and the candidate is left on "Submitting your assessment…"
+    // forever — no error, no retry, nothing to click. Each attempt now carries
+    // a deadline, so the panel always resolves into either the journey or the
+    // retry screen.
+    reset();
+    handler = () => ({ pending: true });
+    await finalizeExam('a1', { attempts: 2, backoffMs: 1, timeoutMs: 40 });
+    assert.doesNotMatch(document.getElementById('view').textContent, /Submitting your assessment/,
+      'the handover spinner must not be left behind');
+    assert.match(document.getElementById('view').textContent, /couldn't submit your assessment/);
+    assert.ok(document.querySelector('#submit-retry'), 'the candidate can try again');
+    assert.equal(submits().length, 2, 'each attempt carries its own deadline');
+    assert.notEqual(hash(), '/journey', 'a hung submit must not pretend the paper was delivered');
+  });
+
+  await t.test('the handover says it is still working when a submit drags on', async () => {
+    reset();
+    handler = () => ({ status: 200, body: { status: 'submitted' }, delayMs: 200 });
+    const done = finalizeExam('a1', { attempts: 1, slowHintMs: 40 });
+    await flush(10);
+    assert.ok(document.querySelector('.submit-handover'), 'the panel is up while the submit is in flight');
+    assert.equal(document.querySelector('#submit-slow').hidden, true, 'silent while the submit is on schedule');
+    await flush(90);
+    assert.equal(document.querySelector('#submit-slow').hidden, false, 'reassures once the submit drags on');
+    for (let i = 0; i < 40 && hash() !== '/journey'; i++) await flush(25);
+    assert.equal(hash(), '/journey', 'a slow-but-successful submit still lands on My Journey');
+    await done;
   });
 });
