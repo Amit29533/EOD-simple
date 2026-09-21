@@ -103,7 +103,7 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
 
   const recordToRow = (t, rec) => ({ ...deserialize(t, rec.fields || {}), id: rec.id });
 
-  return {
+  const adapter = {
     kind: 'airtable',
     async list(t, filter = {}) {
       const rows = [];
@@ -123,10 +123,16 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
       const rec = await api(`${encodeURIComponent(t)}/${encodeURIComponent(id)}`);
       return rec ? recordToRow(t, rec) : null;
     },
+    /**
+     * Airtable mints the record id, so a caller-supplied `id` is dropped. The
+     * `created_at` stamp is the storage contract (json-file and blobs stamp it
+     * too): every "newest first" list, the audit trail, the dashboard's recent
+     * activity and the per-user session cap order rows by it, and this adapter
+     * used to leave it blank unless the caller passed one — which nothing does.
+     */
     async insert(t, data) {
-      const { id: _ignored, created_at: _c, ...fields } = data;
-      const body = { typecast: true, records: [{ fields: serialize(t, fields) }] };
-      if (data.created_at) body.records[0].fields.created_at = data.created_at;
+      const { id: _ignored, created_at, ...fields } = data;
+      const body = { typecast: true, records: [{ fields: { ...serialize(t, fields), created_at: created_at || new Date().toISOString() } }] };
       const out = await api(encodeURIComponent(t), { method: 'POST', body });
       return recordToRow(t, out.records[0]);
     },
@@ -138,11 +144,10 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
     async insertMany(t, rows = []) {
       const out = [];
       for (let i = 0; i < rows.length; i += 10) {
+        const stamp = new Date().toISOString();
         const chunk = rows.slice(i, i + 10).map((data) => {
-          const { id: _ignored, created_at: _c, ...fields } = data;
-          const row = { fields: serialize(t, fields) };
-          if (data.created_at) row.fields.created_at = data.created_at;
-          return row;
+          const { id: _ignored, created_at, ...fields } = data;
+          return { fields: { ...serialize(t, fields), created_at: created_at || stamp } };
         });
         const resp = await api(encodeURIComponent(t), {
           method: 'POST',
@@ -160,9 +165,43 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
       });
       return out ? recordToRow(t, out) : null;
     },
+    /**
+     * Batch update in Airtable's 10-record chunks (one PATCH per chunk instead
+     * of one per row — the submit of a 50-question paper and the scoring of an
+     * open set used to spend most of their time in Airtable's 5 req/s limit).
+     * Same result contract as the other adapters' updateMany: caller order,
+     * null for an id the table does not hold. Airtable rejects a whole chunk
+     * when one id in it is unknown, so such a chunk falls back to per-row
+     * updates rather than failing every row in it.
+     */
+    async updateMany(t, patches = []) {
+      const out = [];
+      for (let i = 0; i < patches.length; i += 10) {
+        const chunk = patches.slice(i, i + 10);
+        const stamp = new Date().toISOString();
+        const records = chunk.map(({ id, patch }) => {
+          const { id: _i, created_at: _c, ...fields } = patch || {};
+          return { id, fields: { ...serialize(t, fields), updated_at: stamp } };
+        });
+        let resp = null;
+        try {
+          resp = await api(encodeURIComponent(t), { method: 'PATCH', body: { typecast: true, records } });
+        } catch {
+          resp = null;
+        }
+        const byId = new Map((resp?.records || []).map((rec) => [rec.id, recordToRow(t, rec)]));
+        if (resp && byId.size === chunk.length) {
+          out.push(...chunk.map(({ id }) => byId.get(id) ?? null));
+          continue;
+        }
+        for (const { id, patch } of chunk) out.push(await adapter.update(t, id, patch));
+      }
+      return out;
+    },
     async remove(t, id) {
       const out = await api(`${encodeURIComponent(t)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
       return !!out?.deleted;
     },
   };
+  return adapter;
 }

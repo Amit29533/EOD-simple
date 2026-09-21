@@ -286,9 +286,33 @@ async function boot() {
     try {
       const res = await me();
       state.user = res.user; state.candidate = res.candidate;
-    } catch { session.token = null; state.user = null; }
+    } catch (err) {
+      state.user = null;
+      // `api()` has already dropped the token on a 401 — that session really
+      // is gone. Anything else (the server unreachable while the page loads,
+      // a 5xx, a rate-limit) is not a sign-out: this used to wipe the token
+      // too, logging people out on every reload that hit a blip. Keep the
+      // session and offer a retry instead.
+      if (session.token && err?.status !== 401) {
+        renderBootError(err);
+        return;
+      }
+    }
   } else state.user = null;
   render();
+}
+
+function renderBootError(err) {
+  const view = document.getElementById('view');
+  const detail = err?.status ? `The server answered with an error (${err.status}).` : 'The server could not be reached.';
+  view.innerHTML = `<div class="error-page"><div class="error-icon">!</div><h3>Could not restore your session</h3>
+    <p class="muted">${detail} Your sign-in is still saved on this device — try again in a moment.</p>
+    <div class="row" style="justify-content:center;gap:8px;margin-top:12px">
+      <button class="btn" id="boot-retry" type="button">Try again</button>
+      <button class="btn secondary" id="boot-signout" type="button">Sign in as someone else</button>
+    </div></div>`;
+  view.querySelector('#boot-retry').onclick = () => boot();
+  view.querySelector('#boot-signout').onclick = () => { session.token = null; state.user = null; render(); };
 }
 
 /* ------------------------------ theme toggle ------------------------------ */

@@ -93,11 +93,19 @@ export function assessorHandlers(route) {
       const q = qById.get(e.question_id);
       if (!q) continue;
       const patch = {};
-      if (isManualQuestion(q) && e.score !== undefined && e.score !== null && e.score !== '') {
-        const score = num(e.score, NaN);
-        if (Number.isNaN(score) || score < 0 || score > Number(q.points ?? 1))
-          return unprocessable(`Score for "${q.prompt.slice(0, 60)}..." must be 0-${q.points ?? 1}.`);
-        patch.assessor_score = score;
+      if (isManualQuestion(q) && e.score !== undefined) {
+        if (e.score === null || e.score === '') {
+          // An explicit blank clears a score that was entered by mistake. The
+          // entry used to be ignored, so the assessor's screen showed the
+          // question as unscored while the stored score still counted at
+          // finalization.
+          patch.assessor_score = null;
+        } else {
+          const score = num(e.score, NaN);
+          if (Number.isNaN(score) || score < 0 || score > Number(q.points ?? 1))
+            return unprocessable(`Score for "${q.prompt.slice(0, 60)}..." must be 0-${q.points ?? 1}.`);
+          patch.assessor_score = score;
+        }
       }
       if (e.comment !== undefined) {
         if (!isTextish(e.comment)) return bad('Score comments must be plain text.');

@@ -57,11 +57,16 @@ Both consume seeded records as they go (submitting, scoring, deleting a demo can
 they are **not idempotent** — reseed and restart between runs or a second pass reports false
 failures. Override the target with `BASE=http://host:port/api`.
 
-`npm run seed` is idempotent for an existing store: it adds newly published RSA seed
-questions, repairs the spoken-question contract flags (`question_set`, `pin_first`,
-`audio_required`) on existing copies, and restores the microphone requirement on every
-open question — without recreating users, overwriting admin customizations or changing
-existing assessment snapshots. Use
+`npm run seed` is idempotent for an existing store: it adds any published track the
+workspace does not have yet (role, default scoring framework, competencies, published
+questions — e.g. the *Senior Databricks AI/BI & Genie Consultant* and *Senior Consultant*
+tracks in a workspace seeded before they were published; a track an admin deactivated is
+left alone), adds newly published seed questions to existing tracks, repairs the
+spoken-question contract flags (`question_set`, `pin_first`, `audio_required`) on existing
+copies, and restores the microphone requirement on every open question — without
+recreating users, overwriting admin customizations or changing existing assessment
+snapshots. The same install is available in-app under **Roles & frameworks → Published
+tracks → Add to workspace** (`POST /admin/content/tracks`) for deployments with no CLI. Use
 `npm run seed:fresh` only when you intentionally want to reset the local JSON store.
 
 Full end-to-end suites (need a running, seeded server):
@@ -203,7 +208,13 @@ by track, so the banks can never bleed into each other:
 
 Both the module bank and each track's *served* question bank (what allocation
 actually draws from — 115 questions for RSA, 100 for AI/BI & Genie) ship as published
-content and are kept in sync by `npm run seed` and the in-app catalogue top-up.
+content and are kept in sync by `npm run seed` and the in-app catalogue top-up. A
+workspace seeded before a track was published does not get it automatically: **Roles &
+frameworks → Published tracks** lists every published track with its state and adds a
+missing one on request (role, competencies, default scoring framework and published
+questions — the *Senior Consultant* track ships with competencies only, its bank is
+authored in-app); the Question Bank offers the same when you browse a track that is not in
+the workspace yet.
 
 Browse it under **Admin → Question Bank** — one screen for every question in the
 platform: the module/family tree, and below it the role-based *served question set*
@@ -459,6 +470,9 @@ Verify before you ship: `npm test` (379 Node tests), then with a local server up
 - AuthN: opaque 256-bit bearer tokens, 12 h sessions, stored server-side; deactivation is immediate.
 - AuthZ: route-level role guards + per-resource ownership checks; existence hiding (404 ≠ 403).
 - Login throttling (per-username), payload size cap, input validation on every mutation.
+- CORS: the API only grants its own origin (the SPA is same-origin). To call it from another
+  site, list the origins in `CORS_ORIGINS` (comma-separated; `*` reflects every origin). The
+  local dev server is permissive.
 - No self-registration anywhere: **accounts are created by admins only**.
 - Before production: rotate seeded credentials, serve only via HTTPS (Netlify default),
   and treat `DATA_FILE`/Airtable PATs as secrets (Netlify env vars, never in Git).

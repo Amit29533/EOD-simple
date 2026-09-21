@@ -333,10 +333,31 @@ test('the Netlify wrapper fails fast with 503 when no storage backend is configu
     // Preflight never touches storage, so it answers even when unconfigured.
     const pre = await handler({
       httpMethod: 'OPTIONS', path: '/.netlify/functions/api/health',
-      headers: { origin: 'https://example.com' }, queryStringParameters: {},
+      headers: { origin: 'https://example.com', host: 'example.com' }, queryStringParameters: {},
     });
     assert.equal(pre.statusCode, 204);
-    assert.equal(pre.headers['access-control-allow-origin'], 'https://example.com');
+    assert.equal(pre.headers['access-control-allow-origin'], 'https://example.com', 'the site itself is granted');
+    assert.equal(pre.headers.vary, 'Origin');
+
+    // The grant is same-origin (or CORS_ORIGINS) only: the wrapper used to
+    // reflect any Origin header, turning the API into a cross-site target.
+    const foreign = await handler({
+      httpMethod: 'OPTIONS', path: '/.netlify/functions/api/health',
+      headers: { origin: 'https://evil.example', host: 'example.com' }, queryStringParameters: {},
+    });
+    assert.equal(foreign.statusCode, 204);
+    assert.equal(foreign.headers['access-control-allow-origin'], undefined, 'a foreign origin gets no grant');
+    const savedCors = process.env.CORS_ORIGINS;
+    process.env.CORS_ORIGINS = 'https://partner.example, https://evil.example';
+    try {
+      const listed = await handler({
+        httpMethod: 'OPTIONS', path: '/.netlify/functions/api/health',
+        headers: { origin: 'https://evil.example', host: 'example.com' }, queryStringParameters: {},
+      });
+      assert.equal(listed.headers['access-control-allow-origin'], 'https://evil.example', 'an allowlisted origin is granted');
+    } finally {
+      if (savedCors === undefined) delete process.env.CORS_ORIGINS; else process.env.CORS_ORIGINS = savedCors;
+    }
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];

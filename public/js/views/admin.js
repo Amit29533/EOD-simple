@@ -127,10 +127,17 @@ export async function candidatesView(view) {
   };
   renderList(candidates);
 
+  // Debounced input can have several fetches in flight; only the newest one
+  // may paint, otherwise a slow earlier response overwrites the latest filter.
+  let filterSeq = 0;
   const refilter = async () => {
     const q = view.querySelector('#cand-q').value, stage = view.querySelector('#cand-stage').value;
-    const d = await attempt(() => api(`/admin/candidates?q=${encodeURIComponent(q)}&stage=${encodeURIComponent(stage)}`));
-    if (d) renderList(d.candidates);
+    const seq = ++filterSeq;
+    // Walk every page like the initial load does: a single request is capped
+    // at one page (200 rows), so a filtered view of a large workspace used to
+    // be silently truncated.
+    const rows = await attempt(() => apiAll(`/admin/candidates?q=${encodeURIComponent(q)}&stage=${encodeURIComponent(stage)}`, 'candidates'));
+    if (rows && seq === filterSeq) renderList(rows);
   };
   view.querySelector('#cand-q').oninput = debounce(refilter, 350);
   view.querySelector('#cand-stage').onchange = refilter;
@@ -568,9 +575,46 @@ export async function integrityView(view, { id }) {
 }
 
 /* ================================ Roles & frameworks ================================ */
+/**
+ * Add a published track to the workspace (or top an installed one up) and
+ * report what happened. Shared by the Roles screen and the Question Bank
+ * strip: both offer the same action for a track that shipped after the
+ * workspace was seeded. Resolves to the API result, or null on failure.
+ */
+async function installPublishedTrack(roleKey) {
+  const out = await attempt(() => api('/admin/content/tracks', { method: 'POST', body: { role_key: roleKey } }));
+  if (!out) return null;
+  if (out.created) {
+    toast(`${out.role?.name || 'Track'} added — ${out.competencies_added} competencies, ${out.bank_total} question${out.bank_total === 1 ? '' : 's'} and a default scoring framework`, 'success');
+  } else {
+    toast(out.added
+      ? `Added ${out.added} published question${out.added === 1 ? '' : 's'} — the bank now has ${out.bank_total}`
+      : 'This track already has the full published catalogue.', 'success');
+  }
+  return out;
+}
+
 export async function rolesView(view) {
   view.innerHTML = loading();
-  const { roles } = await api('/admin/roles');
+  // The published-track list is advisory: if it fails the roles table still
+  // renders (attempt() has already shown the error).
+  const [{ roles }, tracksOut] = await Promise.all([
+    api('/admin/roles'),
+    attempt(() => api('/admin/content/tracks')),
+  ]);
+  const tracks = tracksOut?.tracks || [];
+  const trackState = (t) => {
+    if (!t.installed) return badge('Not in this workspace', 'amber');
+    if (!t.active) return badge('Deactivated', 'grey');
+    if (t.missing > 0) return badge(`${t.missing} published question${t.missing === 1 ? '' : 's'} missing`, 'amber');
+    return badge('Installed', 'green');
+  };
+  const trackAction = (t) => {
+    if (!t.installed) return `<button class="btn sm" data-install-track="${esc(t.role_key)}">Add to workspace</button>`;
+    if (!t.active) return `<a class="btn ghost sm" href="#/roles/${t.role.id}">Reactivate</a>`;
+    if (t.missing > 0) return `<button class="btn secondary sm" data-install-track="${esc(t.role_key)}">Add ${t.missing} published question${t.missing === 1 ? '' : 's'}</button>`;
+    return `<a class="btn ghost sm" href="#/roles/${t.role.id}">Configure</a>`;
+  };
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Capability architecture</div><h1>Roles & frameworks</h1><p>Competencies, scoring bands and tracks.</p></div>
@@ -586,8 +630,36 @@ export async function rolesView(view) {
         { label: 'Status', render: (r) => r.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
         { label: '', cls: 'actions', render: (r) => `<a class="btn ghost sm" href="#/roles/${r.id}">Configure</a>
           <a class="btn ghost sm" href="#/modules?role=${r.id}">Questions</a>` },
-      ], roles) : emptyState('No roles yet', 'Create your first assessment track.')}
-    </div>`;
+      ], roles) : emptyState('No roles yet', 'Create your first assessment track, or add a published one below.')}
+    </div>
+    ${tracks.length ? `
+    <div class="card" id="published-tracks">
+      <div class="row between" style="align-items:flex-start;gap:16px">
+        <div>
+          <h3 style="margin:0">Published tracks</h3>
+          <p class="small muted" style="margin:4px 0 0">Tracks that ship with the platform. Adding one creates its role, competencies, default scoring framework and published questions — a workspace seeded before a track was published does not get it automatically.</p>
+        </div>
+        <span class="chip">${tracks.filter((t) => t.installed && t.active).length} of ${tracks.length} installed</span>
+      </div>
+      ${dataTable([
+        { label: 'Track', render: (t) => `<b>${esc(t.role_name)}</b><div class="small muted">${esc(t.role_key)} · ${esc(t.technology)}</div>` },
+        { label: 'Ships with', render: (t) => `${esc(t.competency_total)} competencies · ${t.authoring_only
+          ? '<span class="muted">no published questions yet — author them in the Question bank</span>'
+          : `${esc(t.catalogue_total)} published question${t.catalogue_total === 1 ? '' : 's'}`}` },
+        { label: 'In this workspace', render: (t) => `${trackState(t)}${t.installed ? `<div class="small muted" style="margin-top:4px">${esc(t.bank_total)} question${t.bank_total === 1 ? '' : 's'} in the bank</div>` : ''}` },
+        { label: '', cls: 'actions', render: trackAction },
+      ], tracks)}
+    </div>` : ''}`;
+  for (const btn of view.querySelectorAll('[data-install-track]')) {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      await installPublishedTrack(btn.dataset.installTrack);
+      // Re-render either way: on success the track joins the roles table; on
+      // failure (error already shown) the button comes back enabled.
+      rolesView(view);
+    };
+  }
   view.querySelector('#add-role').onclick = async () => {
     const vals = await formModal({
       title: 'New assessment track',
@@ -903,7 +975,10 @@ export async function usersView(view) {
         { label: '', cls: 'actions', render: (u) => `
             <button class="btn ghost sm" data-edit="${u.id}">Edit</button>
             <button class="btn ghost sm" data-pw="${u.id}">Reset password</button>
-            ${u.active !== false ? `<button class="btn ghost sm" style="color:var(--red)" data-off="${u.id}">Deactivate</button>` : `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`}` },
+            ${u.active === false ? `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`
+    // The signed-in admin cannot deactivate their own login (the API refuses
+    // the self-lockout), so do not offer it.
+    : u.id === state.user?.id ? '' : `<button class="btn ghost sm" style="color:var(--red)" data-off="${u.id}">Deactivate</button>`}` },
       ], users)}
     </div>`;
 
@@ -1039,26 +1114,43 @@ export async function modulesView(view) {
   // optional pool). `role` in the query string is what the Roles screen links
   // here with. For tracks with a published module bank it selects that bank;
   // for the served panel it filters by role either way.
-  const roleParam = new URLSearchParams(location.hash.split('?')[1] || '').get('role') || '';
+  const hashQuery = new URLSearchParams(location.hash.split('?')[1] || '');
+  const roleParam = hashQuery.get('role') || '';
+  // `bank` addresses a published module bank by role key for a track that has
+  // no workspace role yet (nothing to link by id); it is what the Track
+  // selector falls back to, so choosing such a track does not snap back to
+  // the default bank.
+  const bankParam = hashQuery.get('bank') || '';
   const rolesOut = await attempt(() => api('/admin/roles'));
   const roles = rolesOut?.roles || [];
   const banks = M()?.moduleBanks || [];
   const defaultBankKey = M()?.defaultModuleBankRoleKey || banks[0]?.role_key || '';
   const viewedRole = roles.find((r) => r.id === roleParam) || null;
+  const hasBank = (key) => banks.some((b) => b.role_key === key);
   // The module bank is addressed by the track's stable role key; a viewed
   // role without a module bank (e.g. Senior Consultant) keeps the default
   // bank while its served set is still filterable below.
-  const roleKey = viewedRole && banks.some((b) => b.role_key === viewedRole.key)
+  const roleKey = viewedRole && hasBank(viewedRole.key)
     ? viewedRole.key
-    : defaultBankKey;
+    : (bankParam && hasBank(bankParam) ? bankParam : defaultBankKey);
+  // The published catalogue to report against: the viewed role's, else the
+  // bank being browsed (which may not be installed in this workspace yet).
+  const catalogueKey = viewedRole ? viewedRole.key : (bankParam || '');
   const [bank, plan, servedOut, catalogue] = await Promise.all([
     api(`/admin/question-bank/modules?include_optional=1&role_key=${roleKey}`),
     attempt(() => api(`/admin/question-bank/plan?role_key=${roleKey}`)),
     attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`, 'questions')),
-    attempt(() => api(`/admin/content/catalogue${viewedRole ? `?role_key=${viewedRole.key}` : ''}`)),
+    attempt(() => api(`/admin/content/catalogue${catalogueKey ? `?role_key=${encodeURIComponent(catalogueKey)}` : ''}`)),
   ]);
   const served = servedOut || [];
   const missing = catalogue?.available ? Number(catalogue.missing) || 0 : 0;
+  // A published track this workspace does not have yet: the module bank is
+  // browsable (it is static content) but nothing can be allocated from it
+  // until the track is added — role, competencies, framework and questions.
+  const installable = catalogue && catalogue.available === false && catalogue.installable === true
+    && catalogue.role_key && !roles.some((r) => r.key === catalogue.role_key && r.active !== false)
+    ? catalogue : null;
+  const inactiveTrack = catalogue && catalogue.available === false && catalogue.inactive_role ? catalogue.inactive_role : null;
 
   const bp = bank.blueprint;
   const groupName = Object.fromEntries(bank.groups.map((g) => [g.key, g.name]));
@@ -1114,6 +1206,22 @@ export async function modulesView(view) {
       </span>
       ${plan && plan.ready ? badge('All modules ready', 'green') : badge('Some modules are short', 'amber')}
     </div>
+    ${installable ? `
+    <div class="card flat catalogue-strip" id="track-install">
+      <span class="info-strip-icon">＋</span>
+      <span class="catalogue-strip-copy"><b>The ${esc(installable.role_name)} track is not in this workspace yet.</b>
+        <small>Its module bank is browsable here, but nothing can be allocated from it until the track is added. Adding it creates the role, its ${esc(installable.competency_total)} competencies, a default scoring framework and ${installable.catalogue_total
+          ? `its ${esc(installable.catalogue_total)} published question${installable.catalogue_total === 1 ? '' : 's'}`
+          : 'an empty bank ready for authoring'} under Roles &amp; frameworks.</small></span>
+      <button class="btn sm" id="track-install-btn">Add track to workspace</button>
+    </div>` : ''}
+    ${inactiveTrack ? `
+    <div class="card flat catalogue-strip" id="track-inactive">
+      <span class="info-strip-icon">!</span>
+      <span class="catalogue-strip-copy"><b>The ${esc(inactiveTrack.name)} track is deactivated in this workspace.</b>
+        <small>Reactivate it under Roles &amp; frameworks to allocate from this bank again.</small></span>
+      <a class="btn secondary sm" href="#/roles/${esc(inactiveTrack.id)}">Open track</a>
+    </div>` : ''}
 
     <div class="module-list">
     ${modules.map((m) => {
@@ -1153,8 +1261,8 @@ export async function modulesView(view) {
     }).join('')}
     </div>
 
-    <div class="card flat">
-      ${bank.optional && bank.optional.total ? `<div class="panel-head"><div><h2>Optional pool</h2>
+    ${bank.optional && bank.optional.total ? `<div class="card flat">
+      <div class="panel-head"><div><h2>Optional pool</h2>
         <p class="small muted">The retired catalogue, mapped onto these modules and kept as a
         fallback. Never served while a family can fill its module's quota — only drawn to cover a
         shortfall.</p></div>
@@ -1207,8 +1315,22 @@ export async function modulesView(view) {
   const bankSelect = view.querySelector('#mv-bank');
   if (bankSelect) bankSelect.onchange = (e) => {
     const key = e.target.value;
-    const r = roles.find((x) => x.key === key);
-    location.hash = r ? `#/modules?role=${r.id}` : '#/modules';
+    const r = roles.find((x) => x.key === key && x.active !== false) || roles.find((x) => x.key === key);
+    // No workspace role for this track yet: browse the bank by key (and offer
+    // to add the track) instead of silently falling back to the default bank.
+    location.hash = r ? `#/modules?role=${r.id}` : `#/modules?bank=${encodeURIComponent(key)}`;
+  };
+
+  const installBtn = view.querySelector('#track-install-btn');
+  if (installBtn) installBtn.onclick = async () => {
+    installBtn.disabled = true;
+    installBtn.textContent = 'Adding…';
+    const out = await installPublishedTrack(installable.role_key);
+    if (!out) { installBtn.disabled = false; installBtn.textContent = 'Add track to workspace'; return; }
+    // The track now has a role: address the screen by it so the served set
+    // below shows the freshly added questions.
+    const next = `#/modules?role=${out.role.id}`;
+    if (location.hash === next) refresh(); else location.hash = next;
   };
 
   view.querySelector('#mv-preview').onclick = async () => {
