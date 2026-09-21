@@ -13,12 +13,38 @@ export class ApiError extends Error {
   constructor(message, status, body) { super(message); this.status = status; this.body = body; }
 }
 
-export async function api(path, { method = 'GET', body } = {}) {
+/**
+ * A request without a deadline can hang forever: the exam's final submit then
+ * leaves the candidate on the "Submitting your assessment…" panel with no
+ * error, no retry and no way forward. `timeoutMs` gives the requests that must
+ * *resolve* — the submit — a budget past which they fail like any other
+ * network error, so the retry screen takes over. Only opt-in: the default
+ * (0) keeps the browser's own behavior everywhere else.
+ */
+function timeoutError(ms) {
+  return new ApiError(`The server did not respond within ${Math.round(ms / 1000)}s.`, 0, null);
+}
+
+export async function api(path, { method = 'GET', body, timeoutMs = 0 } = {}) {
   const headers = { 'content-type': 'application/json' };
   if (session.token) headers.authorization = `Bearer ${session.token}`;
-  const res = await fetch(`/api${path}`, {
-    method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const controller = timeoutMs > 0 && typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let res;
+  try {
+    res = await fetch(`/api${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller ? controller.signal : undefined,
+    });
+  } catch (err) {
+    // An aborted fetch is a deadline we set ourselves, not a browser message.
+    if (controller?.signal.aborted) throw timeoutError(timeoutMs);
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {

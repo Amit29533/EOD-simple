@@ -82,12 +82,17 @@ export async function quizView(view, { id }) {
   }
 
   // Rules acknowledged: this GET is the moment the exam — and its first
-  // question's clock — actually starts.
-  const d = await api(`/candidate/assessments/${id}`);
+  // question's clock — actually starts. It carries a deadline so a server that
+  // never answers ends on the router's error page (with a retry) instead of a
+  // "Loading workspace" spinner that never resolves.
+  const d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
 
   if (d.assessment.status === 'submitted') { renderSubmitted(view); return; }
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
 
+  // An exam whose cursor is already complete (the last lock landed, then the
+  // tab died) finalises here — the same handover panel and retry screen as the
+  // in-exam path.
   if (d.exam?.complete) {
     await finalizeExam(id);
     return;
@@ -126,6 +131,17 @@ function renderExamGate(view, d, onStart) {
     onStart();
   };
 }
+
+/**
+ * Deadline for the exam's own round trips (the paper fetch, a lock, a phase
+ * change). Generous enough for a two-minute recording to upload over a slow
+ * link, short enough that a stalled connection — or a serverless invocation
+ * the platform killed mid-write — cannot leave the candidate on a disabled
+ * button or a spinner with no way forward. Every one of these calls has a
+ * local recovery path (re-armed button, refetch, retry screen); without a
+ * deadline none of them is ever reached.
+ */
+const EXAM_REQUEST_TIMEOUT_MS = 20_000;
 
 async function runExamSession(view, id, payload) {
   document.body.classList.add('exam-lock');
@@ -350,40 +366,51 @@ async function runExamSession(view, id, payload) {
     if (advancing) return;
     advancing = true;
     if (ticking) { clearInterval(ticking); ticking = null; }
-    // Feedback the instant the final "Lock & submit" is pressed: the exam is
-    // over from the candidate's point of view, but /next + /submit + the
-    // journey reload are three sequential round trips (easily 5-15s on a
-    // cold serverless function). Show the handover panel now instead of a
-    // frozen exam screen whose button silently swallows extra clicks.
-    const isFinalLock = Number(d?.exam?.index ?? -1) + 1 >= Number(d?.exam?.total || 0);
-    if (isFinalLock) {
-      renderSubmitHandover(view);
-    } else {
-      const btn = view.querySelector('#exam-next');
-      if (btn) { btn.disabled = true; btn.textContent = 'Locking…'; }
-    }
+    const btn = view.querySelector('#exam-next');
+    // Show what the click is doing (the button used to look inert while the
+    // lock was in flight) but keep the question on screen: if the lock fails,
+    // everything the candidate typed or recorded is still in this tab and one
+    // press re-sends it. The end-of-exam handover panel is rendered only once
+    // the server has actually taken the final lock, so a timeout there lands
+    // back on the question rather than on a spinner with nothing behind it.
+    if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Locking…'; }
     const out = await attempt(() => api(`/candidate/assessments/${id}/next`, {
       method: 'POST',
       // The question this advance answers: if a retried/duplicated request
       // arrives after the cursor moved on, the server no-ops it instead of
       // skipping the live question (see the /next idempotency guard).
       body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
+      timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
     }));
     if (!out) {
-      // Restore the question so the candidate can retry (a final lock that
-      // actually committed still self-heals: the retry /next returns
-      // complete again via the idempotency guard).
+      // Offline, timed out or 5xx: re-arm the button and let them send it
+      // again (a lock that actually committed self-heals — the retry /next
+      // returns complete again via the idempotency guard, and a stale
+      // question_id is a no-op).
       advancing = false;
-      paint();
+      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || btn.textContent; }
       return;
     }
     if (out.complete) {
+      // The paper is locked. Everything from here on — the submit POST and the
+      // journey reload — happens behind the handover panel.
       finished = true;
       cleanup.forEach((fn) => fn());
+      renderSubmitHandover(view);
       await finalizeExam(id);
       return;
     }
-    d = await api(`/candidate/assessments/${id}`);
+    try {
+      d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+    } catch {
+      // The advance landed but the next question did not load. Keep the
+      // candidate where they are — the retry press no-ops the stale question
+      // and this fetch then paints the live question.
+      toast('Could not load the next question. Check your connection and press the button again.', 'error', 4200);
+      advancing = false;
+      if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || btn.textContent; }
+      return;
+    }
     currentAnswer = d.current_answer;
     advancing = false;
     paint();
@@ -506,9 +533,11 @@ async function runExamSession(view, id, payload) {
         // 409s on the second transition; that is benign — the server state
         // wins via the refetch — so only a failed refetch is worth a toast.
         nextBtn.disabled = true;
-        await api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } }).catch(() => null);
+        await api(`/candidate/assessments/${id}/phase`, {
+          method: 'POST', body: { phase: 'answer' }, timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
+        }).catch(() => null);
         try {
-          d = await api(`/candidate/assessments/${id}`);
+          d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
           currentAnswer = d.current_answer;
         } catch {
           toast('Could not reach the server — your place is saved; try again.', 'error');
@@ -803,14 +832,25 @@ async function runExamSession(view, id, payload) {
  * swallowed by the advancing guard) — the "Done does nothing" bug.
  */
 
-function renderSubmitHandover(view) {
+export const SUBMIT_SLOW_HINT_MS = 8000;
+
+function renderSubmitHandover(view, { slowHintMs = SUBMIT_SLOW_HINT_MS } = {}) {
   document.body.classList.remove('exam-lock');
   view.innerHTML = `
     <div class="empty-page submit-handover" role="status" aria-live="polite">
       <div class="submit-ring"><span class="spinner"></span></div>
       <h1>Submitting your assessment…</h1>
       <p class="muted">Your final answer is locked and on its way to the assessor team. This usually takes a few seconds — please keep this tab open.</p>
+      <p class="muted small submit-handover-slow" id="submit-slow" hidden>Still working. Every answer is saved and locked, so nothing is lost if this takes a moment longer than usual.</p>
     </div>`;
+  // Reassurance, not decoration: the panel is the only feedback the candidate
+  // gets while the request is in flight, and silence on a slow upload reads as
+  // a freeze. Guarded on `isConnected` so a timer that fires after the panel
+  // was replaced cannot touch a detached node.
+  const slow = view.querySelector('#submit-slow');
+  if (slow && slowHintMs > 0) {
+    setTimeout(() => { if (slow.isConnected) slow.hidden = false; }, slowHintMs);
+  }
 }
 
 function renderSubmitProblem(view, retry) {
@@ -833,18 +873,26 @@ function renderSubmitProblem(view, retry) {
  * already locked server-side at this point, so a retry never duplicates work;
  * 409 means the exam was already submitted (double click, replayed request)
  * and is success. Other 4xx are thrown immediately — retrying cannot help.
+ *
+ * Each attempt carries a deadline (`timeoutMs`). A submit that never answers —
+ * a serverless invocation killed mid-write, a stalled proxy — must not leave
+ * the handover panel spinning forever: the attempt fails like any network
+ * error, is retried once or twice more, and then lands on the retry screen
+ * that offers both "Try submitting again" and a way back to My Journey.
  */
-export async function submitExam(id, { attempts = 3, backoffMs = 1200 } = {}) {
+export async function submitExam(id, { attempts = 3, backoffMs = 1200, timeoutMs = 20_000 } = {}) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     if (i) await new Promise((r) => setTimeout(r, backoffMs * i));
     try {
-      const out = await api(`/candidate/assessments/${id}/submit`, { method: 'POST', body: { answers: {} } });
+      const out = await api(`/candidate/assessments/${id}/submit`, {
+        method: 'POST', body: { answers: {} }, timeoutMs,
+      });
       return out && typeof out === 'object' ? out : { status: 'submitted' };
     } catch (err) {
       if (err?.status === 409) return { status: 'submitted', already: true };
       if (err?.status && err.status !== 429 && err.status < 500) throw err;
-      lastError = err; // network failure, 429 or 5xx — worth another attempt
+      lastError = err; // network failure, timeout, 429 or 5xx — worth another attempt
     }
   }
   throw lastError || new Error('Assessment submission failed');
@@ -852,11 +900,14 @@ export async function submitExam(id, { attempts = 3, backoffMs = 1200 } = {}) {
 
 export async function finalizeExam(id, opts) {
   const view = document.getElementById('view');
-  renderSubmitHandover(view);
+  renderSubmitHandover(view, opts);
   // Submit with no answers: every lock already persisted its answer (locked
   // rows win server-side, so re-sending them is pure payload — with recorded
   // audio that ran to megabytes and tripped the request-size limit, failing
-  // the submit of a completed exam). Unanswered items submit as blanks.
+  // the submit of a completed exam). Unanswered items submit as blanks — and
+  // the server writes only the rows that actually changed, so a finished exam
+  // finalises in one batch per table instead of one whole-store rewrite per
+  // question.
   try {
     await submitExam(id, opts);
     toast('Assessment submitted. An assessor will review open responses.', 'success', 5000);

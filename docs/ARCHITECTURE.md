@@ -15,6 +15,16 @@ against named tables with *equality filters only*. Adapters may additionally exp
 `insertMany`/`updateMany` (one write per batch instead of one per row); handlers reach
 them through the `bulkInsert`/`bulkUpdate` helpers, which fall back to a loop when an
 adapter does not implement them — so batching is an optimization, never a requirement.
+
+Batching is not optional on the exam's write paths, though: every adapter rewrites a *whole*
+table per single-row write (the file store re-serialises the entire database, the blob store
+re-uploads the table blob), so a loop that writes one row per question is a loop that rewrites
+the whole store per question. A 110-question submit did exactly that and cost ~1 GB of JSON
+locally and a serverless timeout in production — the candidate's *"stuck on Submitting your
+assessment…"* panel. The rule that came out of it: **write only the rows that changed, and write
+them in one batch per table** (compare with `stableJson` from `api/helpers.mjs` so an equivalent
+value with a different key order does not count as a change).
+
 Three adapters ship today:
 
 | Adapter            | Use for                                   | Env                                  |

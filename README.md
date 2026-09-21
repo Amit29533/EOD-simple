@@ -23,7 +23,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes the RSA track + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 341 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 362 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -113,6 +113,14 @@ python3 tests/features.py     # 216 checks: every feature — CRUD, validation, 
   in the proctoring trail, the audit log and the assessor's paper.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario answered by microphone recording), autosaving quiz, strict submission validation, optional per-assessment question count.
+- **Finalisation that cannot hang** — every answer is already persisted the moment it is locked,
+  so the end-of-exam submit stores only the rows that actually changed, in **one batch per table**
+  (a 110-question paper finalises with a single response write instead of 110 whole-store
+  rewrites — measured 7 955 ms → 299 ms on a 9.6 MB store). Each submit attempt carries a
+  20-second deadline and is retried, so a submit the server never answers ends on a retry screen
+  with a way back to *My Journey* — never on a "Submitting your assessment…" spinner that can
+  never resolve. A final lock that fails leaves the candidate on their question with the answer
+  they typed or recorded still in hand.
 - **Automated scoring** — objective items auto-scored at submit (multi-select MCQs are all-or-nothing: any incorrect choice, or a missing correct option, scores the question at zero — no partial credit); open items assessor-scored against rubrics; competency-weighted blend.
 - **Capability gap generation** — score → 1–5 level per competency, vs role target level; severity (moderate/critical), ordered areas to improve with recommended focus, strengths.
 - **Admin dashboard** — pipeline distribution, assessment statuses, readiness KPIs, recent activity, audit log.
@@ -393,7 +401,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (341 Node tests), then with a local server up
+Verify before you ship: `npm test` (362 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks

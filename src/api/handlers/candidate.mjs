@@ -1,4 +1,4 @@
-import { ok, bad, notFound, conflict, unprocessable, audit } from '../helpers.mjs';
+import { ok, bad, notFound, conflict, unprocessable, audit, bulkInsert, bulkUpdate, stableJson } from '../helpers.mjs';
 import { questionForCandidate, competencyForCandidate, reportForCandidate } from '../projections.mjs';
 import { autoScore, isAutoQuestion } from '../../core/scoring.mjs';
 import { MAX_AUDIO_B64 } from '../../core/constants.mjs';
@@ -38,6 +38,20 @@ function isBlank(q, value) {
   if (q.type === 'text') return !openAnswerHasContent(value);
   return false;
 }
+
+/**
+ * Stored shape of an unanswered question, by type. The `timed_out` source is
+ * what tells the assessor (and the report) that the row is a blank the clock
+ * created rather than an answer the candidate gave.
+ */
+function blankAnswerFor(q) {
+  if (q.type === 'mcq_multi') return [];
+  if (q.type === 'text') return { text: '', transcript: '', source: 'timed_out' };
+  return '';
+}
+
+/** Has this question already got a row on the paper? (keyed by question id) */
+const responseIndex = (rows) => new Map(rows.map((r) => [r.question_id, r]));
 
 function persistableAnswer(q, value) {
   if (q.type === 'text' && value && typeof value === 'object') {
@@ -165,28 +179,37 @@ export function candidateHandlers(route) {
     if (!answers || typeof answers !== 'object') return bad('answers must be an object keyed by question id.');
     const qById = new Map(a.snapshot_json.questions.map((q) => [q.id, q]));
     const existing = await store.list('responses', { assessment_id: a.id });
-    const byQid = new Map(existing.map((r) => [r.question_id, r]));
+    const byQid = responseIndex(existing);
+    // One write for the whole autosave instead of one per answer. The file and
+    // blob adapters rewrite the entire table on every single-row write, so a
+    // per-answer loop over a full paper is hundreds of whole-table rewrites —
+    // and this route is the chatty one (recording stop, note edits).
+    const updates = [];
+    const inserts = [];
+    const removals = [];
     for (const [qid, value] of Object.entries(answers)) {
       const q = qById.get(qid);
       if (!q) continue;
       const prior = byQid.get(qid);
       if (prior?.locked) continue;
       if (value === null || value === '' || (Array.isArray(value) && !value.length)) {
-        const r = byQid.get(qid);
-        if (r) await store.remove('responses', r.id);
+        if (prior) removals.push(prior.id);
         continue;
       }
       if (!validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
       if (q.type === 'text' && !openAnswerHasContent(value)) {
-        const r = byQid.get(qid);
-        if (r) await store.remove('responses', r.id);
+        if (prior) removals.push(prior.id);
         continue;
       }
       const stored = persistableAnswer(q, value);
-      const r = byQid.get(qid);
-      if (r) await store.update('responses', r.id, { answer: stored });
-      else await store.insert('responses', { assessment_id: a.id, question_id: qid, answer: stored });
+      if (!prior) inserts.push({ assessment_id: a.id, question_id: qid, answer: stored });
+      else if (stableJson(prior.answer) !== stableJson(stored)) updates.push({ id: prior.id, patch: { answer: stored } });
     }
+    await bulkUpdate(store, 'responses', updates);
+    await bulkInsert(store, 'responses', inserts);
+    // Clearing an answer is rare (and `remove` has no batch form); the guard
+    // above keeps it from rewriting a row that is already gone.
+    for (const id of removals) await store.remove('responses', id);
     if (a.status === 'assigned')
       await store.update('assessments', a.id, { status: 'in_progress', started_at: new Date().toISOString() });
     return ok({ ok: true, saved_at: new Date().toISOString() });
@@ -344,9 +367,9 @@ export function candidateHandlers(route) {
       const existing = await store.list('responses', { assessment_id: a.id });
       const r = existing.find((x) => x.question_id === q.id);
       if (!r) {
-        const blankValue =
-          q.type === 'mcq_multi' ? [] : q.type === 'text' ? { text: '', transcript: '', source: 'timed_out' } : '';
-        await store.insert('responses', { assessment_id: a.id, question_id: q.id, answer: blankValue, locked: true });
+        await store.insert('responses', {
+          assessment_id: a.id, question_id: q.id, answer: blankAnswerFor(q), locked: true,
+        });
       }
       if (!hardExpired) {
         base = integrityPatch(
@@ -396,20 +419,39 @@ export function candidateHandlers(route) {
     if (missingQ.length && !examDone)
       return unprocessable(`${missingQ.length} question(s) are unanswered.`, { missing_question_ids: missingQ });
 
-    const byQid = new Map(existing.map((r) => [r.question_id, r]));
+    const byQid = responseIndex(existing);
+    // The final whistle used to rewrite every response row — 110 whole-store
+    // rewrites for a 110-question paper (~1 GB of JSON through the file
+    // adapter, or 110 read-modify-write round trips of the whole responses
+    // table on a blob/Airtable backend). That is the "Submitting your
+    // assessment…" screen that never finishes: on a serverless function the
+    // submit is killed by the invocation timeout, the browser's POST never
+    // answers, and the candidate is left on a spinner forever.
+    //
+    // Every answer was already persisted when it was locked, so there is
+    // nothing to write for a completed paper. Collect only what actually
+    // changed (a recovered/legacy row, an auto-score that moved, a blank for a
+    // question that timed out) and persist it as one batch per table.
+    const updates = [];
+    const inserts = [];
     for (const q of questions) {
       const raw = answers[q.id];
       const blank = isBlank(q, raw);
-      const value = blank
-        ? (q.type === 'mcq_multi' ? [] : (q.type === 'text' ? { text: '', transcript: '', source: 'timed_out' } : ''))
-        : persistableAnswer(q, raw);
+      const value = blank ? blankAnswerFor(q) : persistableAnswer(q, raw);
       const scoreInput = q.type === 'text' ? textValue(value) : value;
       const auto = isAutoQuestion(q) ? (blank ? 0 : (autoScore(q, scoreInput) ?? 0)) : null;
       const r = byQid.get(q.id);
-      const patch = { answer: value, auto_score: auto };
-      if (r) await store.update('responses', r.id, patch);
-      else await store.insert('responses', { assessment_id: a.id, question_id: q.id, ...patch });
+      if (!r) {
+        inserts.push({ assessment_id: a.id, question_id: q.id, answer: value, auto_score: auto });
+        continue;
+      }
+      const patch = {};
+      if (stableJson(r.answer) !== stableJson(value)) patch.answer = value;
+      if ((r.auto_score ?? null) !== auto) patch.auto_score = auto;
+      if (Object.keys(patch).length) updates.push({ id: r.id, patch });
     }
+    await bulkUpdate(store, 'responses', updates);
+    await bulkInsert(store, 'responses', inserts);
     await store.update('assessments', a.id, { status: 'submitted', submitted_at: new Date().toISOString() });
     const candidate = await myCandidate(store, auth.user);
     await audit(store, auth.user, 'assessment_submitted', 'assessments', a.id, `"${candidate?.name}" submitted their assessment`);
