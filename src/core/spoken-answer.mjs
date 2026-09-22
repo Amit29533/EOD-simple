@@ -49,11 +49,15 @@ export function healSpokenContract(questions = []) {
   return questions.map((q) => withSpokenContract(q));
 }
 
-/** Did this submission actually carry a recorded/spoken answer? */
+/**
+ * Did this submission actually carry a recorded/spoken answer? A recording is
+ * present either inline (`audio_b64`, the wire form) or as `audio_ref` — the
+ * stored form, once the clip has been moved to the `recordings` table.
+ */
 export function hasSpokenEvidence(value) {
   if (!value || typeof value !== 'object') return false;
   const b64 = String(value.audio_b64 || '').replace(/\s/g, '');
-  return Boolean(b64) || Boolean(String(value.transcript || '').trim());
+  return Boolean(b64) || Boolean(value.audio_ref) || Boolean(String(value.transcript || '').trim());
 }
 
 /**
@@ -67,6 +71,7 @@ export function openAnswerHasContent(value) {
   return Boolean(
     String(value.text || '').trim()
     || String(value.transcript || '').trim()
-    || String(value.audio_b64 || '').replace(/\s/g, ''),
+    || String(value.audio_b64 || '').replace(/\s/g, '')
+    || value.audio_ref,
   );
 }

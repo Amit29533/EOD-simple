@@ -1,16 +1,26 @@
-import { ok, bad, notFound, conflict, unprocessable, audit, bulkInsert, bulkUpdate, stableJson } from '../helpers.mjs';
+import { ok, bad, notFound, conflict, unprocessable, audit, bulkInsert, bulkUpdate, bulkRemove, stableJson } from '../helpers.mjs';
 import { questionForCandidate, competencyForCandidate, reportForCandidate } from '../projections.mjs';
 import { autoScore, isAutoQuestion } from '../../core/scoring.mjs';
 import { MAX_AUDIO_B64 } from '../../core/constants.mjs';
 import {
   sortedQuestions, isOpenQuestion, budgetsFor, ensureQuizState, remainingMs, remainingTimeMs, integrityPatch,
+  MAX_INTEGRITY_EVENTS,
 } from '../quiz-session.mjs';
 import {
   requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent,
 } from '../../core/spoken-answer.mjs';
 import { withLock } from '../mutex.mjs';
+import { paperFacts, paperSummary } from '../assessment-service.mjs';
 
 const R = ['candidate'];
+
+/**
+ * How far past a question's budget the API still accepts the answer that was
+ * on its way — network latency, the 250 ms ticker, a slow tab. Beyond it the
+ * window is treated as closed: the advance records a blank, the review
+ * hand-over is logged, and autosave stops taking drafts for the question.
+ */
+const EXAM_GRACE_MS = 5000;
 
 // Every mutation below is a read-modify-write over one assessment, so each
 // runs under that assessment's lock: without it, parallel autosaves,
@@ -40,44 +50,125 @@ function isBlank(q, value) {
 }
 
 /**
- * Stored shape of an unanswered question, by type. The `timed_out` source is
- * what tells the assessor (and the report) that the row is a blank the clock
- * created rather than an answer the candidate gave.
+ * Stored shape of an unanswered question, by type. The `source` on an open
+ * blank tells the assessor (and the report) how the blank came about: the
+ * clock ran out (`timed_out`) or the candidate moved on without answering
+ * (`skipped`) — rather than an answer the candidate gave.
  */
-function blankAnswerFor(q) {
+function blankAnswerFor(q, source = 'timed_out') {
   if (q.type === 'mcq_multi') return [];
-  if (q.type === 'text') return { text: '', transcript: '', source: 'timed_out' };
+  if (q.type === 'text') return { text: '', transcript: '', source };
   return '';
 }
 
 /** Has this question already got a row on the paper? (keyed by question id) */
 const responseIndex = (rows) => new Map(rows.map((r) => [r.question_id, r]));
 
-function persistableAnswer(q, value) {
-  // A bare string is a typed-only open answer. It used to be stored verbatim,
-  // which skipped the spoken-answer contract below: a client that posted
-  // `answer: "..."` instead of the `{ text, transcript }` object was never
-  // flagged `audio_missing`, so the integrity counter, the exam trail and the
-  // assessor's "no recording" warning all stayed silent for it.
+/**
+ * Normalise an open answer and separate the recording from it.
+ *
+ * Returns `{ answer, audio }`: `answer` is what the response row stores and
+ * `audio` is `{ b64, mime }` when the submission carried a valid clip. The
+ * clip never goes on the row. A two-minute answer is ~320,000 base64
+ * characters and a whole-bank paper has 33 of them: kept on the rows, one
+ * finished candidate added ~10 MB that every exam request re-read (the
+ * responses table is listed per GET and lock, and rewritten per lock on the
+ * file and blob adapters), every unrelated write of the file store
+ * re-serialised (an admin login went from 5 ms to 210 ms), and the assessor's
+ * detail payload carried whole (10 MB — past a serverless function's 6 MB
+ * response cap). Recordings live in the `recordings` table (one object per
+ * row on the file and blob adapters) and the answer keeps `audio_ref`.
+ *
+ * `trusted` marks a value that is already a stored row (the submit-time
+ * re-normalisation): its `audio_ref` is kept. A client can never plant one —
+ * an untrusted `audio_ref` is dropped, so it cannot fake spoken evidence.
+ *
+ * A bare string is a typed-only open answer. It used to be stored verbatim,
+ * which skipped the spoken-answer contract: a client that posted
+ * `answer: "..."` instead of the `{ text, transcript }` object was never
+ * flagged `audio_missing`, so the integrity counter, the exam trail and the
+ * assessor's "no recording" warning all stayed silent for it.
+ *
+ * `keep` is the answer already stored for this same (assessment, question) —
+ * the draft the exam hall autosaved seconds earlier. A value that carries no
+ * clip but `audio_keep: true` keeps THAT recording instead of dropping it, so
+ * the hall can autosave note edits without re-uploading a two-minute clip
+ * each time, and can lock a restored draft after a reload. It is still not a
+ * way to plant evidence: the reference comes from the store, never from the
+ * request, and with nothing stored the answer is flagged `audio_missing`
+ * exactly as before. `kept` tells the caller not to drop the recording.
+ */
+const AUDIO_MIME = /^audio\/[\w.+-]{1,40}(;\s?codecs=[\w.,+-]{1,60})?$/i;
+
+function splitAnswer(q, value, { trusted = false, keep = null } = {}) {
   const open = q.type === 'text' && typeof value === 'string'
     ? { text: value, transcript: '', source: 'typed' }
     : value;
-  if (q.type === 'text' && open && typeof open === 'object') {
-    const out = {
-      text: String(open.text || ''),
-      transcript: String(open.transcript || ''),
-      source: open.source === 'audio' ? 'audio' : 'typed',
-    };
-    const b64 = String(open.audio_b64 || '').replace(/\s/g, '');
-    if (b64 && b64.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(b64)) {
-      out.audio_b64 = b64;
-      out.audio_mime = String(open.audio_mime || 'audio/webm').slice(0, 80);
-    }
-    if (requiresSpokenAnswer(q) && !hasSpokenEvidence(out)) out.audio_missing = true;
-    return out;
+  if (q.type !== 'text' || !open || typeof open !== 'object') return { answer: value, audio: null, kept: false };
+  const out = {
+    text: String(open.text || ''),
+    transcript: String(open.transcript || ''),
+    source: open.source === 'audio' ? 'audio' : 'typed',
+  };
+  // The mime type ends up in a `data:` URL on the assessor's screen: keep it
+  // to a media type MediaRecorder would actually report (`audio/webm`,
+  // `audio/webm;codecs=opus`, Firefox's `audio/ogg; codecs=opus`).
+  const rawMime = String(open.audio_mime || '').trim();
+  const mime = AUDIO_MIME.test(rawMime) ? rawMime : 'audio/webm';
+  const b64 = String(open.audio_b64 || '').replace(/\s/g, '');
+  let audio = null;
+  let kept = false;
+  if (b64 && b64.length <= MAX_AUDIO_B64 && /^[A-Za-z0-9+/=]+$/.test(b64)) {
+    audio = { b64, mime };
+    out.audio_mime = mime;
+  } else if (trusted && typeof open.audio_ref === 'string' && open.audio_ref) {
+    out.audio_ref = open.audio_ref;
+    out.audio_mime = mime;
+  } else if (open.audio_keep === true && keep && typeof keep === 'object'
+    && typeof keep.audio_ref === 'string' && keep.audio_ref) {
+    out.audio_ref = keep.audio_ref;
+    out.audio_mime = AUDIO_MIME.test(String(keep.audio_mime || '')) ? keep.audio_mime : mime;
+    kept = true;
   }
-  return value;
+  if (requiresSpokenAnswer(q) && !audio && !hasSpokenEvidence(out)) out.audio_missing = true;
+  return { answer: out, audio, kept };
 }
+
+/** The one recording row for (assessment, question): replaced in place. */
+async function saveRecording(store, assessmentId, questionId, audio) {
+  const rows = await store.list('recordings', { assessment_id: assessmentId, question_id: questionId });
+  if (rows.length) {
+    const [keep, ...extra] = rows;
+    await store.update('recordings', keep.id, { audio });
+    if (extra.length) await bulkRemove(store, 'recordings', extra.map((r) => r.id));
+    return keep.id;
+  }
+  const rec = await store.insert('recordings', { assessment_id: assessmentId, question_id: questionId, audio });
+  return rec.id;
+}
+
+async function dropRecordings(store, assessmentId, questionId) {
+  const rows = await store.list('recordings', { assessment_id: assessmentId, question_id: questionId });
+  if (rows.length) await bulkRemove(store, 'recordings', rows.map((r) => r.id));
+}
+
+/**
+ * The stored form of an answer, its recording saved to the recordings table
+ * and referenced from the row. An open answer that arrives from the client
+ * without a clip drops whatever recording a draft left for the question —
+ * the posted answer is the answer, exactly as when the clip rode on the row —
+ * unless it asked to keep it (`audio_keep`, see splitAnswer).
+ */
+async function persistAnswer(store, assessmentId, q, value, opts = {}) {
+  const { answer, audio, kept } = splitAnswer(q, value, opts);
+  if (audio) answer.audio_ref = await saveRecording(store, assessmentId, q.id, audio);
+  else if (q.type === 'text' && !opts.trusted && !kept) await dropRecordings(store, assessmentId, q.id);
+  return answer;
+}
+
+/** Does this open answer ask to keep a recording that `prior` actually holds? */
+const keepsRecording = (q, value, prior) => q.type === 'text' && value && typeof value === 'object'
+  && value.audio_keep === true && typeof prior?.answer?.audio_ref === 'string' && Boolean(prior.answer.audio_ref);
 
 function validateAnswerShape(q, value) {
   switch (q.type) {
@@ -110,19 +201,20 @@ export function candidateHandlers(route) {
   route('GET', '/candidate/assessments', R, async ({ store, auth }) => {
     const candidate = await myCandidate(store, auth.user);
     if (!candidate) return conflict('No candidate record is linked to your login. Contact your administrator.');
-    const rows = await store.list('assessments', { candidate_id: candidate.id });
+    const rows = await store.list('assessments', { candidate_id: candidate.id }, { detached: false });
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const facts = await paperFacts(store, rows);
     return ok({
       candidate: { id: candidate.id, name: candidate.name, stage: candidate.stage },
-      assessments: rows.map((a) => ({
+      assessments: rows.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, started_at: a.started_at,
         submitted_at: a.submitted_at, scored_at: a.scored_at,
         overall_pct: ['scored', 'validated'].includes(a.status) ? a.overall_pct : null,
         readiness_label: ['scored', 'validated'].includes(a.status) ? a.readiness_label : null,
         readiness_key: ['scored', 'validated'].includes(a.status) ? a.readiness_key : null,
-        role_name: a.snapshot_json?.role?.name || 'Assessment',
-        question_count: (a.snapshot_json?.questions || []).length,
-        total_points: (a.snapshot_json?.questions || []).reduce((s2, q) => s2 + Number(q.points ?? 1), 0),
+        role_name: facts[i].role_name || 'Assessment',
+        question_count: facts[i].question_count,
+        total_points: facts[i].total_points,
       })),
     });
   });
@@ -149,6 +241,9 @@ export function candidateHandlers(route) {
     // never written, so every reload minted a fresh `question_started_at` and
     // the server-side budget for that question could never run out.
     if (!a.quiz_state || quiz.question_started_at !== a.quiz_state.question_started_at) patch.quiz_state = quiz;
+    // A row allocated before the listing facts existed gains them on its
+    // first open (this write also moves its inline paper out of the table).
+    if (a.role_name === undefined || a.total_points === undefined) Object.assign(patch, paperSummary(snap));
     if (Object.keys(patch).length) await store.update('assessments', a.id, patch);
 
     const responses = await store.list('responses', { assessment_id: a.id });
@@ -193,7 +288,25 @@ export function candidateHandlers(route) {
       return conflict('This assessment has already been submitted.');
     const answers = body.answers;
     if (!answers || typeof answers !== 'object') return bad('answers must be an object keyed by question id.');
-    const qById = new Map(a.snapshot_json.questions.map((q) => [q.id, q]));
+    // Validate against the SERVED paper (de-duplicated, spoken-contract
+    // healed), exactly as /next and /submit do — the raw snapshot can still
+    // hold a legacy twin or a flag-less open row, and a draft checked against
+    // that copy would be stored under a contract the exam never served.
+    const questions = sortedQuestions(a.snapshot_json);
+    const qById = new Map(questions.map((q) => [q.id, q]));
+    // The exam is one question at a time, so a draft can only be for the
+    // question on screen, and only while its clock is running. Autosave used
+    // to take a draft for ANY question on the paper — a passed one, a future
+    // one, the live one long after its window closed — and the final submit
+    // then graded those drafts as answers. That let a scripted client walk the
+    // paper blank (reading every prompt), answer offline and post the lot at
+    // the end. Anything but the live, in-time question is ignored the way an
+    // unknown id is: the browser's exam hall never sends such a draft.
+    // (Nothing is on screen before the exam hall has been opened — the GET
+    // that seeds `quiz_state` — so until then there is no live question.)
+    const quiz = ensureQuizState(a, questions);
+    const live = a.quiz_state ? questions[quiz.index] || null : null;
+    const inTime = live ? remainingTimeMs(live, quiz, Date.now()) >= -EXAM_GRACE_MS : false;
     const existing = await store.list('responses', { assessment_id: a.id });
     const byQid = responseIndex(existing);
     // One write for the whole autosave instead of one per answer. The file and
@@ -203,32 +316,38 @@ export function candidateHandlers(route) {
     const updates = [];
     const inserts = [];
     const removals = [];
+    const accepted = [];
+    const ignored = [];
     for (const [qid, value] of Object.entries(answers)) {
       const q = qById.get(qid);
       if (!q) continue;
+      const clearing = value === null || value === '' || (Array.isArray(value) && !value.length);
+      // A malformed value is a client bug whichever question it names, so it
+      // is still refused; only the *storing* is limited to the live question.
+      if (!clearing && !validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
       const prior = byQid.get(qid);
-      if (prior?.locked) continue;
-      if (value === null || value === '' || (Array.isArray(value) && !value.length)) {
-        if (prior) removals.push(prior.id);
+      if (!live || q.id !== live.id || !inTime || prior?.locked) {
+        ignored.push(qid);
         continue;
       }
-      if (!validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
-      if (q.type === 'text' && !openAnswerHasContent(value)) {
+      accepted.push(qid);
+      // Notes cleared while a recording stays on the server is still an
+      // answer (the recording), not a request to wipe the question.
+      if (clearing || (q.type === 'text' && !openAnswerHasContent(value) && !keepsRecording(q, value, prior))) {
         if (prior) removals.push(prior.id);
+        if (q.type === 'text') await dropRecordings(store, a.id, q.id);
         continue;
       }
-      const stored = persistableAnswer(q, value);
+      const stored = await persistAnswer(store, a.id, q, value, { keep: prior?.answer });
       if (!prior) inserts.push({ assessment_id: a.id, question_id: qid, answer: stored });
       else if (stableJson(prior.answer) !== stableJson(stored)) updates.push({ id: prior.id, patch: { answer: stored } });
     }
     await bulkUpdate(store, 'responses', updates);
     await bulkInsert(store, 'responses', inserts);
-    // Clearing an answer is rare (and `remove` has no batch form); the guard
-    // above keeps it from rewriting a row that is already gone.
-    for (const id of removals) await store.remove('responses', id);
+    await bulkRemove(store, 'responses', removals);
     if (a.status === 'assigned')
       await store.update('assessments', a.id, { status: 'in_progress', started_at: new Date().toISOString() });
-    return ok({ ok: true, saved_at: new Date().toISOString() });
+    return ok({ ok: true, saved_at: new Date().toISOString(), accepted_question_ids: accepted, ignored_question_ids: ignored });
   }));
 
   route('POST', '/candidate/assessments/:id/integrity', R, locked(async ({ store, auth, params, body }) => {
@@ -249,6 +368,15 @@ export function candidateHandlers(route) {
       question_prompt: q?.prompt || '',
     });
     await store.update('assessments', a.id, { quiz_state: quiz });
+    // The exam's own trail keeps every counter and the last MAX_INTEGRITY_EVENTS
+    // events; the audit log mirrors those events one row each. That mirror is
+    // capped at the same ring size per assessment: the audit table rotates at
+    // 2,000 rows, so an unbounded mirror let a candidate — the one actor whose
+    // beacons are self-reported — push every admin action out of the audit
+    // log with a few thousand `blur` posts. Past the cap the exam trail still
+    // records the event (counters, `events_dropped`); only the audit copy stops.
+    const totalEvents = (quiz.events || []).length + (Number(quiz.events_dropped) || 0);
+    if (totalEvents > MAX_INTEGRITY_EVENTS) return ok({ integrity: quiz.integrity, events: quiz.events });
     const candidate = await myCandidate(store, auth.user);
     const event = String(body?.event || 'integrity').slice(0, 80);
     await audit(
@@ -280,7 +408,7 @@ export function candidateHandlers(route) {
     // overrun is recorded in the integrity trail — mirroring the automatic
     // review-expiry advance, which logs before transitioning.
     let base = quiz;
-    if (remainingTimeMs(q, quiz, Date.now()) < -5000) {
+    if (remainingTimeMs(q, quiz, Date.now()) < -EXAM_GRACE_MS) {
       base = integrityPatch(
         base,
         'time_expired',
@@ -315,8 +443,7 @@ export function candidateHandlers(route) {
     const now = Date.now();
     const raw = remainingTimeMs(q, quiz, now);
     const timeExpired = raw <= 0;
-    const graceMs = 5000;
-    const hardExpired = raw < -graceMs;
+    const hardExpired = raw < -EXAM_GRACE_MS;
 
     let base = quiz;
 
@@ -341,53 +468,80 @@ export function candidateHandlers(route) {
       });
     }
 
+    // Whatever happens below, the question being left behind ends up with a
+    // LOCKED response row: the answer that was posted, the draft autosave took
+    // while the clock was running, or a blank. A blank advance used to store
+    // nothing at all, which left the question open to be answered later — by a
+    // draft PUT or by the final submit — long after its window had closed.
+    const existing = await store.list('responses', { assessment_id: a.id });
+    const r = existing.find((x) => x.question_id === q.id);
+    // An unlocked draft can only have been written inside the question's
+    // window (the autosave route refuses anything else), so it is an answer
+    // given in time even when the lock itself arrives late.
+    const draft = r && !r.locked && !isBlank(q, r.answer) ? r.answer : null;
+    const lockRow = (answer) => (r
+      ? store.update('responses', r.id, { answer, locked: true })
+      : store.insert('responses', { assessment_id: a.id, question_id: q.id, answer, locked: true }));
+
     // Answer flow: allow answering in review or answer phase (review is UI guidance, not hard gate)
     let answerToLock = body?.answer;
     if (hardExpired) {
-      answerToLock = null;
+      answerToLock = null; // a late answer is not accepted
       base = integrityPatch(
         base,
         'time_expired',
-        `Q${quiz.index + 1} time expired - auto-advanced as blank.`,
+        `Q${quiz.index + 1} time expired - auto-advanced ${draft ? 'with the answer saved in time' : 'as blank'}.`,
         { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
       );
     }
 
-    if (answerToLock !== undefined && answerToLock !== null && !isBlank(q, answerToLock)) {
+    // The spoken-answer contract leaves the same trail however the answer got
+    // locked. It used to fire only for an answer posted with the advance: a
+    // typed-only answer that arrived as an autosave draft and was locked by a
+    // blank or expired advance carried `audio_missing` on the row (so the
+    // assessor saw the warning) while the integrity counter, the exam event
+    // trail and the audit log all stayed silent for it.
+    const noteMissingSpoken = async (stored) => {
+      if (!stored || typeof stored !== 'object' || stored.audio_missing !== true) return;
+      base = integrityPatch(
+        base,
+        'spoken_answer_missing',
+        `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
+        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+      );
+      const candidate = await myCandidate(store, auth.user);
+      await audit(
+        store,
+        auth.user,
+        'exam_spoken_answer_missing',
+        'assessments',
+        a.id,
+        `"${candidate?.name || 'Candidate'}" locked Q${quiz.index + 1} without a recording - "${String(q.prompt).slice(0, 80)}"`,
+        { question_index: quiz.index, question_id: q.id },
+      );
+    };
+
+    // An open answer whose only content is the recording it asks to keep is
+    // not blank: it locks that recording (with whatever notes came with it).
+    const usable = answerToLock !== undefined && answerToLock !== null
+      && (!isBlank(q, answerToLock) || keepsRecording(q, answerToLock, r));
+    if (usable) {
       if (!validateAnswerShape(q, answerToLock))
         return unprocessable('Invalid answer for the current question.');
-      const existing = await store.list('responses', { assessment_id: a.id });
-      const r = existing.find((x) => x.question_id === q.id);
-      const stored = persistableAnswer(q, answerToLock);
-      if (r) await store.update('responses', r.id, { answer: stored, locked: true });
-      else await store.insert('responses', { assessment_id: a.id, question_id: q.id, answer: stored, locked: true });
-      if (stored.audio_missing) {
-        base = integrityPatch(
-          base,
-          'spoken_answer_missing',
-          `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
-          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-        );
-        const candidate = await myCandidate(store, auth.user);
-        await audit(
-          store,
-          auth.user,
-          'exam_spoken_answer_missing',
-          'assessments',
-          a.id,
-          `"${candidate?.name || 'Candidate'}" locked Q${quiz.index + 1} without a recording - "${String(q.prompt).slice(0, 80)}"`,
-          { question_index: quiz.index, question_id: q.id },
-        );
+      const stored = await persistAnswer(store, a.id, q, answerToLock, { keep: r?.answer });
+      await lockRow(stored);
+      await noteMissingSpoken(stored);
+    } else {
+      // No usable answer arrived with the advance: lock the in-time draft if
+      // there is one, otherwise record the question as a blank — exactly what
+      // the rules on the gate page promise for a question that is left behind.
+      // (A row that is already locked — a cursor wound back over it — keeps
+      // the answer it holds rather than being blanked.)
+      if (!r?.locked) {
+        await lockRow(draft ?? blankAnswerFor(q, timeExpired ? 'timed_out' : 'skipped'));
+        await noteMissingSpoken(draft);
       }
-    } else if (timeExpired) {
-      const existing = await store.list('responses', { assessment_id: a.id });
-      const r = existing.find((x) => x.question_id === q.id);
-      if (!r) {
-        await store.insert('responses', {
-          assessment_id: a.id, question_id: q.id, answer: blankAnswerFor(q), locked: true,
-        });
-      }
-      if (!hardExpired) {
+      if (timeExpired && !hardExpired && !draft) {
         base = integrityPatch(
           base,
           'time_expired',
@@ -421,13 +575,18 @@ export function candidateHandlers(route) {
     const quiz = a.quiz_state || null;
     const examDone = quiz && Number(quiz.index) >= questions.length;
     const existing = await store.list('responses', { assessment_id: a.id });
-    const answers = {
-      ...Object.fromEntries(existing.map((r) => [r.question_id, r.answer])),
-      ...incoming,
-      ...Object.fromEntries(existing.filter((r) => r.locked).map((r) => [r.question_id, r.answer])),
-    };
+    // The paper is what the exam hall locked, question by question, inside
+    // each question's window. The submit body used to be merged over every
+    // row that was not locked — so a client that walked the paper blank could
+    // hand in a full answer sheet at the end, outside every timer. Answers in
+    // the body are now validated (a malformed sheet is still refused) but
+    // never graded: a question the walk left blank submits as a blank.
+    const answers = Object.fromEntries(existing.map((r) => [r.question_id, r.answer]));
     const missingQ = [];
     for (const q of questions) {
+      const posted = incoming[q.id];
+      if (posted !== undefined && posted !== null && !isBlank(q, posted) && !validateAnswerShape(q, posted))
+        return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
       const v = answers[q.id];
       if (isBlank(q, v)) missingQ.push(q.id);
       else if (!validateAnswerShape(q, v)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
@@ -453,10 +612,15 @@ export function candidateHandlers(route) {
     for (const q of questions) {
       const raw = answers[q.id];
       const blank = isBlank(q, raw);
-      const value = blank ? blankAnswerFor(q) : persistableAnswer(q, raw);
+      const r = byQid.get(q.id);
+      // A blank the walk already stored keeps the source the advance gave it
+      // (skipped / timed_out); only a question with no row at all — a cursor
+      // pushed past it — is written here, as a timed-out blank.
+      // `raw` is a stored row (or a legacy one still carrying its clip inline,
+      // which moves to the recordings table here): trusted.
+      const value = blank ? (r?.answer ?? blankAnswerFor(q)) : await persistAnswer(store, a.id, q, raw, { trusted: true });
       const scoreInput = q.type === 'text' ? textValue(value) : value;
       const auto = isAutoQuestion(q) ? (blank ? 0 : (autoScore(q, scoreInput) ?? 0)) : null;
-      const r = byQid.get(q.id);
       if (!r) {
         inserts.push({ assessment_id: a.id, question_id: q.id, answer: value, auto_score: auto });
         continue;

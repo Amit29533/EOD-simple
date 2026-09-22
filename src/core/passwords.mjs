@@ -17,6 +17,36 @@ export async function hashPasswordAsync(password) {
   return `s2:${salt}:${derived.toString('hex')}`;
 }
 
+/**
+ * How many scrypt jobs a bulk hash keeps in flight at once. Node runs scrypt
+ * on the libuv threadpool (4 threads by default) and the queue is FIFO, so
+ * `Promise.all(rows.map(hashPasswordAsync))` over a 2000-row import parks
+ * two thousand jobs ahead of every other user's login for the ~40 s the
+ * import takes (a login also needs a scrypt to verify). Two in flight leaves
+ * room on the pool for everyone else at a small cost in wall time.
+ */
+export const BULK_HASH_CONCURRENCY = 2;
+
+/**
+ * Hash many passwords, in order, with at most `concurrency` scrypt jobs in
+ * flight. Results line up with `passwords` by index.
+ */
+export async function hashPasswordsAsync(passwords, concurrency = BULK_HASH_CONCURRENCY) {
+  const list = Array.from(passwords);
+  const out = new Array(list.length);
+  let next = 0;
+  const workers = Math.max(1, Math.min(concurrency, list.length));
+  await Promise.all(Array.from({ length: workers }, async () => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= list.length) return;
+      out[i] = await hashPasswordAsync(list[i]);
+    }
+  }));
+  return out;
+}
+
 export function verifyPassword(password, stored) {
   try {
     const [tag, salt, hash] = String(stored).split(':');

@@ -279,9 +279,14 @@ check('6 racing advances: exactly one advances, five no-op as duplicates',
 st, quiz = call('GET', f'/candidate/assessments/{ASMB}', TB)
 check('6 racing advances land the cursor exactly once (index 1)',
       st == 200 and quiz['exam']['index'] == 1)
-db = json.load(open(os.environ.get('DATA_FILE', 'data/ecod.json')))
-brows = [r for r in db.get('tables', {}).get('responses', {}).values()
-         if r.get('assessment_id') == ASMB and r.get('question_id') == BQID]
+DATA_FILE = os.environ.get('DATA_FILE', 'data/ecod.json')
+db = json.load(open(DATA_FILE))
+# answers are one file per assessment in the file store (src/storage/row-tables.mjs);
+# rows written by an older version may still sit in the database file
+shard = os.path.join(DATA_FILE[:-5] + '.rows', 'shards', 'responses', ASMB + '.json')
+stored = list(json.load(open(shard)).values()) if os.path.exists(shard) else []
+stored += list(db.get('tables', {}).get('responses', {}).values())
+brows = [r for r in stored if r.get('assessment_id') == ASMB and r.get('question_id') == BQID]
 check('6 racing advances store exactly one response row (no duplicates)', len(brows) == 1)
 
 with cf.ThreadPoolExecutor(max_workers=10) as ex:

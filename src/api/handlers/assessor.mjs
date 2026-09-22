@@ -3,7 +3,7 @@ import {
 } from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
-import { finalizeScoring } from '../assessment-service.mjs';
+import { finalizeScoring, paperFacts } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
 import { withLock } from '../mutex.mjs';
 
@@ -20,19 +20,34 @@ async function own(store, assessorId, assessmentId) {
   return a && a.assessor_id === assessorId ? a : null;
 }
 
+/**
+ * An answer as the detail view carries it: the recording itself stays out.
+ * A whole-bank paper holds 33 spoken answers of ~320,000 base64 characters
+ * each — inline, the detail payload was ~10 MB, past a serverless function's
+ * 6 MB response cap, so a full paper could not be opened on Netlify at all.
+ * `has_recording` tells the UI to fetch the clip from
+ * `GET …/recordings/:question_id` when the answer is on screen.
+ */
+function answerForDetail(answer) {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return answer;
+  const { audio_b64, audio_ref, ...rest } = answer;
+  return { ...rest, has_recording: Boolean(audio_ref || audio_b64) };
+}
+
 export function assessorHandlers(route) {
   route('GET', '/assessor/assessments', R, async ({ store, auth }) => {
-    const rows = await store.list('assessments', { assessor_id: auth.user.id });
+    const rows = await store.list('assessments', { assessor_id: auth.user.id }, { detached: false });
     const candidates = await store.list('candidates');
     const cmap = Object.fromEntries(candidates.map((c) => [c.id, c]));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const facts = await paperFacts(store, rows);
     return ok({
-      assessments: rows.map((a) => ({
+      assessments: rows.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, submitted_at: a.submitted_at,
         scored_at: a.scored_at, overall_pct: a.overall_pct,
         readiness_key: a.readiness_key, readiness_label: a.readiness_label,
-        role_name: a.snapshot_json?.role?.name || 'Assessment',
-        question_count: (a.snapshot_json?.questions || []).length,
+        role_name: facts[i].role_name || 'Assessment',
+        question_count: facts[i].question_count,
         candidate: candidateForAssessor(cmap[a.candidate_id]),
       })),
     });
@@ -64,7 +79,7 @@ export function assessorHandlers(route) {
         const q = qById.get(r.question_id);
         const live = q && isAutoQuestion(q) ? (autoScore(q, r.answer) ?? 0) : r.auto_score;
         return {
-          question_id: r.question_id, answer: r.answer,
+          question_id: r.question_id, answer: answerForDetail(r.answer),
           auto_score: live, assessor_score: r.assessor_score, assessor_comment: r.assessor_comment || '',
         };
       }),
@@ -72,6 +87,26 @@ export function assessorHandlers(route) {
       // after finalization, the assessor may review the report they produced
       report: ['scored', 'validated'].includes(a.status) ? a.report_json : null,
     });
+  });
+
+  /**
+   * One recorded answer, fetched on demand by the detail view. Same ownership
+   * and status rules as the detail itself. A paper stored before recordings
+   * had their own table still carries the clip on the response row, and is
+   * served from there.
+   */
+  route('GET', '/assessor/assessments/:id/recordings/:question_id', R, async ({ store, auth, params }) => {
+    const a = await own(store, auth.user.id, params.id);
+    if (!a) return notFound('Assessment not found.');
+    if (['assigned', 'in_progress'].includes(a.status))
+      return conflict('The candidate has not submitted this assessment yet.');
+    const qid = String(params.question_id || '');
+    const [rec] = await store.list('recordings', { assessment_id: a.id, question_id: qid });
+    if (rec?.audio?.b64) return ok({ question_id: qid, audio_b64: rec.audio.b64, audio_mime: rec.audio.mime || 'audio/webm' });
+    const [row] = await store.list('responses', { assessment_id: a.id, question_id: qid });
+    const inline = row?.answer && typeof row.answer === 'object' ? row.answer : null;
+    if (inline?.audio_b64) return ok({ question_id: qid, audio_b64: inline.audio_b64, audio_mime: inline.audio_mime || 'audio/webm' });
+    return notFound('No recording for this question.');
   });
 
   route('PUT', '/assessor/assessments/:id/scores', R, locked(async ({ store, auth, params, body }) => {
@@ -82,7 +117,10 @@ export function assessorHandlers(route) {
     if (!entries.length) return bad('Nothing to save.');
     const responses = await store.list('responses', { assessment_id: a.id });
     const byQid = new Map(responses.map((r) => [r.question_id, r]));
-    const qById = new Map(a.snapshot_json.questions.map((q) => [q.id, q]));
+    // Score against the served (de-duplicated) set, as the detail view and
+    // finalizeScoring do, so a legacy duplicate row can never accept a score
+    // that finalization then ignores.
+    const qById = new Map(sortedQuestions(a.snapshot_json).map((q) => [q.id, q]));
     const updates = [];
     const inserts = [];
     for (const e of entries) {
@@ -101,10 +139,15 @@ export function assessorHandlers(route) {
           // finalization.
           patch.assessor_score = null;
         } else {
-          const score = num(e.score, NaN);
+          // A score is a number (or the numeric string a form posts). `num()`
+          // alone also coerced `true` → 1, `[2]` → 2, `"0x2"` → 2 into stored
+          // marks: refuse anything that is not plainly numeric.
+          const plain = typeof e.score === 'number'
+            || (typeof e.score === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(e.score));
+          const score = plain ? num(e.score, NaN) : NaN;
           if (Number.isNaN(score) || score < 0 || score > Number(q.points ?? 1))
-            return unprocessable(`Score for "${q.prompt.slice(0, 60)}..." must be 0-${q.points ?? 1}.`);
-          patch.assessor_score = score;
+            return unprocessable(`Score for "${q.prompt.slice(0, 60)}..." must be a number, 0-${q.points ?? 1}.`);
+          patch.assessor_score = Math.round(score * 100) / 100;
         }
       }
       if (e.comment !== undefined) {

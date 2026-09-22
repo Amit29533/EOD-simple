@@ -80,6 +80,24 @@ test('validateBatch accepts a workbook objective with inline options and aliased
   assert.equal(q.needs_option_review, false);
 });
 
+test('validateBatch refuses two options that share an id, as the legacy bank does', () => {
+  // A JSON post (the authoring form) carries ids; two rows with `id: "a"`
+  // would be a single choice once served, since the pick is stored by id.
+  const report = validateBatch([{
+    module: 'T01', type: 'objective', prompt: 'Which option is the right one to pick here?',
+    options: [{ id: 'a', label: 'First' }, { id: 'a', label: 'Second' }, { id: 'b', label: 'Third' }],
+    correct: 'a',
+  }], { modules: MODULES, families });
+  assert.equal(report.accepted.length, 0);
+  assert.deepEqual(report.rejected[0].errors, ['Each option needs a unique id.']);
+  const fine = validateBatch([{
+    module: 'T01', type: 'objective', prompt: 'Which option is the right one to pick here?',
+    options: [{ id: 'a', label: 'First' }, { id: 'b', label: 'Second' }],
+    correct: 'a',
+  }], { modules: MODULES, families });
+  assert.equal(fine.accepted.length, 1, JSON.stringify(fine.rejected));
+});
+
 test('validateBatch accepts a workbook open question with aliased headers', () => {
   const report = validateBatch([{
     question_id: 'RSA-CSV-002', module_id: 'F01', type: 'Customer Simulation',

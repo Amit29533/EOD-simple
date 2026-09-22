@@ -8,6 +8,9 @@ import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
 import { corsAllowOrigin, corsHeaders } from './src/api/cors.mjs';
 import {
+  createRateLimiter, limitsFromEnv, bearerOf, PRODUCTION_LIMITS, DEVELOPMENT_LIMITS,
+} from './src/api/rate-limit.mjs';
+import {
   DEFAULT_PORT, MAX_SPREADSHEET_BYTES, APP_VERSION,
 } from './src/core/constants.mjs';
 
@@ -29,7 +32,7 @@ const UPLOAD_PATHS = [
  * Production hardening:
  *  - async file I/O (no blocking stat/readSync in request path)
  *  - security headers (HSTS, CSP-lite, etc.)
- *  - simple per-IP rate limiting
+ *  - request budgets per session and per address (src/api/rate-limit.mjs)
  *  - request id + structured logging
  *  - graceful shutdown
  *  - health endpoint
@@ -77,37 +80,41 @@ const MIME = {
   '.map': 'application/json',
 };
 
-// ---- rate limiting (per-IP, in-memory, simple sliding window) ----
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_REQUESTS = IS_PROD ? 300 : 1000; // per minute per IP
-const RATE_MAX_API = IS_PROD ? 200 : 1000;
-const ipHits = new Map(); // ip -> { count, resetAt, apiCount, apiResetAt }
+// ---- request budgets (per session / per address, in-memory) ----
+// Per client, not per address: an exam room is many candidates behind one
+// NAT address, and the hall's own traffic is 13-17 API requests a minute per
+// seat — a per-address budget was full at a dozen seats and then refused the
+// whole room's locks and drafts while the clocks ran. See src/api/rate-limit.mjs
+// for the budgets; RATE_*_PER_MIN environment variables override them.
+const rateLimiter = createRateLimiter({
+  limits: limitsFromEnv(process.env, IS_PROD ? PRODUCTION_LIMITS : DEVELOPMENT_LIMITS),
+});
+setInterval(() => rateLimiter.sweep(), 60_000).unref?.();
+// The routes the app serves without a session (`'public'` in the handlers);
+// /api/health is answered above the limiter altogether.
+const ANONYMOUS_API_PATHS = new Set(['/api/auth/login', '/api/meta/bootstrap']);
 
-function isRateLimited(ip, isApi) {
-  const now = Date.now();
-  let entry = ipHits.get(ip);
-  if (!entry || entry.resetAt <= now) {
-    entry = { count: 0, resetAt: now + RATE_WINDOW_MS, apiCount: 0, apiResetAt: now + RATE_WINDOW_MS };
-    ipHits.set(ip, entry);
+// One log line per address and budget per minute, with a count — not one per
+// refused request, which handed a flood a log line for every request it sent.
+const refusalLog = new Map(); // `${ip}|${budget}` -> { count, windowEnd }
+function logRefusal(req, url, refused, ip, reqId) {
+  const t = Date.now();
+  const key = `${ip}|${refused.budget}`;
+  let e = refusalLog.get(key);
+  if (!e || e.windowEnd <= t) {
+    e = { count: 0, windowEnd: t + 60_000 };
+    refusalLog.set(key, e);
   }
-  if (isApi) {
-    if (entry.apiResetAt <= now) {
-      entry.apiCount = 0;
-      entry.apiResetAt = now + RATE_WINDOW_MS;
-    }
-    entry.apiCount += 1;
-    if (entry.apiCount > RATE_MAX_API) return true;
+  e.count += 1;
+  if (e.count === 1) {
+    console.warn(`[rate] 429 ${req.method} ${url.pathname} budget=${refused.budget} ip=${ip} retry_after=${refused.retryAfter}s id=${reqId} (further refusals from this address on this budget are counted for a minute, not logged)`);
+  } else if (e.count === 100 || e.count % 1000 === 0) {
+    console.warn(`[rate] ${e.count} refusals budget=${refused.budget} ip=${ip} in the current minute (latest ${req.method} ${url.pathname})`);
   }
-  entry.count += 1;
-  return entry.count > RATE_MAX_REQUESTS;
 }
-
-// Cleanup old entries
 setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of ipHits) {
-    if (v.resetAt <= now && v.apiResetAt <= now) ipHits.delete(k);
-  }
+  const t = Date.now();
+  for (const [k, e] of refusalLog) if (e.windowEnd <= t) refusalLog.delete(k);
 }, 60_000).unref?.();
 
 // ---- security headers ----
@@ -307,8 +314,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   const isApi = url.pathname.startsWith('/api/');
-  if (isRateLimited(ip, isApi)) {
-    send(req, res, 429, { error: 'Too many requests. Please slow down.' }, { 'retry-after': '60' });
+  const token = isApi ? bearerOf(req.headers) : '';
+  // The public routes draw on the address's anonymous budget whatever token
+  // they carry; a token earns its own budget once the app has accepted it.
+  const anonymous = isApi && ANONYMOUS_API_PATHS.has(url.pathname);
+  const refused = rateLimiter.check({ ip, isApi, token, anonymous });
+  if (refused) {
+    if (IS_PROD) logRefusal(req, url, refused, ip, reqId);
+    send(req, res, 429, { error: 'Too many requests. Please slow down.' }, { 'retry-after': String(refused.retryAfter) });
     return;
   }
 
@@ -349,7 +362,12 @@ const server = http.createServer(async (req, res) => {
         query: Object.fromEntries(url.searchParams),
         headers: req.headers,
         body,
+        ip,
       });
+      if (token && !anonymous) {
+        if (result.authenticated) rateLimiter.accepted({ token });
+        else if (result.status === 401) rateLimiter.rejected({ ip });
+      }
       send(req, res, result.status, result.body, result.headers);
     } catch (err) {
       console.error(`[api] ${req.method} ${url.pathname} [${reqId}] failed:`, err);

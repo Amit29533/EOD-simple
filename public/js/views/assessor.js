@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { state } from '../app.js';
+import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
   esc, fmtDateTime, fmtDate, loading, emptyState, toast, attempt, confirmModal,
   assessmentStatusBadge, readinessBadge, badge,
@@ -91,6 +91,8 @@ export async function assessmentView(view, { id }) {
         ${orphans.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id]); }).join('')}`;
     })()}`;
 
+  loadRecordings(view, id);
+
   const updateProgress = () => {
     const scored = manualQs.filter((q) => scores[q.id] !== null && scores[q.id] !== '').length;
     const el = view.querySelector('#score-progress');
@@ -138,6 +140,54 @@ export async function assessmentView(view, { id }) {
   };
 }
 
+/**
+ * Recordings arrive separately from the detail: one request per spoken
+ * answer, two at a time, in page order, so the first questions are playable
+ * within a second while a 33-clip paper streams in behind them. Leaving the
+ * page stops the queue; a failed clip gets a retry button instead of a
+ * silent gap.
+ */
+export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecording } = {}) {
+  const slots = [...view.querySelectorAll('.exam-audio-slot[data-recording]')];
+  if (!slots.length) return;
+  const load = fetchRecording
+    || ((qid) => api(`/assessor/assessments/${assessmentId}/recordings/${encodeURIComponent(qid)}`));
+  const queue = slots.slice();
+  let active = 0;
+  let stopped = false;
+  const onUnmount = () => { stopped = true; document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount); };
+  document.addEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
+
+  const fill = async (slot) => {
+    const qid = slot.dataset.recording;
+    slot.innerHTML = '<span class="small muted">Loading recording…</span>';
+    try {
+      const rec = await load(qid);
+      if (stopped || !slot.isConnected) return;
+      if (!rec?.audio_b64) throw new Error('empty recording');
+      const audio = document.createElement('audio');
+      audio.className = 'exam-audio-playback';
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.src = `data:${rec.audio_mime || 'audio/webm'};base64,${rec.audio_b64}`;
+      slot.replaceChildren(audio);
+    } catch (err) {
+      if (stopped || !slot.isConnected) return;
+      slot.innerHTML = `<span class="small" style="color:var(--red)">Recording could not be loaded${err?.message ? `: ${esc(err.message)}` : ''}.</span> <button type="button" class="btn ghost sm">Retry</button>`;
+      slot.querySelector('button').onclick = () => { queue.push(slot); pump(); };
+    }
+  };
+  const pump = () => {
+    while (!stopped && active < concurrency && queue.length) {
+      const slot = queue.shift();
+      active += 1;
+      fill(slot).finally(() => { active -= 1; pump(); });
+    }
+    if (!active && !queue.length) document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
+  };
+  pump();
+}
+
 function scoreCard(q, n, r) {
   const answer = r?.answer;
   const head = `<div class="q-head"><span class="q-num">${n}</span>
@@ -182,17 +232,27 @@ function scoreCard(q, n, r) {
     // missing — has to be in front of the assessor, not hidden in the payload.
     const ans = answer && typeof answer === 'object' ? answer : { text: answer || '' };
     const textAns = [ans.text, ans.transcript && ans.transcript !== ans.text ? `\n\n[Transcript]\n${ans.transcript}` : ''].filter(Boolean).join('');
-    const audioPlayer = ans.audio_b64
-      ? `<audio class="exam-audio-playback" controls src="data:${esc(ans.audio_mime || 'audio/webm')};base64,${esc(ans.audio_b64)}"></audio>`
+    // The clip itself is not in the detail payload (a whole-bank paper holds
+    // ~10 MB of audio); `has_recording` marks a slot that loadRecordings()
+    // fills from the per-question endpoint once the page is up.
+    const hasRecording = ans.has_recording === true || Boolean(ans.audio_b64);
+    const audioPlayer = hasRecording
+      ? `<div class="exam-audio-slot" data-recording="${esc(q.id)}"><span class="small muted">Loading recording…</span></div>`
       : '';
-    const nothingSpoken = !ans.audio_b64 && !String(ans.transcript || '').trim();
+    const nothingSpoken = !hasRecording && !String(ans.transcript || '').trim();
     const spokenWarning = ans.audio_missing === true
       ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Open questions require a spoken answer, so this is typed notes only — score accordingly and say so in the feedback.</div>'
       : (nothingSpoken && q.audio_required === true && String(ans.text || '').trim()
         ? '<div class="small" style="margin-top:6px;color:var(--amber);font-weight:700">⚠ No recording attached to this open answer.</div>'
         : '');
+    // A blank open answer carries how it came about: the clock ran out, or the
+    // candidate moved on without answering. Say which, so the assessor is not
+    // left guessing from an empty box.
+    const blankNote = !textAns && !hasRecording
+      ? (ans.source === 'timed_out' ? '— no answer · time expired —' : ans.source === 'skipped' ? '— no answer · question skipped —' : '— no answer —')
+      : '';
     answerBlock = `
-      <blockquote class="answer">${esc(textAns || '— no answer —')}</blockquote>
+      <blockquote class="answer">${esc(textAns || blankNote)}</blockquote>
       ${audioPlayer}
       ${spokenWarning}
       ${ans.source === 'audio' ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}

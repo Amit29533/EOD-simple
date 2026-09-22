@@ -17,6 +17,23 @@ import { randomBytes } from 'node:crypto';
 /** Printable alphabet for generated passwords (no 0/O/1/l lookalikes). */
 const PASSWORD_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
+/**
+ * Does this look like an email address? One `@`, something on both sides, a
+ * dot in the domain, no whitespace — the same loose shape the admin form's
+ * `type: 'email'` field checks in the browser, so the API and the UI agree.
+ * Deliberately not RFC 5322: the aim is to catch a phone number or a name
+ * pasted into the email column, not to reject unusual-but-real mailboxes.
+ * Returns a problem string, or null when the value is acceptable. Blank is
+ * acceptable — contact details are optional everywhere.
+ */
+export function emailShapeProblem(value) {
+  const email = String(value ?? '').trim();
+  if (!email) return null;
+  if (email.length > 200) return 'Email must be 200 characters or fewer.';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return 'Email must look like name@example.com.';
+  return null;
+}
+
 /** The columns the import understands, in the order the template lists them. */
 export const CANDIDATE_IMPORT_COLUMNS = [
   { key: 'Name', required: true, note: 'Full name of the candidate' },
@@ -122,6 +139,10 @@ export function validateCandidateRow(raw = {}, ctx = {}) {
   if (!candidate.name) errors.push('Name is required.');
 
   candidate.email = String(row.email ?? '').trim().slice(0, 200);
+  // A malformed email used to be stored verbatim — and then used to derive
+  // the portal username and to de-duplicate later imports against.
+  const emailProblem = emailShapeProblem(String(row.email ?? '').trim());
+  if (emailProblem) errors.push(emailProblem);
   candidate.phone = String(row.phone ?? '').trim().slice(0, 60);
   candidate.current_title = String(row.current_title ?? '').trim().slice(0, 120);
   candidate.location = String(row.location ?? '').trim().slice(0, 120);

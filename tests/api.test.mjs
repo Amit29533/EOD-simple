@@ -172,20 +172,28 @@ test('candidate saves draft answers and submits; auto-scoring runs; incomplete s
   });
   assert.equal(put.status, 200, 'unknown question ids are ignored');
 
-  const firstQ = (await store.list('questions'))[0];
-  // submit with only 1 of 2 answers -> 422 listing the missing one
+  // The exam is answered one question at a time, inside each question's
+  // window: the submit body cannot hand in answers the walk never locked.
+  const paper = sortedQuestions((await store.get('assessments', assessmentId)).snapshot_json);
+  const answerFor = (q) => (q.type === 'text'
+    ? { text: 'Medallion zones across dev/qa/prod with UC three-level namespace and cost guardrails.', transcript: '', source: 'typed' }
+    : 'b');
   const incomplete = await call('POST', `/candidate/assessments/${assessmentId}/submit`, {
-    token: rohitToken, body: { answers: { [firstQ.id]: 'b' } },
+    token: rohitToken, body: { answers: Object.fromEntries(paper.map((q) => [q.id, answerFor(q)])) },
   });
-  assert.equal(incomplete.status, 422);
-  assert.equal(incomplete.body.missing_question_ids.length, 1);
+  assert.equal(incomplete.status, 422, 'a full answer sheet in the submit body does not replace the walk');
+  assert.equal(incomplete.body.missing_question_ids.length, 2);
 
-  const full = await call('POST', `/candidate/assessments/${assessmentId}/submit`, {
-    token: rohitToken,
-    body: { answers: { [firstQ.id]: 'b', [(await store.list('questions'))[1].id]: 'Medallion zones across dev/qa/prod with UC three-level namespace and cost guardrails.' } },
-  });
-  assert.equal(full.status, 200);
+  // Lock both questions the way the exam hall does, then submit.
+  for (const q of paper) {
+    if (q.type === 'text') await call('POST', `/candidate/assessments/${assessmentId}/phase`, { token: rohitToken, body: { phase: 'answer' } });
+    const r = await call('POST', `/candidate/assessments/${assessmentId}/next`, { token: rohitToken, body: { question_id: q.id, answer: answerFor(q) } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  const full = await call('POST', `/candidate/assessments/${assessmentId}/submit`, { token: rohitToken, body: { answers: {} } });
+  assert.equal(full.status, 200, JSON.stringify(full.body));
   const responses = await store.list('responses', { assessment_id: assessmentId });
+  const firstQ = paper.find((q) => q.type === 'mcq_single');
   const mcq = responses.find((r) => r.question_id === firstQ.id);
   assert.equal(mcq.auto_score, 4, 'correct mcq auto-scored at submit');
 });
@@ -393,13 +401,17 @@ test('open-response answers persist transcript + audio clip; oversized audio is 
   const stored = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
   assert.equal(stored.answer.source, 'audio');
   assert.equal(stored.answer.transcript, 'Lakehouse with Unity Catalog.');
-  assert.equal(stored.answer.audio_b64, clip);
+  assert.equal(stored.answer.audio_b64, undefined, 'the clip never sits on the response row');
   assert.equal(stored.answer.audio_mime, 'audio/webm');
+  assert.equal(stored.answer.audio_ref, `${aid}/${textQ.id}`, 'the answer points at its recording row');
+  const [rec] = await store.list('recordings', { assessment_id: aid, question_id: textQ.id });
+  assert.deepEqual(rec.audio, { b64: clip, mime: 'audio/webm' });
 
   const sub = await call('POST', `/candidate/assessments/${aid}/submit`, { token: tok, body: { answers: {} } });
   assert.equal(sub.status, 200, JSON.stringify(sub.body));
   const after = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
-  assert.equal(after.answer.audio_b64, clip, 'submit merge must keep the recorded clip');
+  assert.equal(after.answer.audio_ref, `${aid}/${textQ.id}`, 'submit merge must keep the recorded clip');
+  assert.equal((await store.list('recordings', { assessment_id: aid, question_id: textQ.id }))[0]?.audio?.b64, clip);
 
   const huge = await call('PUT', `/candidate/assessments/${aid}/answers`, {
     token: tok,
@@ -468,7 +480,14 @@ test('draft PUT of an audio answer is rejected when the clip is too large', asyn
   });
   const tok = await login('audio.draft', 'ad-pass-1234');
   const aid = alloc.body.id;
+  // Autosave only takes a draft for the question on screen, so open the exam
+  // and walk to the open question first.
   const textQ = [...alloc.body.snapshot_json.questions].find((q) => q.type === 'text');
+  let live = (await call('GET', `/candidate/assessments/${aid}`, { token: tok })).body.current_question;
+  while (live.id !== textQ.id) {
+    await call('POST', `/candidate/assessments/${aid}/next`, { token: tok, body: { question_id: live.id, answer: 'b' } });
+    live = (await call('GET', `/candidate/assessments/${aid}`, { token: tok })).body.current_question;
+  }
   const tooBig = await call('PUT', `/candidate/assessments/${aid}/answers`, {
     token: tok,
     body: { answers: { [textQ.id]: { text: 'spoken', transcript: 'spoken', source: 'audio', audio_b64: 'A'.repeat(400_001) } } },
@@ -482,7 +501,9 @@ test('draft PUT of an audio answer is rejected when the clip is too large', asyn
   const rows = await store.list('responses', { assessment_id: aid });
   const row = rows.find((r) => r.question_id === textQ.id);
   assert.equal(row.answer.transcript, 'spoken lakehouse');
-  assert.equal(row.answer.audio_b64, 'QQ==');
+  assert.equal(row.answer.audio_b64, undefined);
+  assert.ok(row.answer.audio_ref);
+  assert.equal((await store.list('recordings', { assessment_id: aid, question_id: textQ.id }))[0]?.audio?.b64, 'QQ==');
   assert.equal(row.answer.source, 'audio');
 });
 

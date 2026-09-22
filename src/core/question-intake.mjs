@@ -321,6 +321,10 @@ export function validateQuestion(input = {}, { modules = [], families = [] } = {
     if (options.length > 8) errors.push('An objective question cannot have more than eight options.');
     const labels = options.map((o) => o.label.trim().toLowerCase());
     if (new Set(labels).size !== labels.length) errors.push('Options must be distinct.');
+    // Two options sharing an id (a form that posted `a, a`) are one choice
+    // once served: the candidate's pick is stored by id.
+    const ids = options.map((o) => o.id.toLowerCase()).filter(Boolean);
+    if (new Set(ids).size !== ids.length) errors.push('Each option needs a unique id.');
     correct = Array.isArray(row.correct_option_ids) && row.correct_option_ids.length
       ? row.correct_option_ids.map((id) => String(id).toLowerCase())
       : parseCorrect(row.correct, options);

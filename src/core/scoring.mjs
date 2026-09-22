@@ -18,9 +18,16 @@ function setsEqual(a, b) {
   return true;
 }
 
-/** Coerce stored answers (string, array, or {ids}) into unique option-id strings. */
+/**
+ * Coerce stored answers (string, number, array, or {ids}) into unique
+ * option-id strings. Option ids are compared as strings everywhere else —
+ * the answer validator accepts a numeric id for a single-choice question
+ * and the assessor view renders it as the picked option — so the scorer
+ * must see `2` and `'2'` as the same pick, not score the number as wrong.
+ */
 export function optionIds(answer) {
   if (Array.isArray(answer)) return [...optionIdSet(answer)];
+  if (typeof answer === 'number' && Number.isFinite(answer)) return [String(answer)];
   if (typeof answer === 'string' && answer.trim()) return [answer.trim()];
   if (answer && typeof answer === 'object' && Array.isArray(answer.ids)) {
     return [...optionIdSet(answer.ids)];
@@ -165,11 +172,18 @@ export function computeReport(snapshot, responsesByQid) {
   // read as a sample of the competencies it covered — never as a penalty for
   // the ones it did not.
   const assessedComps = perCompetency.filter((c) => c.status !== 'untested');
-  const weightTotal = assessedComps.reduce((s, c) => s + c.weight, 0) || 1;
-  const overall_pct =
-    Math.round(
-      (assessedComps.reduce((s, c) => s + c.score_pct * c.weight, 0) / weightTotal) * 10
-    ) / 10;
+  // A competency with weight 0 is one the admin has not weighted yet (0 is the
+  // default, and the framework editor allows it): it must not silently zero
+  // the whole paper. When the assessed set carries no weight at all, fall back
+  // to a plain mean of the competency scores — the `|| 1` guard used to divide
+  // by one instead, so a flawless paper on unweighted competencies came out as
+  // 0% "Not Yet Ready". A mix of weighted and unweighted competencies still
+  // blends on the weights (the 0-weight ones contribute nothing, as before).
+  const weightTotal = assessedComps.reduce((s, c) => s + c.weight, 0);
+  const blended = weightTotal > 0
+    ? assessedComps.reduce((s, c) => s + c.score_pct * c.weight, 0) / weightTotal
+    : assessedComps.reduce((s, c) => s + c.score_pct, 0) / (assessedComps.length || 1);
+  const overall_pct = Math.round(blended * 10) / 10;
   const band = readinessBand(overall_pct, config);
 
   const gaps = assessedComps
@@ -225,10 +239,13 @@ export function computeReport(snapshot, responsesByQid) {
 /** Validate a framework config. Returns an array of human-readable problems (empty = valid). */
 export function validateFrameworkConfig(config) {
   const problems = [];
+  const plainText = (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 120;
   const bands = config?.readiness_bands;
   if (!Array.isArray(bands) || bands.length < 2) {
     problems.push('At least two readiness bands are required.');
   } else {
+    const keys = new Set();
+    const mins = new Set();
     for (const b of bands) {
       // A null/array/string band entry is invalid input, not a crash: reading
       // `.key` off null used to throw a TypeError and 500 the endpoint.
@@ -236,10 +253,30 @@ export function validateFrameworkConfig(config) {
         problems.push('Every readiness band must be an object with a key, a label and a min.');
         continue;
       }
-      if (!b.key || !b.label) problems.push('Every band needs a key and a label.');
-      if (!Number.isFinite(Number(b.min)) || Number(b.min) < 0 || Number(b.min) > 100)
-        problems.push(`Band "${b.label || b.key}" min must be between 0 and 100.`);
+      // Keys and labels are rendered as badges and stored on every report; a
+      // structured or 5,000-character value is not a band name.
+      if (!plainText(b.key) || !plainText(b.label)) problems.push('Every band needs a plain-text key and label (up to 120 characters).');
+      if (b.description !== undefined && b.description !== null && (typeof b.description !== 'string' || b.description.length > 500))
+        problems.push(`Band "${plainText(b.label) ? b.label : b.key}" description must be plain text (up to 500 characters).`);
+      const min = Number(b.min);
+      if (!Number.isFinite(min) || min < 0 || min > 100)
+        problems.push(`Band "${plainText(b.label) ? b.label : b.key}" min must be between 0 and 100.`);
+      // Two bands with one key are indistinguishable downstream (the report
+      // card and the stage badges look bands up by key); two with one min
+      // make the verdict depend on array order.
+      if (plainText(b.key)) {
+        if (keys.has(b.key)) problems.push(`Band key "${b.key}" is used more than once.`);
+        keys.add(b.key);
+      }
+      if (Number.isFinite(min)) {
+        if (mins.has(min)) problems.push(`Two readiness bands start at ${min}%; each band needs its own minimum.`);
+        mins.add(min);
+      }
     }
+    // readinessBand() picks the highest band the score reaches; with no band
+    // at 0% a low score would fall back to the lowest band by accident of
+    // ordering rather than by rule. Make the floor explicit.
+    if (!problems.length && !mins.has(0)) problems.push('One readiness band must start at 0% so every score has a verdict.');
   }
   const lt = config?.level_thresholds;
   if (!Array.isArray(lt) || lt.length !== 5 || lt.some((v) => !Number.isFinite(Number(v)))) {
@@ -250,7 +287,13 @@ export function validateFrameworkConfig(config) {
       problems.push('Level thresholds must be ascending, start at 0, and not exceed 100.');
   }
   const gs = config?.gap_severity;
-  if (!gs || !(Number(gs.moderate) >= 1) || Number(gs.critical) <= Number(gs.moderate))
-    problems.push('Gap severity must have critical > moderate >= 1.');
+  const moderate = Number(gs?.moderate);
+  const critical = Number(gs?.critical);
+  // Gaps are whole capability levels (target 1-5 minus observed 1-5), so the
+  // cutoffs are whole levels between 1 and 4; "critical ≥ 1.7 levels" or
+  // "critical ≥ Infinity" (never critical) are not meaningful settings.
+  if (!gs || typeof gs !== 'object' || !Number.isInteger(moderate) || !Number.isInteger(critical)
+    || moderate < 1 || critical > 4 || critical <= moderate)
+    problems.push('Gap severity must be whole levels with 4 >= critical > moderate >= 1.');
   return problems;
 }

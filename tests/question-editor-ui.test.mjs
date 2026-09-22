@@ -9,9 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-let JSDOM = null;
-try { ({ JSDOM } = await import('jsdom')); } catch { /* optional dependency missing */ }
-const SKIP = JSDOM ? false : 'jsdom not installed';
+import { JSDOM, SKIP } from './helpers/jsdom.mjs';
 
 const flush = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 

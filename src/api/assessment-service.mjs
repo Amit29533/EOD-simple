@@ -83,6 +83,50 @@ export function snapshotFromBank(bank, questionLimit = null) {
 }
 
 /**
+ * The small facts about a paper that listings show — kept ON the assessment
+ * row at allocation, because the paper itself (`snapshot_json`, ~90 KB for a
+ * whole bank) is stored apart from the row by the file and blob adapters and
+ * a listing must not have to fetch every paper to print a question count.
+ */
+export function paperSummary(snapshot) {
+  const questions = Array.isArray(snapshot?.questions) ? snapshot.questions : [];
+  return {
+    question_count: questions.length,
+    total_points: questions.reduce((sum, q) => sum + Number(q.points ?? 1), 0),
+    question_limit: snapshot?.question_limit ?? null,
+    bank_total: snapshot?.bank_total ?? null,
+    role_name: snapshot?.role?.name || '',
+  };
+}
+
+const hasPaperFacts = (a) => a.role_name !== undefined && a.total_points !== undefined && a.question_count !== undefined;
+const hasInlinePaper = (a) => Array.isArray(a.snapshot_json?.questions);
+
+/**
+ * `paperSummary` for rows that may predate it. Rows allocated by this
+ * version carry the facts; older rows carry the paper inline until their
+ * next update (the adapters move it out then), and the few that were moved
+ * out before gaining the facts are fetched whole — once, here, and stamped so
+ * the next listing does not have to.
+ */
+export async function paperFacts(store, rows) {
+  const out = new Array(rows.length);
+  for (let i = 0; i < rows.length; i += 1) {
+    const a = rows[i];
+    if (hasPaperFacts(a)) {
+      out[i] = { question_count: a.question_count, total_points: a.total_points, question_limit: a.question_limit ?? null, bank_total: a.bank_total ?? null, role_name: a.role_name || '' };
+    } else if (hasInlinePaper(a)) {
+      out[i] = paperSummary(a.snapshot_json);
+    } else {
+      const full = await store.get('assessments', a.id);
+      out[i] = paperSummary(full?.snapshot_json);
+      if (full) await store.update('assessments', a.id, out[i]).catch(() => {});
+    }
+  }
+  return out;
+}
+
+/**
  * The cap an automatic allocation should request for a bank of `bankTotal`
  * questions: `questionCount` (default 50), except a bank smaller than the ask
  * serves its full bank instead of failing. Returns the `questionLimit` to
@@ -154,7 +198,7 @@ export async function autoAllocateAssessment(store, candidate, {
     if (assessor && assessor.role === 'assessor' && assessor.active !== false) assessor_id = assessor.id;
   }
 
-  const open = (await store.list('assessments', { candidate_id: candidate.id }))
+  const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
     .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
   if (open) {
     return fail(`“${candidate.name}” already has an open ${role.name} assessment.`,
@@ -173,7 +217,7 @@ export async function autoAllocateAssessment(store, candidate, {
   const rec = await store.insert('assessments', {
     candidate_id: candidate.id, role_id: role.id, assessor_id,
     status: 'assigned', snapshot_json: snapshot, report_json: null,
-    question_count: snapshot.questions.length,
+    ...paperSummary(snapshot),
     overall_pct: null, readiness_key: '', readiness_label: '', created_by: actor?.id || null,
   });
   if (!candidate.target_role_id) {
@@ -305,6 +349,8 @@ export async function finalizeScoring(store, assessment) {
     readiness_key: report.band?.key || '',
     readiness_label: report.band?.label || '',
     report_json: report,
+    // a row allocated before the paper facts existed gains them with this write
+    ...(hasPaperFacts(assessment) ? {} : paperSummary(assessment.snapshot_json)),
   });
   await advanceStage(store, assessment.candidate_id, 'gap_mapping');
   return { report, assessment: updated };

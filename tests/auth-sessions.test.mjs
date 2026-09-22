@@ -74,3 +74,36 @@ test('login accepts the account email as well as the username', async () => {
   const unknown = await login('nobody@anthroprime.com', 'admin-pw-123');
   assert.equal(unknown.status, 401, 'unknown email is the same 401 as a bad username');
 });
+
+test('a failed login costs the same whether or not the account exists', async () => {
+  // Username enumeration by clock: an unknown (or disabled) username used to
+  // be refused before any password work, in ~0 ms, while a wrong password
+  // for a real account took a full scrypt (~40 ms). Every failed login now
+  // verifies against a decoy hash when there is no eligible account.
+  await store.insert('users', {
+    username: 'disabled', name: 'Disabled', role: 'assessor', email: '',
+    password_hash: hashPassword('disabled-pw-123'), active: false,
+  });
+  const cost = async (username) => {
+    const runs = [];
+    for (let i = 0; i < 5; i += 1) {
+      const t = process.hrtime.bigint();
+      const res = await login(username, 'definitely-wrong-pw');
+      assert.equal(res.status, 401);
+      assert.equal(res.body.error, 'Invalid username or password.');
+      runs.push(Number(process.hrtime.bigint() - t) / 1e6);
+    }
+    return runs.sort((a, b) => a - b)[2]; // median
+  };
+  const real = await cost('other');
+  const unknown = await cost('no.such.user');
+  const disabled = await cost('disabled');
+  const unknownEmail = await cost('nobody@anthroprime.com');
+  // scrypt here is tens of milliseconds; the old fast path was well under one.
+  for (const [label, ms] of [['unknown', unknown], ['disabled', disabled], ['unknown email', unknownEmail]]) {
+    assert.ok(ms > real * 0.5, `${label} login refused in ${ms.toFixed(1)} ms vs ${real.toFixed(1)} ms for a real account — enumerable`);
+  }
+  // The decoy never authenticates anything, and real logins still work.
+  assert.equal((await login('disabled', 'disabled-pw-123')).status, 401, 'a disabled account cannot sign in');
+  assert.equal((await login('other', 'other-pw-123')).status, 200);
+});

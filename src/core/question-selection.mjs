@@ -263,8 +263,14 @@ export function selectQuestions(questions = [], competencies = [], limit = null,
   // The spoken customer-advisory set is always capped at RSA_ORAL_IN_CAP. This
   // applies to *every* paper, including the "full bank" case, so a candidate
   // is never asked more than five of the ten spoken prompts. The pinned common
-  // opening question is always included and served first.
-  for (const q of pool.filter(isPinFirst)) take(q);
+  // opening question is always included and served first — but the cap is
+  // the admin's explicit choice and wins over the pins: a custom track can
+  // carry any number of pinned rows (`pin_first` is an ordinary question
+  // field), and more pins than seats used to serve every pin, so a
+  // 2-question paper came out with 4. When pins outnumber seats the first
+  // `n` by display order are served.
+  const pins = pool.filter(isPinFirst).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  for (const q of pins.slice(0, n)) take(q);
   const oralBank = pool.filter(isOralSet);
   const maxOral = Math.min(RSA_ORAL_IN_CAP, n, oralBank.length);
   const oralRest = oralBank.filter((q) => !reservedSet.has(q));

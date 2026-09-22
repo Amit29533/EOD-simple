@@ -56,6 +56,25 @@ test('optionIds unique-ifies and coerces stored answer shapes', () => {
   assert.deepEqual(optionIds({}), []);
 });
 
+test('autoScore: a numeric option id scores the same as its string form', () => {
+  // Option ids are compared as strings by the answer validator and the
+  // assessor view. The scorer used to accept `[1, 3]` for a multi-select but
+  // score a single-choice `2` as wrong while `'2'` scored full marks: an
+  // accepted answer that could never earn its points.
+  const single = q('mcq_single', { correct_option_ids: ['2'], options: [{ id: '1' }, { id: '2' }, { id: '3' }] });
+  assert.equal(autoScore(single, '2'), 4);
+  assert.equal(autoScore(single, 2), 4);
+  assert.equal(autoScore(single, 3), 0);
+  assert.equal(autoScore(single, NaN), 0);
+  assert.equal(autoScore(single, true), 0);
+  assert.deepEqual(optionIds(7), ['7']);
+  assert.deepEqual(optionIds(Infinity), []);
+  const multi = q('mcq_multi', { correct_option_ids: ['1', '3'], options: [{ id: '1' }, { id: '2' }, { id: '3' }] });
+  assert.equal(autoScore(multi, [1, 3]), 4);
+  assert.equal(autoScore(multi, ['1', '3']), 4);
+  assert.equal(autoScore(multi, [1]), 0);
+});
+
 test('computeReport: a failed multi-select contributes 0, never leftover partial marks', () => {
   const question = {
     id: 'qm', competency_id: 'c1', type: 'mcq_multi', points: 4, active: true,
@@ -176,6 +195,27 @@ test('validateFrameworkConfig catches bad input', () => {
   assert.ok(validateFrameworkConfig({ readiness_bands: [{ key: 'a', label: 'A', min: 80 }, { key: 'b', label: 'B', min: 0 }], level_thresholds: [0, 20, 40, 60, 80], gap_severity: { moderate: 2, critical: 1 } }).length > 0);
 });
 
+test('validateFrameworkConfig refuses bands that cannot produce a deterministic verdict', () => {
+  const ok = (bands, gs = { moderate: 1, critical: 2 }) =>
+    validateFrameworkConfig({ readiness_bands: bands, level_thresholds: [0, 20, 40, 60, 80], gap_severity: gs });
+  const good = [{ key: 'go', label: 'Go', min: 70 }, { key: 'hold', label: 'Hold', min: 0 }];
+  assert.deepEqual(ok(good), []);
+  // Two bands with one key, or one min, are indistinguishable downstream.
+  assert.match(ok([{ key: 'a', label: 'A', min: 50 }, { key: 'a', label: 'A2', min: 0 }]).join(' '), /used more than once/);
+  assert.match(ok([{ key: 'x', label: 'X', min: 0 }, { key: 'y', label: 'Y', min: 0 }]).join(' '), /own minimum/);
+  // No band at 0% → the lowest score would land on a band by array order.
+  assert.match(ok([{ key: 'hi', label: 'Hi', min: 60 }, { key: 'mid', label: 'Mid', min: 40 }]).join(' '), /start at 0%/);
+  // Keys and labels are badge text, not payloads.
+  assert.match(ok([{ key: { o: 1 }, label: ['arr'], min: 50 }, { key: 'b', label: 'B', min: 0 }]).join(' '), /plain-text key and label/);
+  assert.match(ok([{ key: 'k'.repeat(121), label: 'L', min: 50 }, { key: 'b', label: 'B', min: 0 }]).join(' '), /plain-text key and label/);
+  assert.match(ok([{ key: 'k', label: 'L', min: 50, description: 'd'.repeat(501) }, { key: 'b', label: 'B', min: 0 }]).join(' '), /description/);
+  // Gap cutoffs are whole capability levels within the 1-5 scale.
+  assert.match(ok(good, { moderate: 1.5, critical: 1.7 }).join(' '), /whole levels/);
+  assert.match(ok(good, { moderate: '1', critical: 'Infinity' }).join(' '), /whole levels/);
+  assert.match(ok(good, { moderate: 1, critical: 5 }).join(' '), /whole levels/);
+  assert.deepEqual(ok(good, { moderate: '1', critical: '2' }), [], 'numeric strings from a form are still fine');
+});
+
 test('computeReport: a competency the capped paper never reached is not scored 0%', () => {
   // Regression: an allocation capped below the number of competencies (the
   // admin dialog allows 1-50 questions) served only some of them. The others
@@ -225,4 +265,34 @@ test('computeReport: a paper with no questions at all still reports a number', (
   assert.equal(report.overall_pct, 0);
   assert.deepEqual(report.areas_to_improve, []);
   assert.equal(report.competencies[0].status, 'untested');
+});
+
+test('computeReport: unweighted competencies blend as a plain mean instead of zeroing the paper', () => {
+  // Weight 0 is the competency default and the editor accepts it. A paper whose
+  // assessed competencies carry no weight at all used to divide by the `|| 1`
+  // guard, so a flawless run came out as 0% / "Not Yet Ready".
+  const snapshot = (w1, w2) => ({
+    role: null, framework: { config: DEFAULT_FRAMEWORK_CONFIG },
+    competencies: [
+      { id: 'c1', name: 'Alpha', weight: w1, target_level: 4, active: true },
+      { id: 'c2', name: 'Beta', weight: w2, target_level: 4, active: true },
+    ],
+    questions: [
+      { id: 'q1', competency_id: 'c1', type: 'mcq_single', points: 4, active: true },
+      { id: 'q2', competency_id: 'c2', type: 'mcq_single', points: 4, active: true },
+    ],
+  });
+  const perfect = { q1: { final_score: 4 }, q2: { final_score: 4 } };
+  const split = { q1: { final_score: 4 }, q2: { final_score: 0 } };
+
+  const unweighted = computeReport(snapshot(0, 0), perfect);
+  assert.equal(unweighted.overall_pct, 100, 'a perfect paper on unweighted competencies is 100%');
+  assert.equal(unweighted.band.key, 'enterprise_ready');
+  assert.equal(computeReport(snapshot(undefined, undefined), perfect).overall_pct, 100, 'a missing weight behaves like 0');
+  assert.equal(computeReport(snapshot(0, 0), split).overall_pct, 50, 'the fallback is an equal-weight mean');
+
+  // A mix of weighted and unweighted competencies still blends on the weights.
+  assert.equal(computeReport(snapshot(0, 50), split).overall_pct, 0, 'only the weighted competency counts');
+  assert.equal(computeReport(snapshot(50, 0), split).overall_pct, 100);
+  assert.equal(computeReport(snapshot(60, 40), split).overall_pct, 60, 'the ordinary weighted blend is unchanged');
 });

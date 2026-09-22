@@ -212,8 +212,10 @@ export function nextAuthoredId(moduleKey, existing = [], roleKey) {
   const prefix = `${authoredIdPrefix(key)}-${moduleKey}-A`;
   let max = 0;
   for (const q of existing) {
-    const m = new RegExp(`^${prefix}(\\d+)$`).exec(q.id || '');
-    if (m) max = Math.max(max, Number(m[1]));
+    const id = String(q.id || '');
+    if (!id.startsWith(prefix)) continue;
+    const tail = id.slice(prefix.length);
+    if (/^\d+$/.test(tail)) max = Math.max(max, Number(tail));
   }
   return `${prefix}${String(max + 1).padStart(3, '0')}`;
 }

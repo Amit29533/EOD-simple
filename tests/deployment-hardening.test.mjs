@@ -83,6 +83,7 @@ beforeEach(async () => {
 test('a path parameter that is not valid percent-encoding is a 400, not a 500', async () => {
   const bad = await call('GET', '/admin/candidates/%ff', { token: adminToken });
   assert.equal(bad.status, 400, `malformed encoding must be rejected, got ${bad.status}`);
+  assert.match(bad.body?.error || '', /encoding/i, 'the 400 says what was wrong, like every other 400');
   const bare = await call('GET', '/admin/candidates/100%', { token: adminToken });
   assert.equal(bare.status, 400, `a bare % must be rejected, got ${bare.status}`);
   const control = await call('GET', '/admin/candidates', { token: adminToken });
@@ -366,6 +367,53 @@ test('the Netlify wrapper fails fast with 503 when no storage backend is configu
   }
 });
 
+test('the Netlify wrapper enforces the same body caps and security headers as server.mjs', async () => {
+  // Parity: the local server refuses ordinary JSON over 2 MB and gives the two
+  // spreadsheet imports headroom for a base64 file; the function used to allow
+  // 12 MB on every route. Every function response also has to carry the
+  // security header set itself (netlify.toml [[headers]] only covers static
+  // files) — including HSTS, which the wrapper did not send.
+  const saved = { STORAGE: process.env.STORAGE, AIRTABLE_API_KEY: process.env.AIRTABLE_API_KEY, AIRTABLE_BASE_ID: process.env.AIRTABLE_BASE_ID };
+  delete process.env.STORAGE; delete process.env.AIRTABLE_API_KEY; delete process.env.AIRTABLE_BASE_ID;
+  try {
+    const { handler } = await import('../netlify/functions/api.mjs');
+    const post = (path, body, extra = {}) => handler({
+      httpMethod: 'POST', path: `/.netlify/functions/api${path}`, headers: { host: 'example.com' },
+      queryStringParameters: {}, body, ...extra,
+    });
+    const big = JSON.stringify({ pad: 'x'.repeat(2_100_000) });
+    const huge = JSON.stringify({ pad: 'x'.repeat(14_000_000) });
+
+    // Ordinary route: the 2 MB tier, checked before storage is even consulted.
+    const tooBig = await post('/auth/login', big);
+    assert.equal(tooBig.statusCode, 413, 'a 2.1 MB login body is refused');
+    assert.match(tooBig.body, /too large/i);
+    assert.equal(tooBig.headers['strict-transport-security'], 'max-age=31536000; includeSubDomains');
+    assert.equal(tooBig.headers['x-content-type-options'], 'nosniff');
+    assert.equal(tooBig.headers['x-frame-options'], 'SAMEORIGIN');
+    assert.equal(tooBig.headers['cache-control'], 'no-store');
+
+    // Import route: the upload tier (a 2.1 MB body passes the size check and
+    // reaches the storage guard — 503 here, because no backend is configured).
+    const upload = await post('/admin/candidates/import', big);
+    assert.equal(upload.statusCode, 503, 'the same body is inside the import tier');
+    const uploadTooBig = await post('/admin/candidates/import', huge);
+    assert.equal(uploadTooBig.statusCode, 413, 'but the import tier has a ceiling too');
+
+    // A base64-encoded body is measured by its decoded size.
+    const encoded = await post('/auth/login', Buffer.from(big).toString('base64'), { isBase64Encoded: true });
+    assert.equal(encoded.statusCode, 413);
+
+    // Malformed JSON is a 400 with the full header set.
+    const badJson = await post('/auth/login', '{nope');
+    assert.equal(badJson.statusCode, 400);
+    assert.match(badJson.body, /Invalid JSON/);
+    assert.equal(badJson.headers['strict-transport-security'], 'max-age=31536000; includeSubDomains');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
 /* ------------------------------------------------- airtable setup coverage */
 
 test('the Airtable setup schema covers every field the adapter reads and writes', () => {
@@ -388,10 +436,11 @@ test('the Airtable setup schema covers every field the adapter reads and writes'
   expectFields('bank_question_overrides', ['question_id', 'active', 'created_by', 'created_at']);
   expectFields('frameworks', ['role_id', 'name', 'config', 'active']);
   expectFields('assessments', ['candidate_id', 'role_id', 'assessor_id', 'status', 'snapshot_json',
-    'report_json', 'quiz_state', 'overall_pct', 'question_count', 'readiness_key',
-    'started_at', 'submitted_at', 'scored_at']);
+    'report_json', 'quiz_state', 'overall_pct', 'question_count', 'total_points', 'question_limit', 'bank_total', 'role_name',
+    'readiness_key', 'started_at', 'submitted_at', 'scored_at']);
   expectFields('responses', ['assessment_id', 'question_id', 'answer', 'auto_score',
     'assessor_score', 'assessor_comment', 'final_score', 'locked']);
+  expectFields('recordings', ['assessment_id', 'question_id', 'audio', 'audio__2', 'audio__3', 'audio__4', 'audio__5', 'created_at', 'updated_at']);
   expectFields('audit_log', ['actor_id', 'actor_name', 'action', 'entity', 'entity_id', 'message', 'meta']);
 });
 
@@ -467,6 +516,30 @@ test('a normal small workbook still parses end to end', () => {
   assert.deepEqual(rows, [{ prompt: 'What is 2+2?', answer: '4' }]);
 });
 
+test('self-closing empty rows are read as rows, never merged into the next one', () => {
+  // `<row r="2"/>` used to be taken as an opening tag, so the row after it was
+  // parsed as its content. The values survived because blank rows are dropped
+  // afterwards; this pins the output shape while the grid is made to mirror
+  // the sheet (so the row cap counts real rows).
+  const xml = Buffer.from(
+    '<worksheet><sheetData>'
+    + '<row r="1"/>'
+    + '<row r="2"><c r="A2" t="inlineStr"><is><t>Prompt</t></is></c><c r="B2" t="inlineStr"><is><t>Answer</t></is></c></row>'
+    + '<row r="3" spans="1:2"/>'
+    + '<row r="4"><c r="A4" t="inlineStr"><is><t>What is 2+2?</t></is></c><c r="B4" t="inlineStr"><is><t>4</t></is></c></row>'
+    + '<row r="5"/><row r="6"/>'
+    + '<row r="7"><c t="inlineStr"><is><t>Capital of France?</t></is></c><c t="inlineStr"><is><t>Paris</t></is></c></row>'
+    + '<row r="8"/>'
+    + '</sheetData></worksheet>', 'utf8');
+  const zip = buildZip([{ name: 'xl/worksheets/sheet1.xml', method: 0, data: xml }]);
+  const { headers, rows } = parseSheet(zip);
+  assert.deepEqual(headers, ['prompt', 'answer']);
+  assert.deepEqual(rows, [
+    { prompt: 'What is 2+2?', answer: '4' },
+    { prompt: 'Capital of France?', answer: 'Paris' },
+  ]);
+});
+
 /* ------------------------------------------------- id-less legacy rows in selection */
 
 const idless = (competency_id, prompt, extra = {}) => ({
@@ -533,6 +606,110 @@ test('two blob-store instances inserting concurrently lose neither row', async (
   const c = await createBlobsStore({ blobsModule: backend });
   const ids = (await c.list('users')).map((r) => r.id).sort();
   assert.deepEqual(ids, ['u-x', 'u-y'], 'the instance with the stale cache must not clobber the other write');
+});
+
+test('a failed blob read on the write path throws and leaves the table intact', async () => {
+  // `readFresh` used to swallow a read error and hand back `{}`: the mutation
+  // then ran its read-modify-write over an EMPTY table and wrote that back, so
+  // one transient blob-service hiccup collapsed a 50-answer paper to the one
+  // row being written. A read that fails must fail the write.
+  const data = {};
+  let failReads = 0;
+  const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+  const backend = {
+    getStore: () => ({
+      get: async (t) => {
+        if (failReads > 0) { failReads -= 1; throw new Error('503 from the blob service'); }
+        return t in data ? clone(data[t]) : null;
+      },
+      setJSON: async (t, rows) => { data[t] = clone(rows); },
+    }),
+  };
+  const store = await createBlobsStore({ blobsModule: backend });
+  for (let i = 0; i < 20; i += 1) await store.insert('roles', { id: `r${i}`, answer: 'b' });
+  failReads = 1;
+  await assert.rejects(store.insert('roles', { id: 'r-new', answer: 'b' }), /503/);
+  assert.equal(Object.keys(data.roles).length, 20, 'the table was not replaced by the one row being written');
+  failReads = 1;
+  await assert.rejects(store.update('roles', 'r1', { answer: 'a' }), /503/);
+  failReads = 1;
+  await assert.rejects(store.removeMany('roles', ['r1', 'r2']), /503/);
+  assert.equal(Object.keys(data.roles).length, 20);
+  // A failed read on the query side is an error too, not an empty table (a
+  // login used to fail as "invalid credentials" instead of a retryable 500).
+  failReads = 1;
+  await assert.rejects(store.list('users'), /503/);
+  // Once the service is back, everything works and nothing was lost.
+  await store.insert('roles', { id: 'r-new', answer: 'b' });
+  assert.equal(Object.keys(data.roles).length, 21);
+});
+
+test('blob-store mutations and session reads use strong consistency; cached reads stay eventual', async () => {
+  // Netlify Blobs reads are eventually consistent by default (a read may
+  // return the previous copy for up to a minute). A read-modify-write over
+  // such a copy resurrects whatever it lacked, and a session written by one
+  // function instance is invisible to the next — so those reads ask for
+  // `consistency: 'strong'`. Ordinary list/get reads keep the fast path.
+  const data = {};
+  const calls = [];
+  const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+  const backend = {
+    getStore: () => ({
+      get: async (t, o) => { calls.push(`${t}:${o?.consistency || 'eventual'}`); return t in data ? clone(data[t]) : null; },
+      setJSON: async (t, rows) => { data[t] = clone(rows); },
+    }),
+  };
+  const store = await createBlobsStore({ blobsModule: backend });
+  await store.insert('users', { id: 'u1' });
+  await store.update('users', 'u1', { n: 1 });
+  await store.updateMany('users', [{ id: 'u1', patch: { n: 2 } }]);
+  await store.remove('users', 'u1');
+  await store.insertMany('users', [{ id: 'u2' }]);
+  await store.removeMany('users', ['u2']);
+  assert.deepEqual([...new Set(calls)], ['users:strong'], 'every mutation reads its table strongly');
+  calls.length = 0;
+  await store.list('sessions');
+  await store.get('sessions', 'nope');
+  assert.deepEqual(calls, ['sessions:strong', 'sessions:strong'], 'sessions are never served stale');
+  calls.length = 0;
+  await store.get('assessments', 'a1');
+  await store.get('assessments', 'a1'); // no TTL cache either: the exam decides from this read
+  await store.list('responses', { assessment_id: 'a1' });
+  await store.list('responses', { assessment_id: 'a1' });
+  // responses are one blob per assessment (`shards/responses/a1`); an absent
+  // shard checks the pre-shard `responses` table once for rows to move over.
+  assert.deepEqual(calls, ['assessments:strong', 'assessments:strong', 'shards/responses/a1:strong', 'responses:strong', 'shards/responses/a1:strong'],
+    'the exam tables are read strongly and never from the cache');
+  calls.length = 0;
+  const other = await createBlobsStore({ blobsModule: backend });
+  await other.list('roles');
+  await other.get('roles', 'x'); // TTL cache hit — no read at all
+  assert.deepEqual(calls, ['roles:eventual'], 'plain reads keep the fast eventual path and the TTL cache');
+});
+
+test('an environment without strong-consistency support falls back to eventual reads once', async () => {
+  // Outside the Netlify runtime the SDK has no uncached edge URL and throws
+  // BlobsConsistencyError for a strong read. The adapter must keep working
+  // (eventual reads) instead of failing every write.
+  const data = {};
+  const calls = [];
+  const clone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+  const backend = {
+    getStore: () => ({
+      get: async (t, o) => {
+        calls.push(o?.consistency || 'eventual');
+        if (o?.consistency === 'strong') { const e = new Error('no uncachedEdgeURL'); e.name = 'BlobsConsistencyError'; throw e; }
+        return t in data ? clone(data[t]) : null;
+      },
+      setJSON: async (t, rows) => { data[t] = clone(rows); },
+    }),
+  };
+  const store = await createBlobsStore({ blobsModule: backend });
+  await store.insert('users', { id: 'u1' });
+  await store.insert('users', { id: 'u2' });
+  await store.list('sessions');
+  assert.deepEqual(calls, ['strong', 'eventual', 'eventual', 'eventual'], 'one strong attempt, then eventual for good');
+  assert.deepEqual(Object.keys(data.users), ['u1', 'u2']);
 });
 
 test('an update over a stale cache keeps the other instance\'s patch', async () => {

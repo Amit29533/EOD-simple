@@ -4,7 +4,7 @@ import { SC_ROLE, SC_COMPETENCIES, SC_QUESTIONS } from '../content/senior-consul
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../core/constants.mjs';
-import { bulkInsert, bulkUpdate } from './helpers.mjs';
+import { bulkInsert, bulkUpdate, bulkRemove } from './helpers.mjs';
 
 /**
  * Published-catalogue service.
@@ -63,7 +63,10 @@ export function catalogueForRoleKey(roleKey) {
   const key = roleKey === undefined || roleKey === null || roleKey === ''
     ? DEFAULT_CATALOGUE_ROLE_KEY
     : roleKey;
-  return PUBLISHED_CATALOGUES[key] || null;
+  // Own keys only: a request naming an Object.prototype member as its role
+  // key ("constructor", "toString") used to come back as a truthy "catalogue"
+  // with no `role`/`questions`, and every consumer then crashed with a 500.
+  return typeof key === 'string' && Object.hasOwn(PUBLISHED_CATALOGUES, key) ? PUBLISHED_CATALOGUES[key] : null;
 }
 
 const questionRecord = (q, roleId, compIds) => ({
@@ -237,7 +240,9 @@ export async function installCatalogue(store, roleKey) {
   const active = twins.find((r) => r.active !== false);
   if (active) {
     const result = await synchronizeBank(store, active);
-    return result.error ? result : { ...result, created: false, role: publicRole(active) };
+    if (result.error) return result;
+    await ensureFramework(store, active.id);
+    return { ...result, created: false, role: publicRole(active) };
   }
   if (twins.length) {
     return {
@@ -247,16 +252,43 @@ export async function installCatalogue(store, roleKey) {
     };
   }
   const role = await store.insert('roles', { ...catalogue.role, active: true });
-  const result = await synchronizeBank(store, role);
-  if (result.error) return result;
-  // Every track scores against a framework; a role without one cannot be
-  // allocated (buildSnapshot refuses). Same default POST /admin/roles uses.
-  if (!(await store.list('frameworks', { role_id: role.id })).length) {
-    await store.insert('frameworks', {
-      role_id: role.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
-    });
+  let result;
+  try {
+    result = await synchronizeBank(store, role);
+    if (result.error) return result;
+    await ensureFramework(store, role.id);
+  } catch (err) {
+    // The role row went in first so the bank rows could reference it. If the
+    // bank or framework write then dies (a blob-store timeout mid-install),
+    // an orphan role — no framework, an incomplete bank — would sit under
+    // Roles & frameworks looking installed, and every allocation against it
+    // would fail. Undo the whole install so the admin's retry starts clean;
+    // the rows synchronizeBank already wrote are keyed by role_id and go too.
+    await uninstallRole(store, role.id).catch(() => {});
+    throw err;
   }
   return { ...result, created: true, role: publicRole(role) };
+}
+
+/**
+ * Every track scores against a framework; a role without one cannot be
+ * allocated (buildSnapshot refuses). Same default POST /admin/roles uses.
+ * Idempotent, so a legacy orphan (a role whose install died before its
+ * framework was written) heals on the next sync rather than staying stuck.
+ */
+async function ensureFramework(store, roleId) {
+  if ((await store.list('frameworks', { role_id: roleId })).length) return;
+  await store.insert('frameworks', {
+    role_id: roleId, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
+  });
+}
+
+/** Compensating delete for a failed install: the role and everything keyed to it. */
+async function uninstallRole(store, roleId) {
+  for (const table of ['questions', 'competencies', 'frameworks']) {
+    await bulkRemove(store, table, (await store.list(table, { role_id: roleId })).map((row) => row.id));
+  }
+  await store.remove('roles', roleId);
 }
 
 /**
@@ -295,9 +327,12 @@ function repairPatch(row, published) {
  * Returns { added, repaired, competencies_added, bank_total, role_id }.
  */
 export async function synchronizeBank(store, role) {
-  const catalogue = PUBLISHED_CATALOGUES[role.key];
+  // Strict own-key lookup — unlike catalogueForRoleKey, a role row with a
+  // blank key must NOT fall back to the default track and receive its bank.
+  const key = role?.key;
+  const catalogue = typeof key === 'string' && Object.hasOwn(PUBLISHED_CATALOGUES, key) ? PUBLISHED_CATALOGUES[key] : null;
   if (!catalogue) {
-    return { error: `No published catalogue matches role key "${role.key}".` };
+    return { error: `No published catalogue matches role key "${key ?? ''}".` };
   }
   const existingCompetencies = await store.list('competencies', { role_id: role.id });
   const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));

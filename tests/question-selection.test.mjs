@@ -343,3 +343,29 @@ test('spacing-variant copies of one prompt are served once, however they were re
   assert.equal(picked[0].id, 'q1', 'the first occurrence keeps the row identity responses are keyed by');
   assert.equal(picked[0].audio_required, true, 'metadata from the later copies still merges in');
 });
+
+test('a cap wins over the pins: more pinned questions than seats never over-fills the paper', () => {
+  // `pin_first` is an ordinary question field on a custom track, so an admin
+  // can pin any number of rows. Every pin used to be reserved regardless of
+  // the cap: a 2-question allocation came out as a 4-question paper (and the
+  // stored question_count followed it).
+  const pinned = Array.from({ length: 4 }, (_, i) => ({
+    id: `pin-${i}`, competency_id: 'c1', points: 4, order: 10 - i, pin_first: true, prompt: `Pinned ${i}`,
+  }));
+  const pool = [...pinned, ...bank];
+  for (const limit of [1, 2, 3]) {
+    const picked = selectQuestions(pool, comps, limit, { randomize: true, rng: seeded(limit) });
+    assert.equal(picked.length, limit, `limit ${limit} serves exactly ${limit}`);
+    assert.ok(picked.every((q) => q.pin_first), 'the seats go to pinned rows first');
+  }
+  // Which pins survive is deterministic: display order, not insertion order.
+  const two = selectQuestions(pool, comps, 2, { randomize: true, rng: seeded(9) });
+  assert.deepEqual(two.map((q) => q.id), ['pin-3', 'pin-2'], 'the lowest display orders are kept');
+  // With room for every pin the behaviour is unchanged: all pins, then the rest.
+  const six = selectQuestions(pool, comps, 6, { randomize: true, rng: seeded(1) });
+  assert.equal(six.length, 6);
+  assert.equal(six.filter((q) => q.pin_first).length, 4);
+  assert.ok(six.slice(0, 4).every((q) => q.pin_first), 'pins still open the paper');
+  // And a whole-bank paper keeps every pin.
+  assert.equal(selectQuestions(pool, comps, null).filter((q) => q.pin_first).length, 4);
+});

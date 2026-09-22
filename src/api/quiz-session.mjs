@@ -107,7 +107,7 @@ export function ensureQuizState(a, questions) {
       tab_switch: 0, tab_return: 0, window_blur: 0, browser_close: 0, exam_exit: 0,
       exam_reopen: 0, exam_start: 0, multi_window: 0, devtools_key: 0,
       devtools_resize: 0, copy_attempt: 0, cut_attempt: 0, paste_attempt: 0,
-      screenshot: 0, spoken_answer_missing: 0, other: 0,
+      screenshot: 0, spoken_answer_missing: 0, time_expired: 0, other: 0,
     },
     events: [],
   };
@@ -143,6 +143,11 @@ const INTEGRITY_EVENT_KEYS = new Set([
   // Recorded by the API itself (not the candidate's browser) when an
   // open-question lock carries no audio — see handlers/candidate.mjs.
   'spoken_answer_missing',
+  // Also API-recorded: a question window that ran out (hard expiry, a review
+  // window slept through, a blank auto-advance). It was missing from this
+  // registry, so every timeout was counted under `other` and the admin's
+  // integrity screen had no way to show "timed out" as its own number.
+  'time_expired',
 ]);
 
 /**

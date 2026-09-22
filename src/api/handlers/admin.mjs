@@ -1,18 +1,18 @@
-import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
+import { hashPasswordAsync, hashPasswordsAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
-  str, num, bool, missing, bulkInsert, bulkUpdate, isTextish, textField,
+  str, num, bool, missing, bulkInsert, bulkUpdate, bulkRemove, isTextish, textField,
 } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import { withLock } from '../mutex.mjs';
 import {
   USER_ROLES, STAGE_KEYS, QUESTION_TYPE_KEYS, DIFFICULTIES, DEFAULT_FRAMEWORK_CONFIG,
-  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MODULE_TEST_STRUCTURE, MAX_SPREADSHEET_BYTES,
+  PIPELINE_STAGES, MAX_ASSESSMENT_QUESTIONS, MAX_SPREADSHEET_BYTES,
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 import {
-  buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation,
+  buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import {
@@ -23,14 +23,14 @@ import {
   moduleBankFor, DEFAULT_MODULE_BANK_ROLE_KEY,
 } from '../../content/module-banks.mjs';
 import {
-  generateTest, testPlan, TEST_BLUEPRINT, blueprintFor, isActive,
+  generateTest, testPlan, blueprintFor, isActive,
 } from '../../core/test-generation.mjs';
 import {
   validateQuestion as validateBankQuestion, validateBatch, promptKey,
 } from '../../core/question-intake.mjs';
 import { parseSheet } from '../../core/sheet-parser.mjs';
 import {
-  CANDIDATE_IMPORT_COLUMNS, candidateImportTemplateCsv, validateCandidateBatch,
+  CANDIDATE_IMPORT_COLUMNS, candidateImportTemplateCsv, validateCandidateBatch, emailShapeProblem,
 } from '../../core/candidate-import.mjs';
 import {
   effectiveBank, composeModules, composeFamilies, resolveFamily,
@@ -39,6 +39,16 @@ import {
 
 /** Upper bound on one spreadsheet import, to bound request time and memory. */
 const MAX_IMPORT_ROWS = 2000;
+/**
+ * Rows a single commit request may write. A commit costs ~22 ms per portal
+ * user before any network (a scrypt hash each, two at a time so the
+ * threadpool stays available), so the 2000-row file the dry run happily
+ * validates would run ~45 s as one request — past a serverless function's
+ * 10 s (26 s at most) and past most proxies' patience — and be killed with
+ * the candidates written and the users not. The client commits in pages
+ * (`offset` + `limit`); a larger single request is refused up front.
+ */
+const MAX_IMPORT_COMMIT_ROWS = 200;
 
 /**
  * Candidate field lengths, shared by the create form and PATCH so an edit can
@@ -134,7 +144,7 @@ async function setPublishedVisibility(store, questionId, active, actorId, roleKe
   const rows = (await store.list('bank_question_overrides', { question_id: questionId }))
     .filter((r) => (r.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === key);
   if (active) {
-    for (const r of rows) await store.remove('bank_question_overrides', r.id);
+    await bulkRemove(store, 'bank_question_overrides', rows.map((r) => r.id));
     return null;
   }
   if (rows[0]) return rows[0];
@@ -222,7 +232,7 @@ export function adminHandlers(route) {
   // ------------------------------------------------ dashboard
   route('GET', '/admin/dashboard', A, async ({ store }) => {
     const [candidates, assessments, roles] = await Promise.all([
-      store.list('candidates'), store.list('assessments'), store.list('roles'),
+      store.list('candidates'), store.list('assessments', {}, { detached: false }), store.list('roles'),
     ]);
     const byStage = Object.fromEntries(PIPELINE_STAGES.map((s) => [s.key, 0]));
     for (const c of candidates) byStage[c.stage || 'intake'] = (byStage[c.stage || 'intake'] ?? 0) + 1;
@@ -286,6 +296,9 @@ export function adminHandlers(route) {
     if (miss.length) return bad('Candidate name is required.');
     const structured = textField(body, Object.keys(CANDIDATE_TEXT_FIELDS));
     if (structured) return bad(`Candidate ${structured} must be plain text.`);
+    if (!str(body.name)) return bad('Candidate name is required.');
+    const emailProblem = emailError(body.email);
+    if (emailProblem) return bad(emailProblem);
     if (body.stage && !STAGE_KEYS.includes(body.stage)) return bad('Unknown pipeline stage.');
     if (body.target_role_id) {
       const role = await store.get('roles', body.target_role_id);
@@ -321,6 +334,8 @@ export function adminHandlers(route) {
   }));
 
   route('POST', '/admin/candidates/import', A, async ({ store, body, auth }) => {
+    const countProblem = questionCountError(body.question_count);
+    if (countProblem) return bad(countProblem);
     let parsed;
     try {
       parsed = readImportPayload(body);
@@ -337,6 +352,11 @@ export function adminHandlers(route) {
     }
 
     const createUsers = bool(body.create_users);
+    // Username/email uniqueness is checked against a snapshot of the tables
+    // and the rows are then written in batches: two imports (or an import and
+    // an Add user) in flight together used to pass the check independently.
+    // Users are created under the same lock as single-user creation.
+    return withLock('users:create', async () => {
     const [roles, existingCandidates, existingUsers] = await Promise.all([
       store.list('roles'), store.list('candidates'), store.list('users'),
     ]);
@@ -358,14 +378,36 @@ export function adminHandlers(route) {
     const autoAllocate = createUsers
       && body.auto_allocate !== false && body.auto_allocate !== 'false'
       && body.skip_auto_allocation !== true && body.skip_auto_allocation !== 'true';
-    const plans = autoAllocate && report.accepted.length
-      ? await planBulkAutoAllocation(store, report.accepted, {
+    const dryRun = bool(body.dry_run);
+
+    // A commit writes one page of the file: the rows at [offset, offset+limit)
+    // that passed validation. The whole file is validated every time so an
+    // in-file duplicate is judged the same way on every page; rows written by
+    // an earlier page are simply found in the directory by the next. Without
+    // paging parameters the whole file is one page, capped. A dry run always
+    // looks at the whole file.
+    const total = parsed.rows.length;
+    const paged = !dryRun && (body.offset !== undefined || body.limit !== undefined);
+    const offset = dryRun ? 0 : Math.max(0, Math.min(total, Math.floor(Number(body.offset) || 0)));
+    const limitRaw = Math.floor(Number(body.limit));
+    const limit = !dryRun && Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_IMPORT_COMMIT_ROWS) : total - offset;
+    const end = Math.min(total, offset + limit);
+    if (!dryRun && end - offset > MAX_IMPORT_COMMIT_ROWS) {
+      return unprocessable(`A commit writes at most ${MAX_IMPORT_COMMIT_ROWS} rows per request; this file has ${total}. `
+        + `Send the commit in pages with \`offset\` and \`limit\` (the import dialog does this for you).`);
+    }
+    const inWindow = ({ line }) => line - 2 >= offset && line - 2 < end;
+    const windowAccepted = dryRun ? report.accepted : report.accepted.filter(inWindow);
+
+    // Papers are planned only for the rows this request will write (a dry
+    // run plans the whole file, which is what its preview reports).
+    const plans = autoAllocate && windowAccepted.length
+      ? await planBulkAutoAllocation(store, windowAccepted, {
         roles, questionCount: body.question_count ?? MAX_ASSESSMENT_QUESTIONS,
       })
       : [];
     const plannedCount = plans.filter((p) => p.ok).length;
 
-    const dryRun = bool(body.dry_run);
     const summary = {
       headers: parsed.headers,
       create_users: createUsers,
@@ -389,13 +431,32 @@ export function adminHandlers(route) {
     };
     if (dryRun) return ok({ ...summary, imported: 0, users_created: 0, credentials: [] });
 
+    const pageAccepted = windowAccepted.map((a, i) => ({ ...a, plan: plans[i] }));
+    const page = { offset, limit: end - offset, total, next_offset: end < total ? end : null };
+    const pageSummary = paged
+      ? {
+        ...summary,
+        accepted: pageAccepted.length,
+        rejected: report.rejected.filter(inWindow).length,
+        duplicates: report.duplicates.filter(inWindow).length,
+        errors: report.rejected.filter(inWindow).slice(0, 50),
+        duplicate_rows: report.duplicates.filter(inWindow).slice(0, 50),
+      }
+      : summary;
+
+    // The expensive part first, before anything is written: a request killed
+    // mid-way (a function timeout, a dropped connection) then leaves nothing
+    // behind, rather than candidates without their portal users.
+    const hashes = createUsers && pageAccepted.length
+      ? await hashPasswordsAsync(pageAccepted.map(({ candidate }) => candidate.password))
+      : [];
+
     // One batched write per table (the adapters' `insertMany`; a plain loop
     // as a fallback), so a 2000-row onboarding is a handful of store writes
     // instead of thousands of full-file rewrites. Rows with a planned
     // assessment land with their target track filled in (when the sheet left
     // it blank) and their stage already at Assessment.
-    const batch = report.accepted.map(({ candidate }, i) => {
-      const plan = plans[i];
+    const batch = pageAccepted.map(({ candidate, plan }) => {
       const target_role_id = candidate.target_role_id || (plan?.ok ? plan.role.id : null) || null;
       let stage = candidate.stage || (target_role_id ? 'role_mapped' : 'intake');
       if (plan?.ok && STAGE_KEYS.indexOf(stage) < STAGE_KEYS.indexOf('assessment')) stage = 'assessment';
@@ -419,9 +480,7 @@ export function adminHandlers(route) {
     let credentials = [];
     let usersCreated = 0;
     if (createUsers && importedRecords.length) {
-      // Hash passwords in parallel but bounded to avoid CPU spike on 2000-row imports
-      const hashes = await Promise.all(report.accepted.map(({ candidate }) => hashPasswordAsync(candidate.password)));
-      const userBatch = report.accepted.map(({ candidate }, i) => ({
+      const userBatch = pageAccepted.map(({ candidate }, i) => ({
         username: candidate.username,
         name: candidate.name,
         email: candidate.email,
@@ -435,8 +494,8 @@ export function adminHandlers(route) {
       usersCreated = users.length;
       credentials = users.map((u, i) => ({
         username: u.username,
-        name: report.accepted[i].candidate.name,
-        password: report.accepted[i].candidate.password,
+        name: pageAccepted[i].candidate.name,
+        password: pageAccepted[i].candidate.password,
       }));
     }
 
@@ -453,7 +512,7 @@ export function adminHandlers(route) {
       const assessmentBatch = [];
       const allocatedIdx = [];
       auto_allocations = importedRecords.map((rec, i) => {
-        const plan = plans[i];
+        const plan = pageAccepted[i].plan;
         const username = credentials[i]?.username || '';
         if (!plan?.ok) {
           return { username, name: rec.name, allocated: false, reason: plan?.reason || 'No assessment track available.' };
@@ -494,34 +553,37 @@ export function adminHandlers(route) {
     if (imported) {
       await audit(store, auth.user, 'candidates_bulk_imported', 'candidates', '',
         `${imported} candidate(s) imported from a spreadsheet`
+        + (paged ? ` (rows ${offset + 1}–${end} of ${total})` : '')
         + (usersCreated ? ` (${usersCreated} portal user(s) created)` : '')
         + (auto_allocated ? ` (${auto_allocated} assessment(s) auto-allocated)` : ''));
     }
-    return ok({ ...summary, imported, users_created: usersCreated, credentials, auto_allocated, auto_allocations });
+    return ok({ ...pageSummary, imported, users_created: usersCreated, credentials, auto_allocated, auto_allocations, page });
+    });
   });
 
   route('GET', '/admin/candidates/:id', A, async ({ store, params }) => {
     const c = await store.get('candidates', params.id);
     if (!c) return notFound('Candidate not found.');
     const [assessments, roles, users] = await Promise.all([
-      store.list('assessments', { candidate_id: c.id }), store.list('roles'), store.list('users'),
+      store.list('assessments', { candidate_id: c.id }, { detached: false }), store.list('roles'), store.list('users'),
     ]);
     const roleName = Object.fromEntries(roles.map((r) => [r.id, r.name]));
     const assessorName = Object.fromEntries(users.map((u) => [u.id, u.name]));
     assessments.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const facts = await paperFacts(store, assessments);
     const events = (await store.list('audit_log', { entity: 'candidates', entity_id: c.id }))
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 30);
     return ok({
       candidate: c,
       role_name: roleName[c.target_role_id] || '',
-      assessments: assessments.map((a) => ({
+      assessments: assessments.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, submitted_at: a.submitted_at,
         scored_at: a.scored_at, overall_pct: a.overall_pct, readiness_label: a.readiness_label,
         role_name: roleName[a.role_id] || 'Assessment',
         assessor_name: assessorName[a.assessor_id] || null,
-        question_count: (a.snapshot_json?.questions || []).length,
-        question_limit: a.snapshot_json?.question_limit ?? null,
-        bank_total: a.snapshot_json?.bank_total ?? null,
+        question_count: facts[i].question_count,
+        question_limit: facts[i].question_limit,
+        bank_total: facts[i].bank_total,
         integrity_count: Object.values(a.quiz_state?.integrity || {}).reduce((s, v) => s + Number(v || 0), 0),
         last_integrity_event: a.quiz_state?.events?.length
           ? a.quiz_state.events[a.quiz_state.events.length - 1].event
@@ -537,6 +599,11 @@ export function adminHandlers(route) {
     if (!c) return notFound('Candidate not found.');
     const structured = textField(body, Object.keys(CANDIDATE_TEXT_FIELDS));
     if (structured) return bad(`Candidate ${structured} must be plain text.`);
+    // Create requires a name; an edit must not be able to blank it (the
+    // record then renders as a nameless row in every list and audit line).
+    if (body.name !== undefined && !str(body.name)) return bad('Candidate name is required.');
+    const emailProblem = emailError(body.email);
+    if (emailProblem) return bad(emailProblem);
     if (body.stage !== undefined && (!body.stage || !STAGE_KEYS.includes(body.stage)))
       return bad('Unknown pipeline stage.');
     if (body.target_role_id) {
@@ -576,7 +643,7 @@ export function adminHandlers(route) {
     if (!(await verifyPasswordAsync(body.password, auth.user.password_hash)))
       return forbidden('Incorrect admin password — deletion cancelled.');
 
-    const assessments = await store.list('assessments', { candidate_id: params.id });
+    const assessments = await store.list('assessments', { candidate_id: params.id }, { detached: false });
     if (assessments.some((a) => ['scored', 'validated'].includes(a.status)))
       return conflict('This candidate has finalized assessment reports and cannot be deleted.');
 
@@ -586,13 +653,14 @@ export function adminHandlers(route) {
     // autosave cannot interleave with the cascade and leave an orphan row.
     const users = await store.list('users', { candidate_id: params.id });
     for (const u of users) {
-      for (const s of await store.list('sessions', { user_id: u.id })) await store.remove('sessions', s.id);
-      await store.remove('users', u.id);
+      await bulkRemove(store, 'sessions', (await store.list('sessions', { user_id: u.id })).map((s) => s.id));
     }
+    await bulkRemove(store, 'users', users.map((u) => u.id));
     let removedAssessments = 0;
     for (const a of assessments) {
       await withLock(`assessment:${a.id}`, async () => {
-        for (const r of await store.list('responses', { assessment_id: a.id })) await store.remove('responses', r.id);
+        await bulkRemove(store, 'responses', (await store.list('responses', { assessment_id: a.id })).map((r) => r.id));
+        await bulkRemove(store, 'recordings', (await store.list('recordings', { assessment_id: a.id })).map((r) => r.id));
         await store.remove('assessments', a.id);
       });
       removedAssessments += 1;
@@ -629,10 +697,20 @@ export function adminHandlers(route) {
     if (!USER_ROLES.includes(body.role)) return bad(`Role must be one of: ${USER_ROLES.join(', ')}`);
     const structured = textField(body, ['name', 'email']);
     if (structured) return bad(`User ${structured} must be plain text.`);
+    if (!str(body.name)) return bad('Missing: name');
+    const emailProblem = emailError(body.email);
+    if (emailProblem) return bad(emailProblem);
+    const countProblem = questionCountError(body.question_count);
+    if (countProblem) return bad(countProblem);
     const username = str(body.username, 100).toLowerCase();
     if (!/^[a-z0-9._-]{3,}$/.test(username)) return bad('Username must be 3+ chars: a-z 0-9 . _ -');
     const passwordProblem = passwordError(body.password);
     if (passwordProblem) return bad(passwordProblem);
+    // Username and candidate-link uniqueness are check-then-insert; a double
+    // submit of the Add user form used to create two logins with one username
+    // (and two portal users for one candidate). User creation is rare enough
+    // that one lock for the whole route is the simplest correct answer.
+    return withLock('users:create', async () => {
     if ((await store.list('users', { username })).length) return conflict('Username already exists.');
     let candidate_id = null;
     if (body.role === 'candidate') {
@@ -690,6 +768,7 @@ export function adminHandlers(route) {
       }
     }
     return created(auto_allocation ? { ...publicUser(rec), auto_allocation } : publicUser(rec));
+    });
   });
 
   route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => {
@@ -697,6 +776,9 @@ export function adminHandlers(route) {
     if (!u) return notFound('User not found.');
     const structured = textField(body, ['name', 'email']);
     if (structured) return bad(`User ${structured} must be plain text.`);
+    if (body.name !== undefined && !str(body.name)) return bad('User name is required.');
+    const emailProblem = emailError(body.email);
+    if (emailProblem) return bad(emailProblem);
     const patch = {};
     if (body.name !== undefined) patch.name = str(body.name, 120);
     if (body.email !== undefined) patch.email = str(body.email, 200);
@@ -721,6 +803,23 @@ export function adminHandlers(route) {
     // no other admin there is nobody left to undo it. Refuse the self-lockout.
     if (u.id === auth.user.id && patch.active === false) return bad('You cannot deactivate your own account.');
     const updated = await store.update('users', params.id, patch);
+    // A password reset is what an admin reaches for when a login is
+    // compromised, and deactivating is how they shut one out — neither is
+    // done if the tokens already issued keep working. Revoke every session
+    // of a user whose password changed or whose account was switched off
+    // (reactivating later starts from zero live sessions rather than
+    // resurrecting the ones that were revoked). The admin resetting their
+    // OWN password keeps the session they are using; their other devices
+    // are signed out like anyone else's.
+    const passwordChanged = patch.password_hash !== undefined;
+    const switchedOff = patch.active === false && u.active !== false;
+    if (passwordChanged || switchedOff) {
+      const sessions = await store.list('sessions', { user_id: u.id });
+      const keep = u.id === auth.user.id ? auth.session.id : null;
+      await Promise.all(sessions
+        .filter((sess) => sess.id !== keep)
+        .map((sess) => store.remove('sessions', sess.id).catch(() => {})));
+    }
     await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`);
     return ok(publicUser(updated));
   });
@@ -728,7 +827,7 @@ export function adminHandlers(route) {
   // ------------------------------------------------ roles (assessment tracks)
   route('GET', '/admin/roles', A, async ({ store }) => {
     const [roles, comps, questions, assessments] = await Promise.all([
-      store.list('roles'), store.list('competencies'), store.list('questions'), store.list('assessments'),
+      store.list('roles'), store.list('competencies'), store.list('questions'), store.list('assessments', {}, { detached: false }),
     ]);
     roles.sort((a, b) => a.name.localeCompare(b.name));
     return ok({
@@ -748,16 +847,20 @@ export function adminHandlers(route) {
     if (structured) return bad(`Role ${structured} must be plain text.`);
     const key = str(body.key, 60).toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(key)) return bad('Key must be a slug like databricks-rsa.');
-    if ((await store.list('roles', { key })).length) return conflict('A role with this key already exists.');
-    const rec = await store.insert('roles', {
-      key, name: str(body.name, 120), technology: str(body.technology, 120),
-      description: str(body.description, 2000), active: true,
+    // The uniqueness check and the insert are one step per key (shared with
+    // the published-track install), so a double submit cannot create twins.
+    return withLock(`role-key:${key}`, async () => {
+      if ((await store.list('roles', { key })).length) return conflict('A role with this key already exists.');
+      const rec = await store.insert('roles', {
+        key, name: str(body.name, 120), technology: str(body.technology, 120),
+        description: str(body.description, 2000), active: true,
+      });
+      await store.insert('frameworks', {
+        role_id: rec.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
+      });
+      await audit(store, auth.user, 'role_created', 'roles', rec.id, `Role "${rec.name}" created`);
+      return created(rec);
     });
-    await store.insert('frameworks', {
-      role_id: rec.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
-    });
-    await audit(store, auth.user, 'role_created', 'roles', rec.id, `Role "${rec.name}" created`);
-    return created(rec);
   });
 
   route('PATCH', '/admin/roles/:id', A, async ({ store, body, params, auth }) => {
@@ -779,11 +882,11 @@ export function adminHandlers(route) {
   route('DELETE', '/admin/roles/:id', A, async ({ store, params, auth }) => {
     const r = await store.get('roles', params.id);
     if (!r) return notFound('Role not found.');
-    if ((await store.list('assessments', { role_id: params.id })).length)
+    if ((await store.list('assessments', { role_id: params.id }, { detached: false })).length)
       return conflict('Assessments exist for this role. Deactivate it instead of deleting.');
-    for (const q of await store.list('questions', { role_id: params.id })) await store.remove('questions', q.id);
-    for (const c of await store.list('competencies', { role_id: params.id })) await store.remove('competencies', c.id);
-    for (const f of await store.list('frameworks', { role_id: params.id })) await store.remove('frameworks', f.id);
+    for (const table of ['questions', 'competencies', 'frameworks']) {
+      await bulkRemove(store, table, (await store.list(table, { role_id: params.id })).map((r) => r.id));
+    }
     // Candidates pointed at the track would otherwise keep a dangling
     // target_role_id: the list shows a blank track and auto-allocation for
     // them fails with "no track" instead of falling back to the workspace
@@ -809,10 +912,19 @@ export function adminHandlers(route) {
   });
 
   // ------------------------------------------------ competencies
+  /**
+   * The gap map subtracts the observed level (a whole 1-5) from this target,
+   * and the severity cutoffs are whole levels too — a target of 2.5 produced
+   * half-level gaps that matched neither cutoff the way the editor promised.
+   */
+  const targetLevelError = (value) => {
+    const level = num(value, NaN);
+    return Number.isInteger(level) && level >= 1 && level <= 5 ? null : 'Target level must be a whole number from 1 to 5.';
+  };
   function validateCompetency(body) {
     if (!str(body.name)) return 'Competency name is required.';
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return 'Weight must be 0-100.';
-    if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return 'Target level must be 1-5.';
+    if (body.target_level !== undefined && targetLevelError(body.target_level)) return targetLevelError(body.target_level);
     return null;
   }
 
@@ -844,7 +956,7 @@ export function adminHandlers(route) {
     if (structured) return bad(`Competency ${structured} must be plain text.`);
     if (body.name !== undefined && !str(body.name)) return bad('Competency name is required.');
     if (body.weight !== undefined && (num(body.weight, -1) < 0 || num(body.weight) > 100)) return bad('Weight must be 0-100.');
-    if (body.target_level !== undefined && (num(body.target_level) < 1 || num(body.target_level) > 5)) return bad('Target level must be 1-5.');
+    if (body.target_level !== undefined && targetLevelError(body.target_level)) return bad(targetLevelError(body.target_level));
     const patch = {};
     for (const [f, max] of Object.entries(COMPETENCY_TEXT_FIELDS))
       if (body[f] !== undefined) patch[f] = str(body[f], max);
@@ -858,7 +970,7 @@ export function adminHandlers(route) {
   route('DELETE', '/admin/competencies/:id', A, async ({ store, params, auth }) => {
     const c = await store.get('competencies', params.id);
     if (!c) return notFound('Competency not found.');
-    for (const q of await store.list('questions', { competency_id: params.id })) await store.remove('questions', q.id);
+    await bulkRemove(store, 'questions', (await store.list('questions', { competency_id: params.id })).map((q) => q.id));
     await store.remove('competencies', params.id);
     await audit(store, auth.user, 'competency_deleted', 'competencies', params.id, `Competency "${c.name}" (and its questions) deleted`);
     return ok({ ok: true });
@@ -877,9 +989,30 @@ export function adminHandlers(route) {
       return `Difficulty must be one of: ${DIFFICULTIES.join(', ')}`;
     if (body.type === 'mcq_single' || body.type === 'mcq_multi') {
       const opts = cleanOptions(body.options);
-      if (opts.length < 2) return 'At least two options are required.';
+      if (opts.length < 2) {
+        // Say why when the admin typed options that were then dropped: a row
+        // with a blank label used to fail with the misleading "at least two
+        // options" even though the form clearly showed two.
+        // Only a typed-and-blank label is named here; a structured (non-text)
+        // id or label is a shape problem, which the count rule already covers.
+        const blankLabels = Array.isArray(body.options)
+          ? body.options.filter((o) => o && typeof o === 'object' && isTextish(o.id) && isTextish(o.label) && str(o.label, 500) === '').length
+          : 0;
+        return blankLabels > 0 ? 'Every answer option needs a label.' : 'At least two options are required.';
+      }
       const ids = new Set(opts.map((o) => o.id));
-      const correct = Array.isArray(body.correct_option_ids) ? body.correct_option_ids : [];
+      // Two options sharing an id are indistinguishable once served: the
+      // candidate's pick is stored by id, so either label would score as the
+      // key. Same for two identical labels — a choice the candidate cannot
+      // tell apart is not a question.
+      if (ids.size !== opts.length) return 'Each answer option needs a unique id.';
+      const labels = new Set(opts.map((o) => o.label.toLowerCase()));
+      if (labels.size !== opts.length) return 'Answer options must be distinct.';
+      // Compared as stored (strings): `correct_option_ids: [1]` must line up
+      // with `options: [{ id: 1 }]`, which cleanOptions stringifies.
+      const correct = Array.isArray(body.correct_option_ids)
+        ? [...new Set(body.correct_option_ids.filter(isTextish).map((x) => str(x, 40)))]
+        : [];
       if (body.type === 'mcq_single' && correct.length !== 1) return 'Exactly one correct option is required.';
       if (body.type === 'mcq_multi' && (correct.length < 1 || correct.length >= opts.length))
         return 'Select at least one (but not all) correct options.';
@@ -930,12 +1063,16 @@ export function adminHandlers(route) {
     if (comp.role_id !== body.role_id) return bad('Competency must belong to the selected role.');
     const problem = validateQuestion(body);
     if (problem) return bad(problem);
-    if (await duplicatePromptInRole(store, body.role_id, body.prompt)) {
-      return conflict('A question with this prompt already exists for this role. Edit the existing question instead of adding a second copy.');
-    }
-    const rec = await store.insert('questions', normalizeQuestion(body));
-    await audit(store, auth.user, 'question_created', 'questions', rec.id, `Question added (${rec.type})`);
-    return created(rec);
+    // The duplicate-prompt rule is a check-then-insert; a double-clicked Save
+    // used to put the same question in the bank twice. One step per role.
+    return withLock(`questions:${body.role_id}`, async () => {
+      if (await duplicatePromptInRole(store, body.role_id, body.prompt)) {
+        return conflict('A question with this prompt already exists for this role. Edit the existing question instead of adding a second copy.');
+      }
+      const rec = await store.insert('questions', normalizeQuestion(body));
+      await audit(store, auth.user, 'question_created', 'questions', rec.id, `Question added (${rec.type})`);
+      return created(rec);
+    });
   });
 
   route('PATCH', '/admin/questions/:id', A, async ({ store, body, params, auth }) => {
@@ -968,7 +1105,10 @@ export function adminHandlers(route) {
 
   // ------------------------------------------------ assessment framework
   route('GET', '/admin/frameworks', A, async ({ store, query }) => {
-    if (!query.role_id) return bad('role_id is required.');
+    if (!query.role_id || typeof query.role_id !== 'string') return bad('role_id is required.');
+    // A track that does not exist has no framework, default or otherwise; the
+    // route used to answer with an "unsaved default" for any string at all.
+    if (!(await store.get('roles', query.role_id))) return notFound('Role not found.');
     const rows = await store.list('frameworks', { role_id: query.role_id });
     const active = rows.find((f) => f.active !== false);
     return ok({ framework: active || { role_id: query.role_id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, unsaved: true } });
@@ -981,13 +1121,20 @@ export function adminHandlers(route) {
     if (problems.length) return unprocessable('Invalid framework configuration.', { problems });
     // Validation accepts numeric strings (a form posts "80"), so store the
     // numbers the validator actually checked: the scoring engine compares and
-    // sorts on these, and the editor re-renders them.
+    // sorts on these, and the editor re-renders them. Only the fields the
+    // engine and the report card read are stored — the config is copied into
+    // every assessment snapshot, so an arbitrary extra payload would be
+    // duplicated into each paper allocated against the track.
     const config = {
-      ...body.config,
-      readiness_bands: body.config.readiness_bands.map((b) => ({ ...b, min: Number(b.min) })),
+      readiness_bands: body.config.readiness_bands.map((b) => ({
+        key: b.key.trim(),
+        label: b.label.trim(),
+        min: Number(b.min),
+        ...(typeof b.tone === 'string' && b.tone ? { tone: str(b.tone, 20) } : {}),
+        ...(typeof b.description === 'string' ? { description: b.description.trim() } : {}),
+      })),
       level_thresholds: body.config.level_thresholds.map(Number),
       gap_severity: {
-        ...body.config.gap_severity,
         moderate: Number(body.config.gap_severity.moderate),
         critical: Number(body.config.gap_severity.critical),
       },
@@ -1003,7 +1150,9 @@ export function adminHandlers(route) {
 
   // ------------------------------------------------ assessments & allocation
   route('GET', '/admin/assessments', A, async ({ store, query }) => {
-    let rows = await store.list('assessments');
+    // Small columns only: the papers stay in their own objects (one fetch per
+    // row would make this listing cost every paper ever allocated).
+    let rows = await store.list('assessments', {}, { detached: false });
     if (query.status) rows = rows.filter((a) => a.status === query.status);
     if (query.assessor_id) rows = rows.filter((a) => a.assessor_id === query.assessor_id);
     if (query.role_id) rows = rows.filter((a) => a.role_id === query.role_id);
@@ -1013,17 +1162,18 @@ export function adminHandlers(route) {
     const rname = Object.fromEntries(roles.map((r) => [r.id, r.name]));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const page = paginate(rows, query, null);
+    const facts = await paperFacts(store, page.rows);
     return ok({
-      assessments: page.rows.map((a) => ({
+      assessments: page.rows.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, started_at: a.started_at,
         submitted_at: a.submitted_at, scored_at: a.scored_at, overall_pct: a.overall_pct,
         readiness_key: a.readiness_key, readiness_label: a.readiness_label,
         candidate_id: a.candidate_id, candidate_name: cmap[a.candidate_id]?.name || '(deleted)',
         role_id: a.role_id, role_name: rname[a.role_id] || '(deleted)',
         assessor_id: a.assessor_id, assessor_name: uname[a.assessor_id] || null,
-        question_count: (a.snapshot_json?.questions || []).length,
-        question_limit: a.snapshot_json?.question_limit ?? null,
-        bank_total: a.snapshot_json?.bank_total ?? null,
+        question_count: facts[i].question_count,
+        question_limit: facts[i].question_limit,
+        bank_total: facts[i].bank_total,
         integrity_count: Object.values(a.quiz_state?.integrity || {}).reduce((s, v) => s + Number(v || 0), 0),
         last_integrity_event: a.quiz_state?.events?.length
           ? a.quiz_state.events[a.quiz_state.events.length - 1].event
@@ -1209,24 +1359,32 @@ export function adminHandlers(route) {
   // ---- authoring: add one question ------------------------------------
   // Validated by exactly the same code the bulk import uses, so the two can
   // never diverge on what counts as a usable question.
+  // Authored ids are sequential per module (`RSA-T01-A007`) and the store
+  // keys rows by id, so the allocate-then-insert must be atomic per bank: two
+  // admins saving at once used to both compute A007 and the second insert
+  // silently OVERWROTE the first question (both got a 201). The prompt
+  // duplicate check has the same read-then-write shape and is covered by the
+  // same lock. (The bulk import below goes through the same lock.)
   route('POST', '/admin/question-bank/questions', A, async ({ store, body, auth }) => {
     const roleKey = roleKeyOf(body);
     const bank = requireBank(roleKey);
     if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
-    const { questions, families } = await bankContext(store, roleKey);
-    const result = validateBankQuestion(body, { modules: bank.modules, families });
-    if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
+    return withLock(`bank:${roleKey}`, async () => {
+      const { questions, families } = await bankContext(store, roleKey);
+      const result = validateBankQuestion(body, { modules: bank.modules, families });
+      if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
 
-    const key = promptKey(result.question.prompt);
-    if (questions.some((q) => promptKey(q.prompt) === key)) {
-      return conflict('A question with this prompt already exists in the bank.');
-    }
+      const key = promptKey(result.question.prompt);
+      if (questions.some((q) => promptKey(q.prompt) === key)) {
+        return conflict('A question with this prompt already exists in the bank.');
+      }
 
-    const id = nextAuthoredId(result.question.module, await store.list('bank_questions'), roleKey);
-    const rec = await store.insert('bank_questions', toStoredRecord(result.question, { id, actorId: auth.user.id, roleKey }));
-    await audit(store, auth.user, 'bank_question_created', 'bank_questions', rec.id,
-      `Question added to ${rec.module} / ${rec.family}`);
-    return created({ question: hydrate(rec) });
+      const id = nextAuthoredId(result.question.module, await store.list('bank_questions'), roleKey);
+      const rec = await store.insert('bank_questions', toStoredRecord(result.question, { id, actorId: auth.user.id, roleKey }));
+      await audit(store, auth.user, 'bank_question_created', 'bank_questions', rec.id,
+        `Question added to ${rec.module} / ${rec.family}`);
+      return created({ question: hydrate(rec) });
+    });
   });
 
   route('PATCH', '/admin/question-bank/questions/:id', A, async ({ store, body, params, query, auth }) => {
@@ -1348,16 +1506,20 @@ export function adminHandlers(route) {
     // Ids are allocated against a list that grows as we insert, so a batch
     // cannot hand two questions the same id. The whole batch then lands in a
     // single store write (adapters' `insertMany`; loop fallback otherwise).
-    const existingRows = await store.list('bank_questions');
-    const allocated = [...existingRows];
-    const batch = report.accepted.map(({ question }) => {
-      const id = nextAuthoredId(question.module, allocated, roleKey);
-      const rec = toStoredRecord(question, { id, actorId: auth.user.id, roleKey });
-      allocated.push(rec);
-      return rec;
+    // Same per-bank lock as single authoring: an import racing a save (or a
+    // second import) must not allocate the same ids and overwrite rows.
+    const imported = await withLock(`bank:${roleKey}`, async () => {
+      const existingRows = await store.list('bank_questions');
+      const allocated = [...existingRows];
+      const batch = report.accepted.map(({ question }) => {
+        const id = nextAuthoredId(question.module, allocated, roleKey);
+        const rec = toStoredRecord(question, { id, actorId: auth.user.id, roleKey });
+        allocated.push(rec);
+        return rec;
+      });
+      if (batch.length) await bulkInsert(store, 'bank_questions', batch);
+      return batch.length;
     });
-    if (batch.length) await bulkInsert(store, 'bank_questions', batch);
-    const imported = batch.length;
     if (imported) {
       await audit(store, auth.user, 'bank_questions_imported', 'bank_questions', '',
         `${imported} question(s) imported from a spreadsheet`);
@@ -1413,7 +1575,10 @@ export function adminHandlers(route) {
     const roleKey = str(body?.role_key || body?.roleKey, 60);
     if (!roleKey) return bad('Missing: role_key');
     if (!catalogueForRoleKey(roleKey)) return bad(`No published track matches role key "${roleKey}".`);
-    const result = await installCatalogue(store, roleKey);
+    // "Does this track exist yet?" + "create it" must be one step: two admins
+    // pressing Add to workspace together used to get two roles with the same
+    // key, each with its own 100-question bank and framework.
+    const result = await withLock(`role-key:${roleKey}`, () => installCatalogue(store, roleKey));
     if (result.error) return result.code === 'inactive' ? conflict(result.error) : bad(result.error);
     if (result.created) {
       await audit(store, auth.user, 'track_installed', 'roles', result.role.id,
@@ -1439,14 +1604,12 @@ export function adminHandlers(route) {
     }
     // Optional cap: serve only X questions, balanced across competencies by weight.
     let questionLimit = null;
+    const countProblem = questionCountError(body.question_count);
+    if (countProblem) return bad(countProblem);
     if (body.question_count !== undefined && body.question_count !== null && body.question_count !== '') {
       questionLimit = Number(body.question_count);
-      if (!Number.isInteger(questionLimit) || questionLimit < 1)
-        return bad('Number of questions must be a whole number of 1 or more.');
-      if (questionLimit > MAX_ASSESSMENT_QUESTIONS)
-        return bad(`Number of questions cannot exceed ${MAX_ASSESSMENT_QUESTIONS}.`);
     }
-    const open = (await store.list('assessments', { candidate_id: candidate.id }))
+    const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
       .find((a) => a.role_id === body.role_id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
     if (open) return conflict('This candidate already has an open assessment for that role.');
     const snapshot = await buildSnapshot(store, body.role_id, { questionLimit });
@@ -1458,7 +1621,7 @@ export function adminHandlers(route) {
     const rec = await store.insert('assessments', {
       candidate_id: candidate.id, role_id: body.role_id, assessor_id,
       status: 'assigned', snapshot_json: snapshot, report_json: null,
-      question_count: snapshot.questions.length,
+      ...paperSummary(snapshot),
       overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
     });
     await store.update('candidates', candidate.id, { target_role_id: candidate.target_role_id || body.role_id });
@@ -1492,7 +1655,8 @@ export function adminHandlers(route) {
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
       return conflict('Only assessments that have not been submitted can be deleted.');
-    for (const r of await store.list('responses', { assessment_id: params.id })) await store.remove('responses', r.id);
+    await bulkRemove(store, 'responses', (await store.list('responses', { assessment_id: params.id })).map((r) => r.id));
+    await bulkRemove(store, 'recordings', (await store.list('recordings', { assessment_id: params.id })).map((r) => r.id));
     await store.remove('assessments', params.id);
     await audit(store, auth.user, 'assessment_deleted', 'assessments', params.id, 'Assessment deleted before submission');
     return ok({ ok: true });
@@ -1566,6 +1730,37 @@ function passwordError(value) {
   return null;
 }
 
+/**
+ * The optional `question_count` an allocation may carry — the manual Allocate
+ * dialog, a candidate-user creation and the bulk import all accept it. Blank
+ * or omitted means the default cap; anything else must be a whole number in
+ * 1..MAX_ASSESSMENT_QUESTIONS. The automatic paths used to swallow junk here
+ * ('abc', -1, 9999) and quietly allocate the default 50, so an admin who
+ * mistyped the count never learned their number was ignored.
+ */
+function questionCountError(value) {
+  if (value === undefined || value === null || value === '') return null;
+  // Only a number or a numeric string counts; `Number(true)` is 1 and
+  // `Number([])` is 0, neither of which anyone typed.
+  const n = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '') ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 1) return 'Number of questions must be a whole number of 1 or more.';
+  if (n > MAX_ASSESSMENT_QUESTIONS) return `Number of questions cannot exceed ${MAX_ASSESSMENT_QUESTIONS}.`;
+  return null;
+}
+
+/**
+ * An email, when given, must look like one. Blank/omitted is fine (contact
+ * details are optional); anything else must be `local@domain.tld` with no
+ * whitespace. Kept deliberately loose — the point is to catch a name or a
+ * phone number typed into the wrong box, not to police RFC 5322. The bulk
+ * import and the admin form apply the same rule.
+ */
+function emailError(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (!isTextish(value)) return 'Email must be plain text.';
+  return emailShapeProblem(String(value));
+}
+
 /** Validate years-of-experience input the same way the bulk import does. */
 function yearsError(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -1623,7 +1818,7 @@ function normalizeQuestion(body, existing = {}) {
     prompt: str(body.prompt, 2000), help_text: str(body.help_text, 1000),
     options,
     correct_option_ids: isChoice && Array.isArray(body.correct_option_ids)
-      ? body.correct_option_ids.filter(isTextish).map((x) => str(x, 40))
+      ? [...new Set(body.correct_option_ids.filter(isTextish).map((x) => str(x, 40)))]
       : [],
     points: questionPoints(body), difficulty: body.difficulty || 'intermediate',
     rubric: str(body.rubric, 3000), order: num(body.order, existing.order ?? 0),

@@ -66,21 +66,34 @@ export function startAudioRecorder(win, stream) {
   return { recorder, mime: recorder.mimeType || mime || 'audio/webm' };
 }
 
-/** Merge typed text, live transcript, and optional recorded audio into a persistable answer. */
-export function buildTextAnswer({ text = '', transcript = '', audioB64 = '', audioMime = '' } = {}) {
+/**
+ * Merge typed text, live transcript, and optional recorded audio into a
+ * persistable answer.
+ *
+ * `audioKept` says the server already holds this question's recording (an
+ * autosaved draft, or one restored after a reload): the clip is not sent
+ * again and the answer carries `audio_keep: true`, which the API honours by
+ * keeping the stored recording instead of dropping it. A clip passed in
+ * `audioB64` always wins over the kept one (a re-recording replaces it).
+ */
+export function buildTextAnswer({ text = '', transcript = '', audioB64 = '', audioMime = '', audioKept = false } = {}) {
   const typed = String(text || '').trim();
   const spoken = String(transcript || '').trim();
   const merged = typed || spoken;
-  const usedAudio = Boolean(spoken || audioB64) && (!typed || typed === spoken);
+  const b64 = String(audioB64 || '').replace(/\s/g, '');
+  const hasClip = Boolean(b64 && b64.length <= MAX_AUDIO_B64);
+  const kept = !hasClip && audioKept === true;
+  const usedAudio = Boolean(spoken || hasClip || kept) && (!typed || typed === spoken);
   const out = {
     text: merged,
     transcript: spoken,
     source: usedAudio ? 'audio' : 'typed',
   };
-  const b64 = String(audioB64 || '').replace(/\s/g, '');
-  if (b64 && b64.length <= MAX_AUDIO_B64) {
+  if (hasClip) {
     out.audio_b64 = b64;
     out.audio_mime = String(audioMime || 'audio/webm').slice(0, 80);
+  } else if (kept) {
+    out.audio_keep = true;
   }
   return out;
 }
