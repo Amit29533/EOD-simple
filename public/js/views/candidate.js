@@ -1,5 +1,5 @@
 import { api, session } from '../api.js';
-import { state } from '../app.js';
+import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
   esc, fmtDate, loading, emptyState, toast, attempt,
   pipelineStepper, assessmentStatusBadge, readinessBadge,
@@ -159,6 +159,10 @@ async function runExamSession(view, id, payload) {
   let ticking = null;
   let advancing = false;
   let finished = false;
+  // The painted question's deadline and the clock starter for that paint, so
+  // a failed lock can put the countdown back (see resumeClock).
+  let deadlineAt = 0;
+  let restartClock = null;
   // Released whenever the exam view is torn down or repainted, so a recording
   // never outlives the question it belongs to (the browser tab keeps showing
   // the "microphone in use" indicator otherwise).
@@ -166,6 +170,16 @@ async function runExamSession(view, id, payload) {
   let pageHideLogged = false;
   const tabId = `${id}-${Math.random().toString(36).slice(2, 9)}`;
   const cleanup = [];
+  // Set once the session has released everything it pinned. A late timer or
+  // an in-flight round trip that resolves afterwards must not paint the exam
+  // over whatever view owns #view now (the sign-in form after a 401, the
+  // journey page after Back).
+  let unmounted = false;
+  const teardown = () => {
+    unmounted = true;
+    const fns = cleanup.splice(0);
+    fns.forEach((fn) => { try { fn(); } catch { /* releasing */ } });
+  };
   const lastIntegrityAt = new Map();
 
   const typeLabel = (t) => (state.meta.questionTypes.find((x) => x.key === t) || {}).label || t;
@@ -336,7 +350,23 @@ async function runExamSession(view, id, payload) {
   window.addEventListener('hashchange', onRouteChange);
   window.addEventListener('storage', onStorage);
   window.open = onWindowOpen;
+  /**
+   * The app is about to hand #view to another view. Everything above is
+   * document- or window-level, so it survives the swap unless released here:
+   * a session drop mid-exam (the 401 handler mounts the sign-in form) left
+   * the login screen with paste, right-click, text selection and Ctrl+V
+   * blocked — "Pasting into the secure exam is not permitted" over the
+   * password field — and every attempt fired a token-less integrity beacon;
+   * Back to the journey page kept the same blockers there, and Forward
+   * mounted a second session on top of the first, so one copy attempt was
+   * logged twice and two clocks raced the same lock. The route-change log
+   * runs first: the swap fires before the exam's own hashchange listener
+   * would, and leaving the hall is still an integrity event.
+   */
+  const onUnmount = () => { onRouteChange(); teardown(); };
+  document.addEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
   cleanup.push(() => {
+    document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
     document.removeEventListener('copy', onCopy, true);
     document.removeEventListener('cut', onCut, true);
     document.removeEventListener('paste', onPaste, true);
@@ -360,12 +390,97 @@ async function runExamSession(view, id, payload) {
     if (ticking) clearInterval(ticking);
   });
 
-  const stillHere = () => location.hash.includes(`/assessments/${id}/quiz`);
+  const stillHere = () => !unmounted && location.hash.includes(`/assessments/${id}/quiz`);
+
+  /* ------------------------------ draft autosave ------------------------------ */
+  /**
+   * Every change to the answer on screen goes to the API as a draft
+   * (`PUT …/answers`) while the question's clock runs: a short debounce for a
+   * choice, a longer one for typed notes, at once when a recording stops. The
+   * lock (`/next`) is still the answer; the draft is the safety net the
+   * server already honours — a lock that lands after the window (the request
+   * timed out on a cold function, got a 503, or the connection dropped, and
+   * the retry came late) locks the draft saved in time instead of a blank.
+   * The exam hall never sent one before, so a lost lock near the end of a
+   * 30-second MCQ window cost the candidate the answer AND flagged them for
+   * it. A failed save is silent (it is a net, not the answer): the next change,
+   * or the flush that rides with the lock, re-sends whatever was not
+   * acknowledged. A recording is uploaded once — after the server has taken
+   * it, later drafts (and the lock) carry `audio_keep` instead of the clip.
+   */
+  const DRAFT_DELAY_MS = { choice: 400, text: 1500, now: 0 };
+  // `sentJson` is the last value the server has seen (taken or ignored — an
+  // ignored draft is not re-sent on its own, only a changed one); `savedClip`
+  // is the recording the server has taken for this question.
+  const draft = { qid: null, timer: null, latest: undefined, sentJson: '', inflight: null, savedClip: '' };
+  const draftJson = (v) => { try { return JSON.stringify(v) ?? ''; } catch { return String(v); } };
+  const clearDraftTimer = () => { if (draft.timer) { clearTimeout(draft.timer); draft.timer = null; } };
+  function resetDraft(qid) {
+    clearDraftTimer();
+    Object.assign(draft, { qid, latest: undefined, sentJson: '', savedClip: '' });
+  }
+  function sendDraft(qid, value) {
+    if (unmounted || finished || draft.inflight) return;
+    const json = draftJson(value);
+    draft.inflight = api(`/candidate/assessments/${id}/answers`, {
+      method: 'PUT', body: { answers: { [qid]: value } }, timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
+    }).then((out) => {
+      draft.sentJson = json;
+      const accepted = Array.isArray(out?.accepted_question_ids) && out.accepted_question_ids.includes(qid);
+      if (accepted && value && typeof value === 'object' && value.audio_b64) draft.savedClip = value.audio_b64;
+    }, () => { /* the next change, or the lock's flush, re-sends it */ }).then(() => {
+      draft.inflight = null;
+      // A change made while this save was in flight goes out now — after a
+      // success only, so an unreachable server is not hammered.
+      if (draft.sentJson === json && draft.qid === qid && !draft.timer
+        && draft.latest !== undefined && draftJson(draft.latest) !== json) sendDraft(qid, draft.latest);
+    });
+  }
+  function queueDraft(qid, value, delayMs) {
+    if (unmounted || finished) return;
+    if (draft.qid !== qid) resetDraft(qid);
+    draft.latest = value;
+    clearDraftTimer();
+    if (draftJson(value) === draft.sentJson) return; // the server already has this one
+    draft.timer = setTimeout(() => { draft.timer = null; sendDraft(qid, draft.latest); }, delayMs);
+  }
+  /** Sends the value the server has not seen yet, if there is one, right now. */
+  function flushDraft() {
+    clearDraftTimer();
+    if (draft.qid && draft.latest !== undefined && draftJson(draft.latest) !== draft.sentJson) sendDraft(draft.qid, draft.latest);
+  }
+  cleanup.push(clearDraftTimer);
+
+  /**
+   * After a failed lock the question is still live and its server-side clock
+   * never stopped. The countdown used to be cleared for the lock and never
+   * restarted, so it froze at the moment of the press and the candidate had
+   * no idea the window was closing under them. Put it back; and once the
+   * window is over, keep re-sending the lock on a backoff instead of leaving
+   * a dead button — the server locks the draft saved in time (or the blank)
+   * and the paper moves on.
+   */
+  const LOCK_RETRY_MS = 4000;
+  function resumeClock(btn) {
+    if (unmounted || finished) return;
+    if (Date.now() < deadlineAt) { restartClock?.(); return; }
+    if (btn) btn.dataset.force = '1';
+    ticking = setTimeout(() => {
+      ticking = null;
+      if (unmounted || finished || advancing) return;
+      const b = view.querySelector('#exam-next');
+      if (b) { b.dataset.force = '1'; b.disabled = false; b.click(); }
+    }, LOCK_RETRY_MS);
+  }
 
   async function advance(answer) {
     if (advancing) return;
     advancing = true;
     if (ticking) { clearInterval(ticking); ticking = null; }
+    // Whatever the lock carries also goes out as an in-time draft if the
+    // server has not acknowledged one yet: should the lock itself be lost,
+    // the late retry locks this draft rather than a blank.
+    flushDraft();
     const btn = view.querySelector('#exam-next');
     // Show what the click is doing (the button used to look inert while the
     // lock was in flight) but keep the question on screen: if the lock fails,
@@ -382,20 +497,22 @@ async function runExamSession(view, id, payload) {
       body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
       timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
     }));
+    if (unmounted) return; // the view was swapped while the lock was in flight
     if (!out) {
       // Offline, timed out or 5xx: re-arm the button and let them send it
       // again (a lock that actually committed self-heals — the retry /next
       // returns complete again via the idempotency guard, and a stale
-      // question_id is a no-op).
+      // question_id is a no-op). The clock keeps running meanwhile.
       advancing = false;
       if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || btn.textContent; }
+      resumeClock(btn);
       return;
     }
     if (out.complete) {
       // The paper is locked. Everything from here on — the submit POST and the
       // journey reload — happens behind the handover panel.
       finished = true;
-      cleanup.forEach((fn) => fn());
+      teardown();
       renderSubmitHandover(view);
       await finalizeExam(id);
       return;
@@ -403,6 +520,7 @@ async function runExamSession(view, id, payload) {
     try {
       d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
     } catch {
+      if (unmounted) return;
       // The advance landed but the next question did not load. Keep the
       // candidate where they are — the retry press no-ops the stale question
       // and this fetch then paints the live question.
@@ -423,6 +541,22 @@ async function runExamSession(view, id, payload) {
     return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `${s}s`;
   }
 
+  /**
+   * A window's length for the chips ("60s", "2 min", "1 min 30s"), read from
+   * the server's per-question `budgets` so the hall never advertises a
+   * different budget than the one the clock is actually running — the chips
+   * used to hard-code 60s / 2 min / 30s regardless of what the API served.
+   */
+  function fmtWindow(ms, fallback) {
+    const total = Number(ms);
+    if (!Number.isFinite(total) || total <= 0) return fallback;
+    const s = Math.round(total / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return r ? `${m} min ${r}s` : `${m} min`;
+  }
+
   function fmtStopwatch(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
     const m = Math.floor(s / 60);
@@ -431,12 +565,12 @@ async function runExamSession(view, id, payload) {
   }
 
   function paint() {
-    if (!stillHere()) { cleanup.forEach((fn) => fn()); return; }
+    if (!stillHere()) { teardown(); return; }
     const q = d.current_question;
     const exam = d.exam;
     if (!q || exam.complete) {
       finished = true;
-      cleanup.forEach((fn) => fn());
+      teardown();
       finalizeExam(id);
       return;
     }
@@ -452,6 +586,10 @@ async function runExamSession(view, id, payload) {
     const n = exam.index + 1;
     const pctFill = exam.total ? Math.round((exam.index / exam.total) * 100) : 0;
     const deadline = Date.now() + (exam.remaining_ms || 0);
+    deadlineAt = deadline;
+    // A fresh question (or a repaint of this one) starts with nothing to save;
+    // `currentAnswer` below is whatever draft the server already holds.
+    resetDraft(q.id);
 
     view.innerHTML = `
       <div class="exam-hall">
@@ -483,7 +621,7 @@ async function runExamSession(view, id, payload) {
                 <span class="chip">${esc(typeLabel(q.type))}</span>
                 <span class="chip">${esc(q.difficulty)}</span>
                 <span class="chip">${esc(q.points)} pts</span>
-                ${open ? `<span class="chip">${phase === 'review' ? 'Review window · 60s' : 'Recording window · 2 min'}</span><span class="chip chip-mic">🎙 Recorded answer required</span>` : `<span class="chip">30s</span>`}
+                ${open ? `<span class="chip">${phase === 'review' ? `Review window · ${fmtWindow(exam.budgets?.review_ms, '60s')}` : `Recording window · ${fmtWindow(exam.budgets?.answer_ms, '2 min')}`}</span><span class="chip chip-mic">🎙 Recorded answer required</span>` : `<span class="chip">${fmtWindow(exam.budgets?.answer_ms, '30s')}</span>`}
               </div>
             </div>
           </div>
@@ -573,6 +711,7 @@ async function runExamSession(view, id, payload) {
           else val = inp.value;
           body.querySelectorAll('.opt').forEach((o) => o.classList.toggle('selected', o.querySelector('input').checked));
           currentAnswer = val;
+          queueDraft(q.id, val, DRAFT_DELAY_MS.choice);
         };
       });
       nextBtn.onclick = () => advance(val);
@@ -586,6 +725,7 @@ async function runExamSession(view, id, payload) {
           val = Number(b.dataset.v);
           currentAnswer = val;
           body.querySelectorAll('button').forEach((x) => x.classList.toggle('selected', Number(x.dataset.v) <= val));
+          queueDraft(q.id, val, DRAFT_DELAY_MS.choice);
         };
       });
       nextBtn.onclick = () => advance(val);
@@ -613,7 +753,22 @@ async function runExamSession(view, id, payload) {
           <div class="small muted transcript-block" id="transcript-preview" ${transcript ? '' : 'hidden'}></div>
         </div>`;
       const ta = body.querySelector('#exam-ta');
-      ta.oninput = () => { text = ta.value; syncNext(); };
+      // The answer as it stands, for a draft or the lock. The clip travels
+      // once: after the server has taken it (an acknowledged draft, or the
+      // recording restored with this question after a reload) the answer says
+      // `audio_keep` instead of carrying it again.
+      const clipKept = () => (rec.audioB64 ? draft.savedClip === rec.audioB64 : Boolean(rec.keptRef));
+      const currentOpenAnswer = () => {
+        const kept = clipKept();
+        return buildTextAnswer({
+          text: ta.value || text,
+          transcript,
+          audioB64: kept ? '' : rec.audioB64,
+          audioMime: rec.audioMime,
+          audioKept: kept,
+        });
+      };
+      ta.oninput = () => { text = ta.value; syncNext(); queueDraft(q.id, currentOpenAnswer(), DRAFT_DELAY_MS.text); };
       ta.onpaste = () => logIntegrity('paste');
       const recBtn = body.querySelector('#rec-btn');
       const recLabel = body.querySelector('#rec-label');
@@ -621,14 +776,14 @@ async function runExamSession(view, id, payload) {
       const recTimer = body.querySelector('#rec-timer');
       const preview = body.querySelector('#transcript-preview');
       if (transcript) { preview.hidden = false; preview.textContent = `Transcript: ${transcript}`; }
-      const hasAnswer = () => Boolean((ta?.value || text).trim() || transcript.trim() || rec.audioB64);
+      const hasAnswer = () => Boolean((ta?.value || text).trim() || transcript.trim() || rec.audioB64 || rec.keptRef);
       // Spoken evidence = a stored recording or a transcript. Either alone is
       // enough: Safari/Firefox have no speech recognition, and a clip can be
       // dropped for size, so both paths count as "answered out loud". While the
       // recorder is live the answer also counts — browsers only flush chunks on
       // stop(), and "Lock & continue" stops the recording first, so the button
       // must not deadlock a candidate mid-sentence.
-      const hasSpoken = () => Boolean(rec.audioB64 || transcript.trim()
+      const hasSpoken = () => Boolean(rec.audioB64 || rec.keptRef || transcript.trim()
         || (rec.startedAt && Date.now() - rec.startedAt >= 400));
       const enforceMic = needsMic && micCapable;
       const hasEnough = () => (enforceMic ? hasSpoken() : hasAnswer());
@@ -647,7 +802,11 @@ async function runExamSession(view, id, payload) {
       };
       if (existing.audio_b64) rec.audioB64 = existing.audio_b64;
       if (existing.audio_mime) rec.audioMime = existing.audio_mime;
-      if (existing.audio_b64) setRecState('Recorded answer restored · you can continue', 'ok');
+      // A recording the server already holds for this question (the draft
+      // autosaved before a reload) counts as the spoken answer; the lock
+      // keeps it rather than asking the candidate to record again.
+      if (!existing.audio_b64 && existing.audio_ref) rec.keptRef = true;
+      if (existing.audio_b64 || rec.keptRef) setRecState('Recorded answer restored · you can continue', 'ok');
       else if (existing.transcript) setRecState('Spoken answer captured · you can continue', 'ok');
       syncNext();
 
@@ -699,6 +858,9 @@ async function runExamSession(view, id, payload) {
               ? 'Audio saved · you can continue'
               : 'Recording stopped with nothing captured — press record and speak again.', hasSpoken() ? 'ok' : 'warn');
             syncNext();
+            // The clip is the answer: it goes to the server now, not only
+            // with the lock, so a lock lost to a timeout cannot lose it.
+            queueDraft(q.id, currentOpenAnswer(), DRAFT_DELAY_MS.now);
             return;
           }
           recLabel.textContent = 'Stop recording';
@@ -707,6 +869,7 @@ async function runExamSession(view, id, payload) {
           rec.chunks = [];
           rec.audioB64 = '';
           rec.audioMime = '';
+          rec.keptRef = false; // a new recording replaces whatever the server holds
           // `startedAt` is only armed once the recorder is actually live: while
           // the browser permission prompt is open nothing is being captured, and
           // the unlock must not fire on that wait.
@@ -776,54 +939,53 @@ async function runExamSession(view, id, payload) {
           // proctoring trail, so the assessor sees it instead of guessing.
           toast('Time expired with no recording — your notes were saved and flagged for the assessor.', 'error', 4200);
         }
-        advance(buildTextAnswer({
-          text: ta.value || text,
-          transcript,
-          audioB64: rec.audioB64,
-          audioMime: rec.audioMime,
-        }));
+        advance(currentOpenAnswer());
       };
     }
 
-    if (ticking) clearInterval(ticking);
-    ticking = setInterval(() => {
-      const left = deadline - Date.now();
-      const el = view.querySelector('#exam-timer');
-      if (el) {
-        el.textContent = fmtMs(left);
-        const urgent = left < 8000;
-        el.classList.toggle('urgent', urgent);
-        el.closest?.('.exam-clock')?.classList.toggle('urgent', urgent);
-      }
-      if (onTick) onTick();
-      if (left <= 0) {
-        clearInterval(ticking);
-        ticking = null;
-        if (open && phase === 'review') {
-          // Automatic, so failures stay silent: a 409 just means the candidate
-          // clicked through first (or the server already advanced) — either
-          // way the refetch repaints whatever the server says is current.
-          api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
-            .catch(() => null)
-            .then(async () => {
-              try {
-                d = await api(`/candidate/assessments/${id}`);
-                currentAnswer = d.current_answer;
-                paint();
-              } catch {
-                // Offline or a transient failure: retry the handover in a few
-                // seconds rather than stranding the candidate on an expired
-                // review screen (or hammering a dead server every 250 ms).
-                ticking = setTimeout(() => { ticking = null; paint(); }, 3000);
-              }
-            });
-          return;
+    const startClock = () => {
+      if (ticking) clearInterval(ticking);
+      ticking = setInterval(() => {
+        const left = deadline - Date.now();
+        const el = view.querySelector('#exam-timer');
+        if (el) {
+          el.textContent = fmtMs(left);
+          const urgent = left < 8000;
+          el.classList.toggle('urgent', urgent);
+          el.closest?.('.exam-clock')?.classList.toggle('urgent', urgent);
         }
-        nextBtn.dataset.force = '1';
-        nextBtn.disabled = false;
-        nextBtn.click();
-      }
-    }, 250);
+        if (onTick) onTick();
+        if (left <= 0) {
+          clearInterval(ticking);
+          ticking = null;
+          if (open && phase === 'review') {
+            // Automatic, so failures stay silent: a 409 just means the candidate
+            // clicked through first (or the server already advanced) — either
+            // way the refetch repaints whatever the server says is current.
+            api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
+              .catch(() => null)
+              .then(async () => {
+                try {
+                  d = await api(`/candidate/assessments/${id}`);
+                  currentAnswer = d.current_answer;
+                  paint();
+                } catch {
+                  // Offline or a transient failure: retry the handover in a few
+                  // seconds rather than stranding the candidate on an expired
+                  // review screen (or hammering a dead server every 250 ms).
+                  ticking = setTimeout(() => { ticking = null; paint(); }, 3000);
+                }
+              });
+            return;
+          }
+          nextBtn.dataset.force = '1';
+          nextBtn.disabled = false;
+          nextBtn.click();
+        }
+      }, 250);
+    };
+    restartClock = startClock;
+    startClock();
   }
 
   paint();

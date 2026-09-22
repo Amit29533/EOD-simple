@@ -12,9 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-let JSDOM = null;
-try { ({ JSDOM } = await import('jsdom')); } catch { /* optional dependency */ }
-const SKIP = JSDOM ? false : 'jsdom not installed (npm install, or npm i --no-save jsdom)';
+import { JSDOM, SKIP } from './helpers/jsdom.mjs';
 
 const flush = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 // Node's own timer fns, captured before any test swaps globals.

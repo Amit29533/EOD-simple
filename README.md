@@ -32,7 +32,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 379 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 558 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -40,9 +40,15 @@ npm test            # 379 tests: scoring engine, question apportionment, API/RBA
                     #           (add/edit/import), bulk candidate + portal-user import (API +
                     #           jsdom dialog), Airtable adapter contract, sign-in view, app
                     #           shell, the allocation dialog, the published-catalogue sync,
-                    #           the storage batch contract (insertMany/updateMany, audit-log
-                    #           rotation) and the health probe
-                    #           (jsdom is optional; installed for the UI suites)
+                    #           the storage batch contract (insertMany/updateMany/removeMany,
+                    #           audit-log rotation, multi-writer guard), server-side exam
+                    #           enforcement, the exam hall's draft autosave + lost-lock
+                    #           recovery, the login throttle and sign-in gate, the server's
+                    #           per-session request budgets, the seed's worked example and
+                    #           the health probe
+                    #           (jsdom is optional; `npm install` pulls a release that runs
+                    #           on Node 20 and 22 — without it the UI suites skip, with an
+                    #           unloadable one they fail loudly rather than skip)
 ```
 
 Two black-box suites run against a **live server** and are not part of `npm test`:
@@ -68,6 +74,8 @@ recreating users, overwriting admin customizations or changing existing assessme
 snapshots. The same install is available in-app under **Roles & frameworks → Published
 tracks → Add to workspace** (`POST /admin/content/tracks`) for deployments with no CLI. Use
 `npm run seed:fresh` only when you intentionally want to reset the local JSON store.
+Both are safe to run while `npm start` is up: the JSON store stamps a revision on every write
+and a running server picks up a file another process changed instead of overwriting it.
 
 Full end-to-end suites (need a running, seeded server):
 
@@ -91,7 +99,7 @@ python3 tests/features.py     # 216 checks: every feature — CRUD, validation, 
 ## What's built (v1 scope)
 
 - **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline. Deletion is admin-password-gated and cascades the linked portal login, its sessions and any open assessments (finalized reports protect the candidate).
-- **Bulk onboarding from Excel** — Admin → *Candidates* (or *Users & access*) → *Import from Excel* takes an `.xlsx` or `.csv` and creates all the candidate records **and**, in the same pass, their linked candidate-role portal logins. Same dry-run-first contract as the question import (ready / rejected / duplicate with reasons), blank usernames derived from email and made collision-free, blank passwords generated and shown once.
+- **Bulk onboarding from Excel** — Admin → *Candidates* (or *Users & access*) → *Import from Excel* takes an `.xlsx` or `.csv` and creates all the candidate records **and**, in the same pass, their linked candidate-role portal logins. Same dry-run-first contract as the question import (ready / rejected / duplicate with reasons), blank usernames derived from email and made collision-free, blank passwords generated and shown once. The commit runs in pages of 100 rows with a progress bar (a portal login costs a password hash, so a 2000-row file is ~45 s of server work — far past a serverless function's timeout as one request); if a page fails, the dialog shows what was imported and re-uploading the same file continues from there.
 - **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
 - **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks. New candidate portal users skip the manual step entirely: each is **auto-allocated a 50-question assessment** on creation (their target track, or the workspace default when none is set; the full bank when it holds fewer than 50), with the assessor left unassigned for later distribution. Single provisioning and bulk Excel onboarding both do this by default — switch it off per user with `auto_allocate: false`.
 - **Configurable assessment length** — at allocation the admin serves either the full question
@@ -409,12 +417,23 @@ src/storage/                  Storage adapter layer — ONE 5-method contract:
 Select the backend with environment variables — **nothing else changes**:
 
 ```bash
-STORAGE=json                 # default, local JSON file (data/ecod.json)
+STORAGE=json                 # default, local JSON file (data/ecod.json; papers, reports,
+                             # answers and recordings live beside it under data/ecod.rows/)
 STORAGE=airtable             # Airtable MVP backend
 AIRTABLE_API_KEY=pat…        # PAT with data.records read/write
 AIRTABLE_BASE_ID=app…
 STORAGE=blobs                # Netlify Blobs (inside Netlify runtime)
 ```
+
+When `server.mjs` is the production transport (`NODE_ENV=production node server.mjs`), its
+request budgets are **per client**, sized for an exam room behind one NAT address: 200 API
+requests a minute per accepted session, 600 anonymous ones per address (the public routes and
+any token the app has not accepted), and per-address ceilings of 2,400 API / 4,000 total
+requests a minute (≈ 140 seats at exam pace). Override any of them with `RATE_SESSION_PER_MIN`,
+`RATE_ANON_PER_MIN`, `RATE_ADDRESS_API_PER_MIN`, `RATE_ADDRESS_TOTAL_PER_MIN`. Password
+verification is additionally gated process-wide (two at a time, a line of 200, then an instant
+`503` with `retry-after: 2`) so a sign-in flood cannot starve the static site or the exam. The
+Netlify transport relies on the platform's limits.
 
 **Migrating later** (e.g. Postgres): write one more adapter exposing the same five methods,
 select it in `src/storage/index.mjs`. Handlers, scoring, RBAC and the SPA are untouched.
@@ -429,6 +448,59 @@ The adapter contract is documented in `src/storage/schema.mjs`; `tests/airtable-
    (without the schema scope it prints the exact table/field list to create manually).
 3. Seed: `STORAGE=airtable npm run seed`
 4. Deploy/run with the three env vars set.
+
+Two Airtable behaviours the adapter absorbs, so the rest of the app never sees them:
+
+- **Checkboxes.** Airtable omits an unchecked checkbox from the record entirely; the
+  adapter restores `false` for every boolean column (`active`, `locked`, `pin_first`,
+  `audio_required`, bank flags — registry in `src/storage/schema.mjs`), so a deactivated
+  user or question reads back as deactivated.
+- **100,000-character cells.** A whole-bank paper (`assessments.snapshot_json`), a report
+  and any recorded spoken answer (`recordings.audio`, up to ~400 KB of base64 audio)
+  outgrow one cell. Those columns have continuation columns (`snapshot_json__2…4`,
+  `report_json__2`, `quiz_state__2`, `answer__2…5`, `audio__2…5`) that the adapter splits
+  into and rejoins from transparently. A base provisioned **before** these existed must have
+  them added (`npm run airtable:setup` prints the list); until then papers and recordings over
+  100k characters are refused with a clear `413` naming the field instead of a generic
+  Airtable 422.
+- **The `recordings` table.** Recorded spoken answers are stored in their own table (one
+  record per assessment × question) and the response row keeps only a reference, so the
+  scoring screen loads a paper in one small request and fetches clips one at a time. A base
+  provisioned before this table existed needs it created (`npm run airtable:setup` adds
+  missing tables).
+- **Paper facts on the assessment record.** Allocation stores `question_count`,
+  `total_points`, `question_limit`, `bank_total` and `role_name` beside the paper so listings
+  never have to parse every `snapshot_json`; a base provisioned before these columns existed
+  needs them added (`npm run airtable:setup`), otherwise allocation fails with a `422`.
+
+### Using Netlify Blobs
+
+`STORAGE=blobs` needs no configuration inside the Netlify runtime. Two Blobs behaviours the
+adapter absorbs:
+
+- **Eventual consistency.** Blobs reads are eventually consistent by default (a read can
+  return the previous copy for up to a minute after a write), and a deploy runs many function
+  instances behind one store. Every mutation (read-modify-write) and every read of the
+  `sessions`, `assessments` and `responses` tables therefore asks for **strong** consistency
+  and skips the in-process cache; reads of reference tables keep the fast path plus a
+  5-second cache. Outside the Netlify runtime (no uncached edge URL) the adapter falls back
+  to eventual reads automatically.
+- **Failures are failures.** A blob read that errors (503, network) throws, so the write that
+  needed it fails instead of overwriting the table with only the row being written; a blob
+  write that errors evicts the table from the cache, so nothing un-persisted is ever served.
+- **Compare-and-swap writes.** A deploy runs many function instances behind one store, and
+  the adapter's lock is per process. Every whole-object write therefore reads the blob's ETag
+  and writes with `onlyIfMatch` / `onlyIfNew` (`@netlify/blobs ≥ 10.7.12`); a refused write is
+  re-read and re-applied (up to ten jittered attempts), then answered as a retryable `503`
+  — two candidates locking answers at the same moment can no longer erase each other's row.
+  Under `netlify dev` the local blob server returns no ETags, so writes are unconditional
+  there (one process).
+- **Big and per-candidate data never rides in a table blob.** Recordings are one blob each
+  (`rows/recordings/<assessment>/<question>`), a paper's answers one blob per assessment
+  (`shards/responses/<assessment>`), and the frozen paper and report of an assessment their
+  own blobs (`columns/assessments/<id>/<column>`), so an exam step moves that candidate's data
+  only — ~150 KB whatever the number of papers ever allocated — and the assessor detail stays
+  far below the 6 MB function response cap whatever the paper size.
 
 ## Deploy to Netlify (anthroprime.com)
 
@@ -448,7 +520,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (379 Node tests), then with a local server up
+Verify before you ship: `npm test` (558 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks
@@ -469,7 +541,10 @@ Verify before you ship: `npm test` (379 Node tests), then with a local server up
 - Passwords: **scrypt** salted hashes (Node crypto); constant-time verification.
 - AuthN: opaque 256-bit bearer tokens, 12 h sessions, stored server-side; deactivation is immediate.
 - AuthZ: route-level role guards + per-resource ownership checks; existence hiding (404 ≠ 403).
-- Login throttling (per-username), payload size cap, input validation on every mutation.
+- Login throttling per username **and** client address (8 failures / 10 min locks that address
+  out of that account; an account-wide ceiling of 32 stops rotating-address guessing, waived for
+  an address that signed in within 24 h — so a stranger hammering `admin` cannot lock the real
+  admin out), payload size cap, input validation on every mutation.
 - CORS: the API only grants its own origin (the SPA is same-origin). To call it from another
   site, list the origins in `CORS_ORIGINS` (comma-separated; `*` reflects every origin). The
   local dev server is permissive.

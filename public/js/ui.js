@@ -217,7 +217,7 @@ export function formModal({ title, fields, values = {}, submitLabel = 'Save', wi
           </select>${help}${err}</label>`;
       }
       if (f.type === 'checkbox')
-        return `<label class="check" style="margin-bottom:13px"><input type="checkbox" ${common} ${(values[f.name] ?? f.value) ? 'checked' : ''}/> <span>${esc(f.label)}</span></label>${help}`;
+        return `<label class="check" style="margin-bottom:13px"><input type="checkbox" ${common} ${(values[f.name] ?? f.value) ? 'checked' : ''}/> <span>${esc(f.label)}</span></label>${help}${err}`;
       return `<label class="f"><span class="lbl">${esc(f.label)}${req}</span>
         <input type="${f.type || 'text'}" ${common} value="${esc(v)}"
           ${f.min !== undefined ? `min="${esc(f.min)}"` : ''} ${f.max !== undefined ? `max="${esc(f.max)}"` : ''} ${f.step !== undefined ? `step="${esc(f.step)}"` : ''}

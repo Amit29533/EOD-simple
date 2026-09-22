@@ -279,11 +279,24 @@ st, ig = call('POST', f'/candidate/assessments/{AID}/integrity', T3, {'event': '
 check('integrity event recorded', st == 200 and ig.get('integrity', {}).get('copy', 0) >= 1)
 check('scoring blocked before submit', call('PUT', f'/assessor/assessments/{AID}/scores', PT, {'scores': [{'question_id': Q3['id'], 'score': 4}]})[0] == 409)
 check('finalize blocked before submit', call('POST', f'/assessor/assessments/{AID}/finalize', PT)[0] == 409)
-# submit: missing -> 422, then full
-st, b = call('POST', f'/candidate/assessments/{AID}/submit', T3, {'answers': {Q1['id']: 'b'}})
-check('submit missing answers -> 422 + list', st == 422 and set(b['missing_question_ids']) == {Q2['id'], Q3['id']})
+# submit: missing -> 422, then full. Answers are given one question at a time
+# inside each window (/next); the submit body is never graded, so a sheet in the
+# body leaves the paper exactly as incomplete as the walk left it.
 answers = {Q1['id']: 'b', Q2['id']: 5, Q3['id']: 'I would do X, Y and Z with runbooks and alerts.'}
-st, _ = call('POST', f'/candidate/assessments/{AID}/submit', T3, {'answers': answers})
+st, b = call('POST', f'/candidate/assessments/{AID}/submit', T3, {'answers': answers})
+check('submit missing answers -> 422 + list', st == 422 and set(b['missing_question_ids']) == {Q1['id'], Q2['id'], Q3['id']})
+for _ in range(12):
+    st, cur = call('GET', f'/candidate/assessments/{AID}', T3)
+    q = cur['current_question']
+    if not q or cur['exam'].get('complete'):
+        break
+    if q['type'] == 'text' and cur['exam'].get('phase') == 'review':
+        call('POST', f'/candidate/assessments/{AID}/phase', T3, {'phase': 'answer'})
+    a = answers[q['id']]
+    if q['type'] == 'text':
+        a = {'text': a, 'transcript': a, 'source': 'audio'}
+    call('POST', f'/candidate/assessments/{AID}/next', T3, {'question_id': q['id'], 'answer': a})
+st, _ = call('POST', f'/candidate/assessments/{AID}/submit', T3, {'answers': {}})
 check('submit full -> 200', st == 200)
 check('resubmit -> 409', call('POST', f'/candidate/assessments/{AID}/submit', T3, {'answers': answers})[0] == 409)
 check('answers locked after submit -> 409', call('PUT', f'/candidate/assessments/{AID}/answers', T3, {'answers': {Q1['id']: 'a'}})[0] == 409)
@@ -491,7 +504,19 @@ for q in snap_qs:
     elif q['type'] == 'mcq_multi': db_answers[q['id']] = [q['options'][0]['id']]
     elif q['type'] == 'scale': db_answers[q['id']] = 4
     else: db_answers[q['id']] = 'A considered answer covering the architecture, trade-offs and rollout plan.'
-check('capped assessment submits', call('POST', f'/candidate/assessments/{AX}/submit', CXT, {'answers': db_answers})[0] == 200)
+# One question was already locked blank above; lock the rest through the exam.
+for _ in range(len(snap_qs) * 3 + 5):
+    st, cur = call('GET', f'/candidate/assessments/{AX}', CXT)
+    q = cur['current_question']
+    if not q or cur['exam'].get('complete'):
+        break
+    if q['type'] == 'text' and cur['exam'].get('phase') == 'review':
+        call('POST', f'/candidate/assessments/{AX}/phase', CXT, {'phase': 'answer'})
+    a = db_answers[q['id']]
+    if q['type'] == 'text':
+        a = {'text': a, 'transcript': a, 'source': 'audio'}
+    call('POST', f'/candidate/assessments/{AX}/next', CXT, {'question_id': q['id'], 'answer': a})
+check('capped assessment submits', call('POST', f'/candidate/assessments/{AX}/submit', CXT, {'answers': {}})[0] == 200)
 
 st, unrel = call('GET', '/admin/assessments', AT)
 rsa_default = [a for a in unrel['assessments']

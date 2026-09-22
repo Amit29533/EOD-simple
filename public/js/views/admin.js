@@ -351,7 +351,10 @@ export async function allocateAssessorModal(c, presetRoleId) {
           if (token !== planToken) return; // a newer request won
           plan = out || null;
           if (plan) {
-            allHint.textContent = `All ${plan.total} served question${plan.total === 1 ? '' : 's'} (${plan.bank_total} in the bank · max 5 spoken)`;
+            // The spoken cap is whatever the plan actually served, not a
+            // hard-coded "max 5": a track without a spoken set has none.
+            const spoken = Number(plan.spoken_served || 0);
+            allHint.textContent = `All ${plan.total} served question${plan.total === 1 ? '' : 's'} (${plan.bank_total} in the bank${spoken ? ` · ${spoken} spoken` : ''})`;
             const max = Math.min(plan.bank_total, maxQuestions);
             countInput.max = String(max);
             countMax.textContent = `1–${max}`;
@@ -522,11 +525,7 @@ export async function reportView(view, { id }) {
 function integrityBadge(a) {
   const n = Number(a.integrity_count || 0);
   if (!n) return badge('0', 'grey');
-  const severe = [
-    'tab_switch', 'browser_close', 'exam_exit', 'exam_reopen', 'multi_window',
-    'devtools_key', 'devtools_resize', 'paste_attempt', 'copy_attempt',
-    'cut_attempt', 'screenshot', 'fullscreen_exit',
-  ].includes(a.last_integrity_event);
+  const severe = integrityTone(a.last_integrity_event) === 'red';
   return `<a href="#/assessments/${esc(a.id)}/integrity" style="text-decoration:none">${badge(`${n}`, severe ? 'red' : 'amber')} <span class="small muted">${esc(a.last_integrity_event || 'events')}</span></a>`;
 }
 
@@ -537,14 +536,24 @@ const INTEGRITY_EVENT_TONE = {
   screenshot: 'red', fullscreen_exit: 'red', contextmenu: 'amber',
   // Logged by the API when an open question is locked without a recording.
   spoken_answer_missing: 'amber',
+  // Logged by the API when a question window ran out (auto-advanced / blank).
+  time_expired: 'amber',
 };
+/**
+ * Tone for an event name. Own keys only: event names come from the
+ * candidate's browser, so `TONE["constructor"]` must be "grey", not a function
+ * stringified into a class attribute.
+ */
+const integrityTone = (event) => (typeof event === 'string' && Object.hasOwn(INTEGRITY_EVENT_TONE, event)
+  ? INTEGRITY_EVENT_TONE[event]
+  : 'grey');
 
 export async function integrityView(view, { id }) {
   view.innerHTML = loading();
   const d = await api(`/admin/assessments/${id}/integrity`);
   const counters = d.integrity || {};
   const total = Object.values(counters).reduce((s, v) => s + Number(v || 0), 0);
-  const severeEvents = (d.events || []).filter((e) => INTEGRITY_EVENT_TONE[e.event] === 'red').length;
+  const severeEvents = (d.events || []).filter((e) => integrityTone(e.event) === 'red').length;
   view.innerHTML = `
     <div class="card" style="padding:12px 18px"><a class="btn ghost sm" href="#/assessments">← All assessments</a></div>
     <div class="card">
@@ -561,13 +570,14 @@ export async function integrityView(view, { id }) {
         <div class="stat"><div class="lbl">Fullscreen exit</div><div class="num">${counters.fullscreen_exit || 0}</div></div>
         <div class="stat"><div class="lbl">Multi-window</div><div class="num">${counters.multi_window || 0}</div></div>
         <div class="stat"><div class="lbl">Open answers locked without a recording</div><div class="num">${counters.spoken_answer_missing || 0}</div></div>
+        <div class="stat"><div class="lbl">Questions timed out</div><div class="num">${counters.time_expired || 0}</div></div>
       </div>
     </div>
     <div class="card table-card">
       <h3 style="margin:0 0 10px">Event history</h3>
       ${(d.events || []).length ? dataTable([
         { label: 'When', render: (e) => `<span class="small muted">${esc(fmtDateTime(e.at))}</span>` },
-        { label: 'Event', render: (e) => badge(e.event, INTEGRITY_EVENT_TONE[e.event] || 'grey') },
+        { label: 'Event', render: (e) => badge(e.event, integrityTone(e.event)) },
         { label: 'Question', render: (e) => e.question_index != null ? `Q${Number(e.question_index) + 1}` : '<span class="muted">—</span>' },
         { label: 'Detail', render: (e) => `<span class="small">${esc(e.detail || '—')}</span>` },
       ], d.events) : emptyState('No integrity events yet', 'Tab switch, blur, copy, paste, devtools, exit/reopen and window events are logged here.')}
@@ -1963,6 +1973,7 @@ function importCandidatesModal(onDone) {
   let lastFile = null;     // re-checked when the user toggle changes
   let rootEl = null;       // the open dialog, set in onOpen
   let committed = false;   // a successful import happened; close -> refresh
+  const IMPORT_PAGE_ROWS = 100; // ≈ 2–3 s of server work per page
   const part = (sel) => rootEl?.querySelector(sel);
 
   const body = `
@@ -2043,6 +2054,26 @@ function importCandidatesModal(onDone) {
     importBtn.disabled = !r.accepted;
   };
 
+  // The commit runs in pages of IMPORT_PAGE_ROWS. A page costs the server
+  // ~22 ms per portal user (a password hash each) before any network, so the
+  // 2000-row file the dry run validates in a blink would run ~45 s as one
+  // request — killed by a serverless function's timeout with the candidates
+  // written and their logins not. Pages keep every request a few seconds
+  // long, show progress, and leave a re-uploadable state behind if one fails:
+  // rows already imported are simply reported as duplicates next time.
+  const renderProgress = (done, total) => {
+    const report = part('#ic-report');
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    report.innerHTML = `
+      <div class="import-summary" role="status" aria-live="polite">
+        ${badge(`Importing… ${done} of ${total} rows`, 'blue')}
+        <span class="small muted">${pct}% · keep this dialog open</span>
+      </div>
+      <div class="progress" style="margin-top:10px;height:8px;background:var(--line);border-radius:4px;overflow:hidden">
+        <div style="width:${pct}%;height:100%;background:var(--blue)"></div>
+      </div>`;
+  };
+
   const renderSuccess = (out) => {
     const report = part('#ic-report');
     const creds = out.credentials || [];
@@ -2052,7 +2083,10 @@ function importCandidatesModal(onDone) {
         ${badge(`${out.imported} imported`, 'green')}
         ${out.users_created ? badge(`${out.users_created} user${out.users_created === 1 ? '' : 's'} created`, 'blue') : ''}
         ${out.auto_allocated ? badge(`${out.auto_allocated} assessment${out.auto_allocated === 1 ? '' : 's'} auto-allocated`, 'green') : ''}
+        ${out.stopped ? badge('stopped early', 'red') : ''}
       </div>
+      ${out.stopped ? `<p class="small" style="margin:8px 0 0;color:var(--red);font-weight:700">The import stopped after row ${out.stopped_at} of ${out.total}: ${esc(out.stopped)}.
+        Everything above is in the directory. Upload the same file again to import the rest — rows already imported are skipped as duplicates.</p>` : ''}
       ${skipped ? `<p class="small muted" style="margin:8px 0 0">${skipped} row${skipped === 1 ? '' : 's'} imported without an assessment (no track or empty bank) — allocate manually from the candidate record.</p>` : ''}
       ${creds.length ? `
         <div class="preview-scroll" style="max-height:32vh;margin-top:12px">
@@ -2068,8 +2102,7 @@ function importCandidatesModal(onDone) {
     const dl = part('#ic-dl-creds');
     if (dl) dl.onclick = () => downloadText(
       'ecod-imported-credentials.csv',
-      ['name,username,password', ...creds.map((c) => [c.name, c.username, c.password]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n'),
+      ['name,username,password', ...creds.map((c) => [c.name, c.username, c.password].map(csvCell).join(','))].join('\n'),
       'text/csv',
     );
   };
@@ -2090,14 +2123,40 @@ function importCandidatesModal(onDone) {
           btn.disabled = true;
           const createUsers = part('#ic-users')?.checked !== false;
           const autoAllocate = part('#ic-alloc')?.checked !== false;
-          const out = await attempt(() => api('/admin/candidates/import', {
-            method: 'POST',
-            body: { ...payload, dry_run: false, create_users: createUsers, auto_allocate: autoAllocate },
-          }));
+          const total = checked.total || 0;
+          const sum = { imported: 0, users_created: 0, auto_allocated: 0, credentials: [], auto_allocations: [], total, stopped: '', stopped_at: 0 };
+          let offset = 0;
+          for (;;) {
+            renderProgress(offset, total);
+            let page;
+            try {
+              page = await api('/admin/candidates/import', {
+                method: 'POST',
+                body: { ...payload, dry_run: false, create_users: createUsers, auto_allocate: autoAllocate, offset, limit: IMPORT_PAGE_ROWS },
+              });
+            } catch (err) {
+              sum.stopped = err.message || 'the request failed';
+              sum.stopped_at = offset;
+              break;
+            }
+            sum.imported += page.imported || 0;
+            sum.users_created += page.users_created || 0;
+            sum.auto_allocated += page.auto_allocated || 0;
+            sum.credentials.push(...(page.credentials || []));
+            sum.auto_allocations.push(...(page.auto_allocations || []));
+            if (sum.imported || sum.users_created) committed = true;
+            const next = page.page?.next_offset;
+            if (next == null || next <= offset) break;
+            offset = next;
+          }
           btn.disabled = false;
-          if (!out) return;
-          committed = true;
-          renderSuccess(out);
+          if (sum.stopped && !committed) {
+            // Nothing was written: back to the validated report, ready to retry.
+            toast(`Import failed: ${sum.stopped}`, 'error');
+            renderReport(checked);
+            return;
+          }
+          renderSuccess(sum);
           btn.textContent = 'Done';
           btn.onclick = () => close();
         },
@@ -2186,6 +2245,21 @@ function fileToBase64(file) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * One CSV cell: quoted, inner quotes doubled, and a leading formula trigger
+ * (`=`, `+`, `-`, `@`, tab, CR) neutralised with an apostrophe. The values in
+ * the credentials sheet come from an uploaded spreadsheet — a name cell of
+ * `=HYPERLINK(...)` or `=cmd|' /C ...'!A0` used to be written verbatim and
+ * evaluated by Excel/LibreOffice on the admin's machine when they opened the
+ * download. A prefixed cell reads as literal text; the apostrophe is visible
+ * but nothing is lost, whereas the spreadsheet would otherwise show `#NAME?`.
+ */
+function csvCell(v) {
+  let text = String(v ?? '');
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 /** Save text to the user's machine without a server round-trip. */

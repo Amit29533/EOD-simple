@@ -164,6 +164,16 @@ function renderShell() {
 let rendering = false;
 let rerenderQueued = false;
 
+/**
+ * Fired on `document` right before #view is handed to another view — a route
+ * change, a sign-out, the 401 handler, a re-mount. Views that reach outside
+ * their container (the exam session pins document-level copy/paste/context
+ * blockers, a `window.open` override and a countdown interval) listen for it
+ * to release them; without a signal, those outlived the exam and policed the
+ * sign-in form and the journey page instead.
+ */
+export const VIEW_UNMOUNT_EVENT = 'ecod:view-unmount';
+
 async function render() {
   // Guard against concurrent renders (e.g. setting location.hash fires
   // hashchange while we also call render()): only one view render runs at a
@@ -179,6 +189,9 @@ async function render() {
 
 async function renderOnce() {
   const view = document.getElementById('view');
+  // `document.defaultView.Event` rather than the bare global: a jsdom
+  // document rejects Node's own Event class.
+  document.dispatchEvent(new (document.defaultView?.Event || Event)(VIEW_UNMOUNT_EVENT));
   if (!state.user) {
     document.body.classList.remove('app-body');
     // Signing out mid-exam must not leave exam paddings behind either.

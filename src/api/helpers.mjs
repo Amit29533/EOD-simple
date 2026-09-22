@@ -102,3 +102,16 @@ export async function bulkUpdate(store, table, patches = []) {
   for (const { id, patch } of patches) out.push(await store.update(table, id, patch));
   return out;
 }
+
+/**
+ * Delete many rows of one table in a single store write (the cascades — a
+ * candidate, a role, a competency, an assessment — used to pay one whole-store
+ * rewrite per row). Returns the number of rows removed.
+ */
+export async function bulkRemove(store, table, ids = []) {
+  if (!ids.length) return 0;
+  if (typeof store.removeMany === 'function') return store.removeMany(table, ids);
+  let removed = 0;
+  for (const id of ids) if (await store.remove(table, id)) removed += 1;
+  return removed;
+}

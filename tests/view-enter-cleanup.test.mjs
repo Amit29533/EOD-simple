@@ -14,9 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-let JSDOM = null;
-try { ({ JSDOM } = await import('jsdom')); } catch { /* optional dependency missing */ }
-const SKIP = JSDOM ? false : 'jsdom not installed (npm install, or npm i --no-save jsdom)';
+import { JSDOM, SKIP } from './helpers/jsdom.mjs';
 
 const SHELL_HTML = `<!doctype html><html><head><meta name="theme-color" content="#eef6f7"></head>
   <body><div id="sidebar"></div><div id="topbar"></div><main id="view"></main><div id="toast-root"></div></body></html>`;

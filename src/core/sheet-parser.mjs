@@ -183,11 +183,18 @@ function parseXlsx(buffer) {
   );
 
   const grid = [];
-  for (const rowMatch of sheet.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+  // A row is either populated (`<row r="4">…</row>`) or SELF-CLOSING
+  // (`<row r="4"/>` — a styled but empty line some exporters emit). The
+  // populated-only pattern treated `<row r="4"/>` as an opening tag and
+  // lazily swallowed the NEXT row's markup as its content, so two rows came
+  // out as one. The values survived (blank rows are dropped later), but the
+  // grid — and the row cap counted against it — did not mirror the sheet.
+  for (const rowMatch of sheet.matchAll(/<row\b(?:[^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)) {
     // A hostile sheet can declare millions of rows; the match is lazy, so
     // stop reading once the grid is far past anything the importer accepts.
     if (grid.length >= MAX_SHEET_ROWS) break;
     const cells = [];
+    if (rowMatch[1] === undefined) { grid.push(cells); continue; }
     // Match both a populated cell and a SELF-CLOSING empty one (`<c r="E4"/>`).
     // Excel emits the latter for blank cells that carry a style, and skipping
     // them would shift every later value one column to the left — silently

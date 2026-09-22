@@ -183,6 +183,47 @@ test('an admin cannot deactivate their own login (self-lockout)', async () => {
   assert.equal((await w.call('GET', '/auth/me', { token: tok2 })).status, 401);
 });
 
+test('a password reset signs the user out everywhere: tokens issued before it stop working', async () => {
+  const w = await makeWorld();
+  const u = (await w.call('POST', '/admin/users', { token: w.tok, body: { username: 'reset.me', name: 'R', role: 'assessor', password: 'Old-pass-1234' } })).body;
+  const phone = await w.login('reset.me', 'Old-pass-1234');
+  const laptop = await w.login('reset.me', 'Old-pass-1234');
+  assert.equal((await w.call('GET', '/auth/me', { token: phone })).status, 200);
+  const reset = await w.call('PATCH', `/admin/users/${u.id}`, { token: w.tok, body: { password: 'New-pass-5678' } });
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  assert.equal((await w.call('GET', '/auth/me', { token: phone })).status, 401, 'a session from before the reset must be revoked');
+  assert.equal((await w.call('GET', '/auth/me', { token: laptop })).status, 401);
+  assert.equal(await w.store.list('sessions', { user_id: u.id }).then((r) => r.length), 0);
+  // The new password signs in normally.
+  assert.ok(await w.login('reset.me', 'New-pass-5678'));
+  // A rename or email edit is not a credential event and leaves sessions alone.
+  const after = await w.login('reset.me', 'New-pass-5678');
+  assert.equal((await w.call('PATCH', `/admin/users/${u.id}`, { token: w.tok, body: { name: 'Renamed' } })).status, 200);
+  assert.equal((await w.call('GET', '/auth/me', { token: after })).status, 200);
+});
+
+test('an admin resetting their own password keeps the session they are using, other devices are signed out', async () => {
+  const w = await makeWorld();
+  const other = await w.login('admin', 'Admin-pass-123');
+  const me = (await w.call('GET', '/auth/me', { token: w.tok })).body.user;
+  const reset = await w.call('PATCH', `/admin/users/${me.id}`, { token: w.tok, body: { password: 'Admin-pass-9999' } });
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  assert.equal((await w.call('GET', '/auth/me', { token: w.tok })).status, 200, 'the session that made the change survives');
+  assert.equal((await w.call('GET', '/auth/me', { token: other })).status, 401, 'every other session is revoked');
+});
+
+test('deactivating a user revokes their sessions, so reactivation does not resurrect old tokens', async () => {
+  const w = await makeWorld();
+  const u = (await w.call('POST', '/admin/users', { token: w.tok, body: { username: 'off.on', name: 'O', role: 'assessor', password: 'Pass-word-1234' } })).body;
+  const tok = await w.login('off.on', 'Pass-word-1234');
+  assert.equal((await w.call('PATCH', `/admin/users/${u.id}`, { token: w.tok, body: { active: false } })).status, 200);
+  assert.equal((await w.call('GET', '/auth/me', { token: tok })).status, 401);
+  assert.equal(await w.store.list('sessions', { user_id: u.id }).then((r) => r.length), 0, 'sessions are removed, not merely blocked');
+  assert.equal((await w.call('PATCH', `/admin/users/${u.id}`, { token: w.tok, body: { active: true } })).status, 200);
+  assert.equal((await w.call('GET', '/auth/me', { token: tok })).status, 401, 'a token issued before the deactivation stays dead');
+  assert.ok(await w.login('off.on', 'Pass-word-1234'), 'a fresh sign-in works again');
+});
+
 test('roles and competencies cannot be edited into a blank name', async () => {
   const w = await makeWorld();
   const role = await w.call('PATCH', `/admin/roles/${w.role.id}`, { token: w.tok, body: { name: '   ' } });
@@ -302,4 +343,128 @@ test('CORS grants the request\'s own origin and the CORS_ORIGINS allowlist, neve
   assert.deepEqual(corsHeaders(null), {});
   assert.equal(corsHeaders('https://ecod.example.com').vary, 'Origin');
   assert.equal(corsHeaders('*').vary, undefined);
+});
+
+/* ----------------------------------------------------------- allocation inputs */
+
+test('a malformed question_count is refused on every allocation path instead of silently becoming 50', async () => {
+  const w = await makeWorld();
+  for (let i = 0; i < 3; i += 1) await w.mcq(w.c1.id, `Q${i} of a small bank?`);
+  const cand = (await w.call('POST', '/admin/candidates', { token: w.tok, body: { name: 'Count Probe', target_role_id: w.role.id } })).body;
+
+  for (const bad of ['abc', -1, 0, 1.5, 9999, '12abc', true]) {
+    // Manual allocation already refused these; the automatic paths did not.
+    const manual = await w.call('POST', '/admin/assessments', {
+      token: w.tok, body: { candidate_id: cand.id, role_id: w.role.id, question_count: bad },
+    });
+    assert.equal(manual.status, 400, `manual accepted ${JSON.stringify(bad)}`);
+    const user = await w.call('POST', '/admin/users', {
+      token: w.tok,
+      body: { username: 'count.probe', name: 'Count Probe', role: 'candidate', password: 'Cand-pass-123', candidate_id: cand.id, question_count: bad },
+    });
+    assert.equal(user.status, 400, `user creation accepted ${JSON.stringify(bad)}: ${JSON.stringify(user.body)}`);
+    assert.match(user.body.error, /Number of questions/);
+    const imp = await w.call('POST', '/admin/candidates/import', {
+      token: w.tok, body: { csv: 'Name\nImported Person\n', dry_run: true, question_count: bad },
+    });
+    assert.equal(imp.status, 400, `import accepted ${JSON.stringify(bad)}`);
+  }
+  assert.equal((await w.store.list('users')).length, 1, 'nothing was created by the refused requests');
+  assert.equal((await w.store.list('assessments')).length, 0);
+
+  // Blank still means "the default cap" (a small bank serves all of it).
+  const ok = await w.call('POST', '/admin/users', {
+    token: w.tok,
+    body: { username: 'count.ok', name: 'Count OK', role: 'candidate', password: 'Cand-pass-123', candidate_id: cand.id, question_count: '' },
+  });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  assert.equal(ok.body.auto_allocation.allocated, true);
+  assert.equal(ok.body.auto_allocation.question_count, 3);
+});
+
+test('asking for the framework of a track that does not exist is a 404, not an unsaved default', async () => {
+  const w = await makeWorld();
+  const missing = await w.call('GET', '/admin/frameworks', { token: w.tok, query: { role_id: 'no-such-role' } });
+  assert.equal(missing.status, 404);
+  const real = await w.call('GET', '/admin/frameworks', { token: w.tok, query: { role_id: w.role.id } });
+  assert.equal(real.status, 200);
+  assert.equal(real.body.framework.role_id, w.role.id);
+  assert.ok(real.body.framework.config, 'a real track answers with its framework');
+  const none = await w.call('GET', '/admin/frameworks', { token: w.tok });
+  assert.equal(none.status, 400);
+});
+
+/* ----------------------------------------------------------- transport contract */
+
+test('a JSON body that is not an object is a 400, not an empty body', async () => {
+  const w = await makeWorld();
+  for (const body of [[], ['admin', 'Admin-pass-123'], 'admin', 42, true]) {
+    const res = await w.call('POST', '/auth/login', { body });
+    assert.equal(res.status, 400, `${JSON.stringify(body)} -> ${res.status}`);
+    assert.match(res.body.error, /JSON object/);
+  }
+  // Structured query values never reach a handler as anything but a string.
+  const q = await w.call('GET', '/admin/candidates', { token: w.tok, query: { limit: ['1', '2'], q: { $ne: '' }, offset: 0 } });
+  assert.equal(q.status, 200, JSON.stringify(q.body));
+  assert.ok(Array.isArray(q.body.candidates));
+  assert.equal(q.body.offset, 0);
+});
+
+/* ----------------------------------------------------------- concurrent creates */
+
+test('parallel authoring of bank questions never hands two questions one id (and loses one)', async () => {
+  // `nextAuthoredId` reads the table, then inserts; five saves in flight all
+  // computed RSA-T01-A001 and the last insert silently replaced the others —
+  // every caller got a 201 for a question that no longer existed.
+  const w = await makeWorld();
+  const saves = await Promise.all(Array.from({ length: 5 }, (_, i) => w.call('POST', '/admin/question-bank/questions', {
+    token: w.tok,
+    body: { module: 'T01', family: 'Advanced Technical Judgment', type: 'open', prompt: `Parallel authored question ${i}: what breaks first under load?`, rubric: 'r' },
+  })));
+  assert.deepEqual(saves.map((r) => r.status), [201, 201, 201, 201, 201]);
+  const ids = saves.map((r) => r.body.question.id);
+  assert.equal(new Set(ids).size, 5, `ids must be distinct: ${ids}`);
+  const stored = await w.store.list('bank_questions');
+  assert.equal(stored.length, 5, 'every saved question is still in the bank');
+});
+
+test('parallel creates of the same role key, username, question prompt or published track yield exactly one record', async () => {
+  const w = await makeWorld();
+  const roles = await Promise.all(Array.from({ length: 4 }, () => w.call('POST', '/admin/roles', { token: w.tok, body: { key: 'twin-key', name: 'Twin', technology: 'X' } })));
+  assert.deepEqual(roles.map((r) => r.status).sort(), [201, 409, 409, 409]);
+  assert.equal((await w.store.list('roles', { key: 'twin-key' })).length, 1);
+
+  const cand = (await w.call('POST', '/admin/candidates', { token: w.tok, body: { name: 'Twin Cand' } })).body;
+  const users = await Promise.all(Array.from({ length: 4 }, () => w.call('POST', '/admin/users', {
+    token: w.tok, body: { username: 'twin.user', name: 'Twin', role: 'candidate', password: 'Cand-pass-123', candidate_id: cand.id, auto_allocate: false },
+  })));
+  assert.deepEqual(users.map((r) => r.status).sort(), [201, 409, 409, 409]);
+  assert.equal((await w.store.list('users', { username: 'twin.user' })).length, 1);
+  assert.equal((await w.store.list('users', { candidate_id: cand.id })).length, 1, 'one portal user per candidate');
+
+  const questions = await Promise.all(Array.from({ length: 4 }, () => w.mcq(w.c1.id, 'Double-clicked save?')));
+  assert.deepEqual(questions.map((r) => r.status).sort(), [201, 409, 409, 409]);
+  assert.equal((await w.store.list('questions', { role_id: w.role.id })).filter((q) => q.prompt === 'Double-clicked save?').length, 1);
+
+  const installs = await Promise.all(Array.from({ length: 3 }, () => w.call('POST', '/admin/content/tracks', { token: w.tok, body: { role_key: 'databricks-ai-bi-genie' } })));
+  assert.deepEqual(installs.map((r) => r.status).sort(), [200, 200, 201], 'one install, the rest are top-ups');
+  const twins = await w.store.list('roles', { key: 'databricks-ai-bi-genie' });
+  assert.equal(twins.length, 1, 'one role for the track');
+  assert.equal((await w.store.list('frameworks', { role_id: twins[0].id })).length, 1);
+});
+
+test('two bulk imports of the same people in flight together create each login once', async () => {
+  const w = await makeWorld();
+  const csv = 'Name,Email,Username,Password\nAsha Sharma,asha@example.com,asha.sharma,Asha-pass-123\nBilal Khan,bilal@example.com,bilal.khan,Bilal-pass-123\n';
+  const [a, b] = await Promise.all([
+    w.call('POST', '/admin/candidates/import', { token: w.tok, body: { csv, create_users: true, auto_allocate: false } }),
+    w.call('POST', '/admin/candidates/import', { token: w.tok, body: { csv, create_users: true, auto_allocate: false } }),
+  ]);
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  const imported = [a.body.imported, b.body.imported].sort();
+  assert.deepEqual(imported, [0, 2], 'the second import sees the first one\'s rows as duplicates');
+  assert.equal((await w.store.list('users', { username: 'asha.sharma' })).length, 1);
+  assert.equal((await w.store.list('users', { username: 'bilal.khan' })).length, 1);
+  assert.equal((await w.store.list('candidates')).length, 2);
 });

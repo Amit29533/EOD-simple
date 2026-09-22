@@ -26,7 +26,17 @@ export function registerRoutes() {
 
 function compile(pattern) {
   const keys = [];
-  const regex = new RegExp('^' + pattern.replace(/:[^/]+/g, (m) => { keys.push(m.slice(1)); return '([^/]+)'; }) + '/?$');
+  // Literal segments are escaped so a route path containing a regex
+  // metacharacter (a dot, a dash inside a class, a plus) matches itself and
+  // nothing else; only the `:param` placeholders become capture groups.
+  const source = pattern
+    .split('/')
+    .map((seg) => {
+      if (seg.startsWith(':')) { keys.push(seg.slice(1)); return '([^/]+)'; }
+      return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('/');
+  const regex = new RegExp(`^${source}/?$`);
   return { keys, regex };
 }
 
@@ -45,7 +55,7 @@ export async function dispatch(routes, ctx) {
     } catch {
       // A path parameter that is not valid percent-encoding (a bare `%`, a
       // truncated sequence) is a bad request, not a server failure.
-      return badRequest();
+      return badRequest('Invalid path parameter encoding.');
     }
     return r.handler({ ...ctx, params });
   }

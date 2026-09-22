@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import { createStore } from '../src/storage/index.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
-import { buildSnapshot, finalizeScoring } from '../src/api/assessment-service.mjs';
+import { buildSnapshot, finalizeScoring, paperSummary } from '../src/api/assessment-service.mjs';
 import { installCatalogue, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
 import { bulkInsert } from '../src/api/helpers.mjs';
 import { RSA_ROLE, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
@@ -27,6 +27,10 @@ const env = process.env;
 if ((env.SEED_FRESH === '1') && (env.STORAGE || 'json') === 'json') {
   const file = env.DATA_FILE || 'data/ecod.json';
   if (fs.existsSync(file)) { fs.rmSync(file); console.log(`[seed] wiped ${file}`); }
+  // Recordings live beside the file, one JSON per clip (see
+  // src/storage/row-tables.mjs); a fresh store must not inherit the old ones.
+  const rows = `${file.replace(/\.json$/i, '')}.rows`;
+  if (fs.existsSync(rows)) { fs.rmSync(rows, { recursive: true, force: true }); console.log(`[seed] wiped ${rows}`); }
 }
 
 const store = await createStore();
@@ -100,7 +104,7 @@ console.log('[seed] demo candidates created; rohit.verma linked to candidate rec
 const snapshot = await buildSnapshot(store, role.id);
 await store.insert('assessments', {
   candidate_id: candIds.rohit, role_id: role.id, assessor_id: userIds['priya.nair'],
-  status: 'assigned', snapshot_json: snapshot, report_json: null,
+  status: 'assigned', snapshot_json: snapshot, report_json: null, ...paperSummary(snapshot),
   overall_pct: null, readiness_key: '', readiness_label: '', created_by: userIds.admin,
 });
 console.log('[seed] assessment allocated: Rohit Verma -> assessor Priya Nair (status: assigned)');
@@ -112,7 +116,7 @@ console.log('[seed] assessment allocated: Rohit Verma -> assessor Priya Nair (st
 const nehaSnapshot = JSON.parse(JSON.stringify(snapshot));
 const nehaAssessment = await store.insert('assessments', {
   candidate_id: candIds.neha, role_id: role.id, assessor_id: userIds['arjun.mehta'],
-  status: 'submitted', snapshot_json: nehaSnapshot, report_json: null,
+  status: 'submitted', snapshot_json: nehaSnapshot, report_json: null, ...paperSummary(nehaSnapshot),
   started_at: new Date(Date.now() - 4 * 864e5).toISOString(),
   submitted_at: new Date(Date.now() - 3 * 864e5).toISOString(),
   overall_pct: null, readiness_key: '', readiness_label: '', created_by: userIds.admin,
@@ -122,6 +126,11 @@ const qByComp = {};
 for (const q of snapshot.questions) (qByComp[q.competency_id] ||= []).push(q);
 const correctOrFirst = (q) => q.type === 'mcq_single' ? q.correct_option_ids[0] : q.correct_option_ids;
 const wrongSingle = (q) => q.options.find((o) => o.id !== q.correct_option_ids[0])?.id;
+// Every other question gets an answer of the RIGHT SHAPE for its type: the
+// exam stores an option id for a single choice, an id list for a multi-select,
+// a 1-5 number for a scale, and a { text, transcript, source } object for an
+// open question (a bare string is the legacy typed-only form the assessor
+// screen still renders).
 const fallbackAnswer = (q) => {
   if (q.type === 'mcq_single' || q.type === 'mcq_multi') return correctOrFirst(q);
   if (q.type === 'scale') return 4;
@@ -130,36 +139,66 @@ const fallbackAnswer = (q) => {
 
 const answers = new Map();
 const scores = new Map();   // manual assessor scores per question id
+// Strong written answers per competency, for the first OPEN question in each.
+const textAnswers = {
+  'lakehouse-architecture': 'Workspaces per environment with a shared governance layer; bronze/silver/gold zones per domain; catalog-per-environment naming (prod_retail.core.orders); start with the three highest-value marts; migrate incrementally with dual-run reconciliation.',
+  'data-engineering': 'Check whether input rate exceeds processing rate from streaming metrics, inspect state store size and spill, and check 02:00 cluster contention from ganglia/system tables. Move heavy batch off the streaming window or isolate compute, enable RocksDB state backend, tune maxOffsetsPerTrigger, and make the sink MERGE idempotent with checkpoints for exactly-once.',
+  'governance-security': 'Catalog per BU per environment (prod_retail, prod_lending ...), IdP-synced account groups per BU role, catalog owners from each BU with a central metastore admin, analysts get SELECT via dynamic views and row filters/column masks on PII columns, plus tags and ownership in Catalog Explorer.',
+  'ml-genai': 'Chunk policies via a DLT pipeline into a UC table, sync to Vector Search, serve an LLM via Model Serving behind AI Gateway guardrails, evaluate against a curated QA set (answer correctness, faithfulness, toxicity) logged in MLflow, monitor latency/cost/quality and keep human sign-off before launch.',
+  'customer-advisory': 'I would first acknowledge the failed POC openly and separate the platform question from the project question. I would bring a usage analysis showing which teams get daily value, then propose three quick wins tied to revenue or risk (e.g. fraud alerting SLA, regulatory report automation), each with an owner and a business metric. 30 days: cost guardrails + first quick win live. 60: second win + exec dashboard of platform value. 90: third win and a steering cadence.',
+};
+// The worked example is written BY QUESTION TYPE, not by position. The served
+// paper is interleaved (open questions spread through the objective ones), so
+// "the first three questions of a competency" are not [mcq, mcq, open]: the
+// old positional script put a prose answer on a multi-select (auto-scored 0)
+// and an empty option list on an open question, and the example report then
+// showed gaps in competencies the candidate had answered well.
+//
+// The two deliberately weak areas are answered from the CATALOGUE order, never
+// from the paper's: the paper is shuffled afresh at every allocation, so a
+// right/wrong pattern keyed on paper position made the example's readiness
+// label and gap count change from one seed run to the next. Each area is
+// pitched one level under its target so both surface as gaps: about half the
+// objective picks right (a multi-select with a partial set scores 0 — strict),
+// middling or low self-ratings, thin open answers scored accordingly.
+const WEAK_AREAS = {
+  // Level 3 against a level-4 target (~45%).
+  'performance-cost': {
+    startRight: false, scale: 3, firstScore: 3, otherScore: 2,
+    firstText: 'I would move the job to a larger cluster and switch on Photon, then compare run times. I have not profiled query plans or file layout in detail; I usually rely on autoscaling to absorb the cost.',
+    otherText: 'I would ask the account team for a cost review and follow their recommendations.',
+  },
+  // Level 2 against a level-3 target (~33%).
+  'devops-production': {
+    startRight: false, scale: 2, firstScore: 2, otherScore: 1,
+    firstText: 'I would mainly restart the cluster and re-run the job, then keep an eye on it for a few days.',
+    otherText: 'I have not had to do this myself; I would ask the platform team and follow whatever they usually do.',
+  },
+};
+const byCatalogueOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0);
+const isChoice = (q) => q.type === 'mcq_single' || q.type === 'mcq_multi';
+const wrongChoice = (q) => (q.type === 'mcq_single' ? wrongSingle(q) : [q.correct_option_ids[0]]);
 for (const [compKey, compId] of Object.entries(rsaCompIds)) {
-  // The worked example addresses the first three questions per competency; a
-  // thinner bank (or a future catalogue trim) must degrade to fallback answers
-  // rather than crash the seed on an undefined question.
-  const [q1, q2, q3] = qByComp[compId] || [];
-  if (!q1 || !q2 || !q3) continue;
-  if (compKey === 'devops-production' || compKey === 'performance-cost') {
-    // deliberately weak areas for the example -> they surface as gaps
-    if (q1.type === 'mcq_single') answers.set(q1.id, wrongSingle(q1));
-    if (q2.type === 'mcq_multi') answers.set(q2.id, [q2.correct_option_ids[0]]); // partial set => 0 (strict)
-    answers.set(q3.id, 'I would mainly restart the cluster and re-run the job, then keep an eye on it for a few days.');
-    scores.set(q3.id, 2);
-  } else if (q2?.type === 'scale') {
-    answers.set(q1.id, correctOrFirst(q1));
-    answers.set(q2.id, 4);
-    answers.set(q3.id,
-      'I would first acknowledge the failed POC openly and separate the platform question from the project question. I would bring a usage analysis showing which teams get daily value, then propose three quick wins tied to revenue or risk (e.g. fraud alerting SLA, regulatory report automation), each with an owner and a business metric. 30 days: cost guardrails + first quick win live. 60: second win + exec dashboard of platform value. 90: third win and a steering cadence.');
-    scores.set(q3.id, 5);
-  } else {
-    answers.set(q1.id, correctOrFirst(q1));
-    answers.set(q2.id, correctOrFirst(q2));
-    const textAnswers = {
-      'lakehouse-architecture': 'Workspaces per environment with a shared governance layer; bronze/silver/gold zones per domain; catalog-per-environment naming (prod_retail.core.orders); start with the three highest-value marts; migrate incrementally with dual-run reconciliation.',
-      'data-engineering': 'Check whether input rate exceeds processing rate from streaming metrics, inspect state store size and spill, and check 02:00 cluster contention from ganglia/system tables. Move heavy batch off the streaming window or isolate compute, enable RocksDB state backend, tune maxOffsetsPerTrigger, and make the sink MERGE idempotent with checkpoints for exactly-once.',
-      'governance-security': 'Catalog per BU per environment (prod_retail, prod_lending ...), IdP-synced account groups per BU role, catalog owners from each BU with a central metastore admin, analysts get SELECT via dynamic views and row filters/column masks on PII columns, plus tags and ownership in Catalog Explorer.',
-      'ml-genai': 'Chunk policies via a DLT pipeline into a UC table, sync to Vector Search, serve an LLM via Model Serving behind AI Gateway guardrails, evaluate against a curated QA set (answer correctness, faithfulness, toxicity) logged in MLflow, monitor latency/cost/quality and keep human sign-off before launch.',
-      'customer-advisory': undefined, // handled by scale branch
-    };
-    answers.set(q3.id, textAnswers[compKey] || 'Detailed answer provided.');
-    scores.set(q3.id, compKey === 'ml-genai' ? 4 : 5);
+  const list = [...(qByComp[compId] || [])].sort(byCatalogueOrder);
+  const weak = WEAK_AREAS[compKey];
+  const firstOpen = list.find((q) => q.type === 'text');
+  if (weak) {
+    let nth = 0;
+    for (const q of list) {
+      if (isChoice(q)) {
+        const right = (nth % 2 === 0) === weak.startRight;
+        nth += 1;
+        answers.set(q.id, right ? correctOrFirst(q) : wrongChoice(q));
+      } else if (q.type === 'scale') {
+        answers.set(q.id, weak.scale);
+      } else if (q.type === 'text') {
+        answers.set(q.id, q === firstOpen ? weak.firstText : weak.otherText);
+        scores.set(q.id, q === firstOpen ? weak.firstScore : weak.otherScore);
+      }
+    }
+  } else if (firstOpen) {
+    answers.set(firstOpen.id, textAnswers[compKey] || 'Detailed answer provided.');
+    scores.set(firstOpen.id, compKey === 'ml-genai' ? 4 : 5);
   }
 }
 

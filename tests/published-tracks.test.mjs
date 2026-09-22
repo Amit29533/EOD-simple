@@ -352,3 +352,47 @@ test('`npm run seed` on an existing workspace adds the published tracks it is mi
   assert.equal((await rereadAgain.list('roles')).length, 3);
   assert.equal((await rereadAgain.list('questions', { role_id: aibi.id })).length, AIBI_QUESTIONS.length);
 });
+
+test('an install that dies part-way leaves no orphan role, and the retry installs cleanly', async () => {
+  const { store } = await legacyStore({ withRsa: false });
+  // A store whose first competencies batch write fails (a blob-store timeout
+  // mid-install). The role row had already been written by then.
+  let failOnce = true;
+  const flaky = new Proxy(store, {
+    get(target, key) {
+      if (key === 'insertMany') {
+        return async (table, rows) => {
+          if (table === 'competencies' && failOnce) { failOnce = false; throw new Error('blob store timeout'); }
+          return target.insertMany(table, rows);
+        };
+      }
+      return target[key];
+    },
+  });
+  await assert.rejects(() => installCatalogue(flaky, AIBI_ROLE.key), /blob store timeout/);
+  assert.equal((await store.list('roles', { key: AIBI_ROLE.key })).length, 0,
+    'the half-installed role must be rolled back, not left looking installed');
+  assert.equal((await store.list('competencies')).length, 0);
+  assert.equal((await store.list('frameworks')).length, 0);
+
+  const retry = await installCatalogue(flaky, AIBI_ROLE.key);
+  assert.equal(retry.error, undefined, JSON.stringify(retry));
+  assert.equal(retry.created, true, 'the retry is a fresh install, not a top-up of an orphan');
+  const roles = await store.list('roles', { key: AIBI_ROLE.key });
+  assert.equal(roles.length, 1);
+  assert.equal((await store.list('frameworks', { role_id: roles[0].id })).length, 1);
+  assert.equal((await store.list('competencies', { role_id: roles[0].id })).length, AIBI_COMPETENCIES.length);
+  assert.equal((await store.list('questions', { role_id: roles[0].id })).length, AIBI_QUESTIONS.length);
+});
+
+test('a legacy orphan role (installed before the rollback existed) gets its framework on the next install/sync', async () => {
+  const { store } = await legacyStore({ withRsa: false });
+  const orphan = await store.insert('roles', { ...AIBI_ROLE, active: true });
+  const healed = await installCatalogue(store, AIBI_ROLE.key);
+  assert.equal(healed.error, undefined, JSON.stringify(healed));
+  assert.equal(healed.created, false);
+  assert.equal(healed.role.id, orphan.id, 'the existing role is topped up, never duplicated');
+  assert.equal((await store.list('frameworks', { role_id: orphan.id })).length, 1,
+    'the missing default framework is added so the track can be allocated');
+  assert.equal((await store.list('questions', { role_id: orphan.id })).length, AIBI_QUESTIONS.length);
+});

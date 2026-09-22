@@ -25,7 +25,7 @@
     "test:gauntlet": "python3 tests/final-gauntlet.py"
   },
   "optionalDependencies": {
-    "@netlify/blobs": "^8.1.0",
-    "jsdom": "^30.0.1"
+    "@netlify/blobs": "^10.7.12",
+    "jsdom": "^29.1.1"
   }
 }

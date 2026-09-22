@@ -360,6 +360,7 @@ test('junk options are dropped, and an answer key pointing at dropped text is st
   // the correct-answer check runs against what survived.
   // One entry survives the drop, so the count check fires first: proof that the
   // blank/null entries never made it into the option list the key is checked on.
+  // (The blank-label entry is named as the reason, because the admin typed it.)
   const res = await call('POST', '/admin/questions', {
     token: adminToken,
     body: validQuestion({
@@ -368,7 +369,14 @@ test('junk options are dropped, and an answer key pointing at dropped text is st
     }),
   });
   assert.equal(res.status, 400, JSON.stringify(res.body));
-  assert.match(res.body.error, /at least two options/i);
+  assert.match(res.body.error, /needs a label/i);
+  // With no typed-but-blank entry at all, the count rule speaks.
+  const tooFew = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ options: [null, 'x', { id: 'a', label: 'Alpha' }], correct_option_ids: ['a'] }),
+  });
+  assert.equal(tooFew.status, 400, JSON.stringify(tooFew.body));
+  assert.match(tooFew.body.error, /at least two options/i);
 
   // Two survivors, and the key points at a dropped entry -> refused.
   const dangling = await call('POST', '/admin/questions', {
@@ -495,4 +503,179 @@ test('a duplicate prompt cannot reach a served paper through the API', async () 
   const served = sortedQuestions(snap);
   const keys = served.map((x) => promptKey(x.prompt));
   assert.equal(new Set(keys).size, keys.length, 'the served paper repeats no question');
+});
+
+/* ------------------------------------------------- prototype-named ids over HTTP */
+
+test('a record id naming an Object.prototype member is a 404, not a phantom row or a 500', async () => {
+  // `store.get('roles', 'constructor')` used to return Object's constructor
+  // as a truthy "row"; GET then served a phantom record, and PATCH ran
+  // Object.assign against Object.prototype — after which every later login
+  // failed because inserted sessions inherited `id: "__proto__"`.
+  for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    for (const [method, path, body] of [
+      ['GET', `/admin/candidates/${id}`], ['PATCH', `/admin/candidates/${id}`, { name: 'Polluted' }],
+      ['GET', `/admin/roles/${id}`], ['PATCH', `/admin/roles/${id}`, { name: 'Polluted' }],
+      ['GET', `/admin/users/${id}`], ['PATCH', `/admin/users/${id}`, { name: 'Polluted' }],
+      ['GET', `/admin/assessments/${id}/integrity`], ['GET', `/admin/reports/${id}`],
+      ['DELETE', `/admin/questions/${id}`], ['DELETE', `/admin/competencies/${id}`],
+    ]) {
+      const res = await call(method, path, { token: adminToken, body });
+      assert.equal(res.status, 404, `${method} ${path} -> ${res.status} ${JSON.stringify(res.body)}`);
+    }
+  }
+  assert.equal(({}).name, undefined, 'Object.prototype was never written to');
+  // The process is still healthy: a fresh login works and a new row keeps its id.
+  const again = await call('POST', '/auth/login', { body: { username: 'admin', password: 'admin-pass-123' } });
+  assert.equal(again.status, 200);
+  const me = await call('GET', '/auth/me', { token: again.body.token });
+  assert.equal(me.status, 200, 'sessions inserted after the probe are still found');
+});
+
+test('a role key naming an Object.prototype member is refused by every bank/catalogue route, never a 500', async () => {
+  // `MODULE_BANKS["constructor"]` is a function, not a bank; every route that
+  // trusted the truthy lookup crashed on `.modules.map`.
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const q = { role_key: key };
+    const results = await Promise.all([
+      call('GET', '/admin/question-bank/modules', { token: adminToken, query: q }),
+      call('GET', '/admin/question-bank/plan', { token: adminToken, query: q }),
+      call('GET', '/admin/question-bank/families/T01', { token: adminToken, query: q }),
+      call('GET', '/admin/question-bank/import-template', { token: adminToken, query: q }),
+      call('GET', '/admin/content/catalogue', { token: adminToken, query: q }),
+      call('POST', '/admin/question-bank/preview', { token: adminToken, body: q }),
+      call('POST', '/admin/question-bank/questions', { token: adminToken, body: { ...q, module: 'T01', type: 'open', prompt: 'Prototype key probe question?', rubric: 'r' } }),
+      call('POST', '/admin/question-bank/import', { token: adminToken, body: { ...q, csv: 'module,prompt\nT01,abc' } }),
+      call('POST', '/admin/content/sync', { token: adminToken, body: q }),
+      call('POST', '/admin/content/tracks', { token: adminToken, body: q }),
+    ]);
+    for (const res of results) {
+      assert.ok(res.status < 500, `role_key=${key} -> ${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
+    }
+  }
+});
+
+/* ------------------------------------------------- option / identity validation */
+
+test('duplicate option ids or labels are refused, and a blank label is named as the problem', async () => {
+  // Two options with one id are indistinguishable once served: the pick is
+  // stored by id, so either label scored as the key.
+  let res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ options: [{ id: 'a', label: 'Alpha' }, { id: 'a', label: 'Beta' }], correct_option_ids: ['a'] }),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /unique id/i);
+
+  res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ options: [{ id: 'a', label: 'Same' }, { id: 'b', label: 'same ' }], correct_option_ids: ['a'] }),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /distinct/i);
+
+  // A typed-but-blank label used to be dropped silently, so the error read
+  // "at least two options" while the form plainly showed two.
+  res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: '' }], correct_option_ids: ['a'] }),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /needs a label/i);
+
+  // A repeated correct id is collapsed rather than counted twice: for a
+  // multi-select it no longer trips the "not all options" rule by inflation,
+  // and what is stored is the de-duplicated key.
+  res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({
+      type: 'mcq_multi',
+      options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }],
+      correct_option_ids: ['a', 'a', 'b'],
+    }),
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(res.body.correct_option_ids, ['a', 'b']);
+  // And a numeric key still lines up with numeric option ids (both stringified).
+  res = await call('POST', '/admin/questions', {
+    token: adminToken,
+    body: validQuestion({ prompt: 'Numeric ids line up?', options: [{ id: 1, label: 'One' }, { id: 2, label: 'Two' }], correct_option_ids: [1] }),
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(res.body.correct_option_ids, ['1']);
+});
+
+test('a candidate or user cannot be edited into a nameless record', async () => {
+  let res = await call('PATCH', `/admin/candidates/${candA.id}`, { token: adminToken, body: { name: '' } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /name is required/i);
+  res = await call('PATCH', `/admin/candidates/${candA.id}`, { token: adminToken, body: { name: '   ' } });
+  assert.equal(res.status, 400);
+  assert.equal((await store.get('candidates', candA.id)).name, 'Candidate A');
+  res = await call('POST', '/admin/candidates', { token: adminToken, body: { name: '   ' } });
+  assert.equal(res.status, 400, 'a whitespace-only name is no name');
+
+  res = await call('PATCH', `/admin/users/${userA.id}`, { token: adminToken, body: { name: '' } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /name is required/i);
+  assert.equal((await store.get('users', userA.id)).name, 'Candidate A');
+  // Other fields still patch fine on their own.
+  res = await call('PATCH', `/admin/users/${userA.id}`, { token: adminToken, body: { email: 'cand.a@example.com' } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.email, 'cand.a@example.com');
+});
+
+test('a malformed email is refused on candidates, users and the bulk import; blank stays optional', async () => {
+  const bad = ['not-an-email', 'two@@example.com', 'no domain@x', 'a@b', 'has space@example.com', '@example.com', 'x@'];
+  for (const email of bad) {
+    let res = await call('POST', '/admin/candidates', { token: adminToken, body: { name: 'Mail Probe', email } });
+    assert.equal(res.status, 400, `candidate create accepted "${email}"`);
+    assert.match(res.body.error, /email/i);
+    res = await call('PATCH', `/admin/candidates/${candA.id}`, { token: adminToken, body: { email } });
+    assert.equal(res.status, 400, `candidate patch accepted "${email}"`);
+    res = await call('POST', '/admin/users', {
+      token: adminToken, body: { username: 'mail.probe', name: 'Mail Probe', role: 'assessor', password: 'mail-probe-pass', email },
+    });
+    assert.equal(res.status, 400, `user create accepted "${email}"`);
+    res = await call('PATCH', `/admin/users/${userA.id}`, { token: adminToken, body: { email } });
+    assert.equal(res.status, 400, `user patch accepted "${email}"`);
+  }
+  for (const email of ['', undefined, 'first.last+tag@sub.example.co.uk', 'x@y.zz']) {
+    const res = await call('POST', '/admin/candidates', { token: adminToken, body: { name: 'Mail OK', email } });
+    assert.equal(res.status, 201, `"${email}" should be accepted: ${JSON.stringify(res.body)}`);
+  }
+  const imp = await call('POST', '/admin/candidates/import', {
+    token: adminToken,
+    body: { dry_run: true, csv: 'Name,Email\nGood Row,good@example.com\nBad Row,not-an-email\nNo Mail,\n' },
+  });
+  assert.equal(imp.status, 200, JSON.stringify(imp.body));
+  assert.equal(imp.body.accepted, 2, 'the good row and the blank-email row are importable');
+  assert.equal(imp.body.rejected, 1);
+  assert.match(imp.body.errors[0].errors.join(' '), /email/i);
+});
+
+test('PUT /admin/frameworks stores only the fields the scoring engine reads, so a payload cannot ride into every snapshot', async () => {
+  const config = {
+    readiness_bands: [
+      { key: ' go ', label: ' Go ', min: '70', tone: 'green', description: 'ship it', extra: { deep: [1, 2] } },
+      { key: 'hold', label: 'Hold', min: 0 },
+    ],
+    level_thresholds: ['0', 25, 50, 75, 90],
+    gap_severity: { moderate: '1', critical: '2', note: 'x'.repeat(50000) },
+    payload: 'p'.repeat(100000),
+  };
+  const res = await call('PUT', '/admin/frameworks', { token: adminToken, body: { role_id: roleA.id, config } });
+  assert.equal(res.status, 200, JSON.stringify(res.body).slice(0, 200));
+  assert.deepEqual(res.body.config, {
+    readiness_bands: [
+      { key: 'go', label: 'Go', min: 70, tone: 'green', description: 'ship it' },
+      { key: 'hold', label: 'Hold', min: 0 },
+    ],
+    level_thresholds: [0, 25, 50, 75, 90],
+    gap_severity: { moderate: 1, critical: 2 },
+  });
+  assert.ok(JSON.stringify(res.body).length < 2000, 'nothing beyond the schema is persisted');
+  // And the snapshot a new paper takes carries exactly that config.
+  const snap = await buildSnapshot(store, roleA.id, { questionLimit: 1 });
+  assert.deepEqual(snap.framework.config, res.body.config);
 });

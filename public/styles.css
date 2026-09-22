@@ -1947,3 +1947,4 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 @media (max-width: 720px) {
   .form-2col, .form-3col { grid-template-columns: 1fr; }
 }
+.exam-audio-slot { margin-top: 10px; min-height: 24px; }

@@ -7,7 +7,13 @@ import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG, MAX_AUDIO_B64 } from '../src/core/constants.mjs';
-import { sortedQuestions } from '../src/api/quiz-session.mjs';
+import { sortedQuestions, MAX_INTEGRITY_EVENTS } from '../src/api/quiz-session.mjs';
+
+/** The clip behind a spoken answer lives in its own `recordings` row, never on the response. */
+async function clipOf(store, assessmentId, questionId) {
+  const rows = await store.list('recordings', { assessment_id: assessmentId, question_id: questionId });
+  return rows[0]?.audio?.b64 ?? null;
+}
 
 /**
  * Full-fledged exam lifecycle over the real HTTP surface (in-process app):
@@ -263,6 +269,8 @@ test('A4 · autosave drafts, blanks and locked answers behave exactly as specifi
   const kept = await current();
   assert.equal(kept.transcript, 'clean');
   assert.equal(kept.audio_b64, undefined, 'invalid base64 audio is never persisted');
+  assert.equal(kept.audio_ref, undefined, 'and no recording row is referenced');
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.pin), null, 'nor stored');
 
   // lock the answer via next, then verify autosave can no longer change it
   await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
@@ -276,7 +284,9 @@ test('A4 · autosave drafts, blanks and locked answers behave exactly as specifi
   const q1 = rows.find((r) => r.question_id === w.ids.pin);
   assert.equal(q1.locked, true);
   assert.equal(q1.answer.transcript, 'final spoken', 'locked answer untouched by later autosave');
-  assert.equal(q1.answer.audio_b64, B64, 'compact audio payload persisted');
+  assert.equal(q1.answer.audio_b64, undefined, 'the clip is not stored on the response row');
+  assert.ok(q1.answer.audio_ref, 'the answer points at its recording');
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.pin), B64, 'compact audio payload persisted in the recordings table');
   assert.equal(q1.answer.source, 'audio');
   assert.equal(locked, null, 'q2 has no draft yet');
 });
@@ -304,6 +314,81 @@ test('A5 · integrity events accumulate with question context and hit the audit 
 
   const auditRows = await w.store.list('audit_log');
   assert.ok(auditRows.some((e) => e.action === 'integrity_tab_switch'), 'integrity events are audited');
+});
+
+test('A5b · a beacon flood cannot push admin actions out of the audit log', async () => {
+  // The audit table rotates at 2,000 rows and every integrity beacon used to
+  // add one — so a candidate (the one actor whose beacons are self-reported)
+  // could erase every admin action from the audit log with a few thousand
+  // `blur` posts. The audit mirror now stops at the exam trail's own ring
+  // size per assessment; the exam trail itself still counts every event.
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const { tok } = await candidateWalkBasics(w, alloc.id);
+  const marker = await w.store.insert('audit_log', { action: 'admin_marker', entity: 'roles', entity_id: 'x', message: 'must survive' });
+  const before = (await w.store.list('audit_log')).length;
+  const extra = 40;
+  for (let i = 0; i < MAX_INTEGRITY_EVENTS + extra; i += 1) {
+    const r = await w.call('POST', `/candidate/assessments/${alloc.id}/integrity`, { token: tok, body: { event: 'blur', detail: `flood ${i}` } });
+    assert.equal(r.status, 200);
+  }
+  const rows = await w.store.list('audit_log');
+  const mirrored = rows.filter((e) => e.action === 'integrity_blur').length;
+  assert.equal(mirrored, MAX_INTEGRITY_EVENTS, 'the audit mirror is capped at the exam trail ring size');
+  assert.equal(rows.length, before + MAX_INTEGRITY_EVENTS);
+  assert.ok(rows.some((e) => e.id === marker.id), 'the admin row is still there');
+  const a = await w.store.get('assessments', alloc.id);
+  assert.equal(a.quiz_state.integrity.blur, MAX_INTEGRITY_EVENTS + extra, 'the counter still sees every beacon');
+  assert.equal(a.quiz_state.events.length, MAX_INTEGRITY_EVENTS);
+  assert.equal(a.quiz_state.events_dropped, extra);
+  const trail = await w.call('GET', `/admin/assessments/${alloc.id}/integrity`, { token: await w.login('admin', 'admin-pass-x') });
+  assert.equal(trail.body.events_count, MAX_INTEGRITY_EVENTS + extra, 'the admin view reports the true total');
+});
+
+test('A6 · a timed-out question is counted as time_expired, not lumped under other', async () => {
+  // `time_expired` is recorded by the API itself on every expiry path, but it
+  // was missing from the known-event registry, so each timeout was filed
+  // under `other` and the admin's integrity screen could not show it.
+  const w = await makeWorld();
+  const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
+  const tok = await w.login('candidate.one', 'c1-pass-x');
+  await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok }); // starts the clock
+  const paper = await servedPaper(w, alloc.id);
+  const first = paper[0];
+
+  // 1. Review window slept through: the /phase handover past the grace logs one.
+  let a = await w.store.get('assessments', alloc.id);
+  await w.store.update('assessments', alloc.id, {
+    quiz_state: { ...a.quiz_state, phase: 'review', question_started_at: new Date(Date.now() - 10 * 60_000).toISOString() },
+  });
+  assert.equal(first.type, 'text', 'the pinned opener is an open question');
+  const phase = await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
+  assert.equal(phase.status, 200);
+
+  // 2. Answer window hard-expired: /next records the blank and logs a second.
+  a = await w.store.get('assessments', alloc.id);
+  await w.store.update('assessments', alloc.id, {
+    quiz_state: { ...a.quiz_state, question_started_at: new Date(Date.now() - 10 * 60_000).toISOString() },
+  });
+  const next = await w.call('POST', `/candidate/assessments/${alloc.id}/next`, {
+    token: tok, body: { question_id: first.id, answer: { text: 'too late', transcript: '' } },
+  });
+  assert.equal(next.status, 200);
+  assert.equal(next.body.index, 1);
+
+  a = await w.store.get('assessments', alloc.id);
+  assert.equal(a.quiz_state.integrity.time_expired, 2, 'both overruns count under their own key');
+  assert.equal(a.quiz_state.integrity.other || 0, 0, 'nothing leaked into other');
+  assert.deepEqual(a.quiz_state.events.map((e) => e.event), ['time_expired', 'time_expired']);
+  const blank = (await w.store.list('responses', { assessment_id: alloc.id })).find((r) => r.question_id === first.id);
+  assert.equal(blank.answer.source, 'timed_out', 'the late answer was not accepted');
+
+  // The admin's integrity trail reports the counter as-is.
+  const admin = w.tokens.admin ||= await w.login('admin', 'admin-pass-x');
+  const trail = await w.call('GET', `/admin/assessments/${alloc.id}/integrity`, { token: admin });
+  assert.equal(trail.status, 200);
+  assert.equal(trail.body.integrity.time_expired, 2);
+  assert.equal(trail.body.events_count, 2);
 });
 
 /* ============================== B. submission + assessor + report ============================== */
@@ -348,8 +433,18 @@ test('B1 · full walk, submit, score and finalize produce the exact weighted rep
   assert.equal(paper.status, 200);
   assert.ok(paper.body.questions.some((x) => x.rubric === 'R-pin'), 'assessor sees rubrics');
   const respById = Object.fromEntries(paper.body.responses.map((r) => [r.question_id, r]));
-  assert.equal(respById[w.ids.pin].answer.audio_b64, B64, 'assessor receives the recorded audio');
+  assert.equal(respById[w.ids.pin].answer.audio_b64, undefined, 'the detail payload carries no audio bytes');
+  assert.equal(respById[w.ids.pin].answer.audio_ref, undefined, 'nor storage references');
+  assert.equal(respById[w.ids.pin].answer.has_recording, true, 'only the fact that a recording exists');
+  assert.equal(respById[w.ids.open].answer.has_recording, false);
   assert.equal(respById[w.ids.pin].answer.transcript, 'spoken one');
+  const clip = await w.call('GET', `/assessor/assessments/${alloc.id}/recordings/${w.ids.pin}`, { token: a1 });
+  assert.equal(clip.status, 200, JSON.stringify(clip.body));
+  assert.deepEqual(clip.body, { question_id: w.ids.pin, audio_b64: B64, audio_mime: 'audio/webm' }, 'the clip is fetched on demand');
+  assert.equal((await w.call('GET', `/assessor/assessments/${alloc.id}/recordings/${w.ids.open}`, { token: a1 })).status, 404, 'no recording → 404');
+  const other = w.tokens.a2 ||= await w.login('assessor.two', 'a2-pass-x');
+  assert.equal((await w.call('GET', `/assessor/assessments/${alloc.id}/recordings/${w.ids.pin}`, { token: other })).status, 404, 'another assessor cannot fetch it');
+  assert.equal((await w.call('GET', `/assessor/assessments/${alloc.id}/recordings/${w.ids.pin}`, { token: tok })).status, 403, 'nor the candidate');
   assert.equal(respById[w.ids.single].auto_score, 4, 'auto-scored mcq_single');
   assert.equal(respById[w.ids.multi].auto_score, 0, 'wrong multi pick scores 0');
   assert.equal(respById[w.ids.scale].auto_score, 3.2, 'scale 4/5 of 4 points');
@@ -688,23 +783,40 @@ test('F2 · an audio-only open answer is stored and locked, never treated as bla
   const r = rows.find((x) => x.question_id === w.ids.pin);
   assert.ok(r, 'the recording was persisted');
   assert.equal(r.locked, true, 'and locked like any other exam answer');
-  assert.equal(r.answer.audio_b64, B64);
+  assert.equal(r.answer.audio_b64, undefined);
+  assert.ok(r.answer.audio_ref);
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.pin), B64);
   assert.equal(r.answer.audio_missing, undefined, 'a spoken answer satisfies the contract');
 
-  // the draft/autosave path keeps audio-only answers too
+  // the draft/autosave path keeps audio-only answers too (a draft is only
+  // taken for the question on screen, so walk to the open question first)
+  let live = (await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.current_question;
+  while (live.id !== w.ids.open) {
+    await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { question_id: live.id, answer: null } });
+    live = (await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.current_question;
+  }
   assert.equal((await w.call('PUT', `/candidate/assessments/${alloc.id}/answers`, {
     token: tok, body: { answers: { [w.ids.open]: { text: '', transcript: '', audio_b64: B64 } } },
   })).status, 200);
   const drafted = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.open);
   assert.ok(drafted, 'an audio-only draft is not discarded as blank');
-  assert.equal(drafted.answer.audio_b64, B64, 'and it is not stripped down to an empty answer');
+  assert.ok(drafted.answer.audio_ref, 'and it is not stripped down to an empty answer');
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.open), B64);
+  // clearing the draft removes the recording with it
+  assert.equal((await w.call('PUT', `/candidate/assessments/${alloc.id}/answers`, {
+    token: tok, body: { answers: { [w.ids.open]: { text: '', transcript: '' } } },
+  })).status, 200);
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.open), null, 'a cleared draft leaves no orphan recording');
+  assert.equal((await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.open), undefined);
 
   // the recording must also survive the final submit, which re-walks every answer
   for (let i = 0; i < 5; i += 1) await w.call('POST', `/candidate/assessments/${alloc.id}/next`, { token: tok, body: { answer: null } });
   const submit = await w.call('POST', `/candidate/assessments/${alloc.id}/submit`, { token: tok, body: { answers: {} } });
   assert.equal(submit.status, 200, JSON.stringify(submit.body));
   const final = (await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.pin);
-  assert.equal(final.answer.audio_b64, B64, 'submit keeps the recording instead of rewriting it as timed_out');
+  assert.equal(final.answer.audio_b64, undefined);
+  assert.equal(final.answer.audio_ref, r.answer.audio_ref, 'submit keeps the recording instead of rewriting it as timed_out');
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.pin), B64);
   assert.equal(final.answer.source, 'audio');
 });
 
@@ -804,7 +916,8 @@ test('G1 · a stored quiz_state with no clock never rushes the candidate through
   assert.equal(n.body.index, 1, 'the cursor advances exactly one question');
 
   const rows = await w.store.list('responses', { assessment_id: alloc.id });
-  assert.equal(rows.length, 0, 'no question is force-recorded as a blank');
+  assert.equal(rows.length, 1, 'the question that was left behind is locked (as a blank)');
+  assert.equal(rows[0].answer.source, 'skipped', 'and recorded as skipped, not as a clock-made blank');
   const after = await w.store.get('assessments', alloc.id);
   const flagged = Object.values(after.quiz_state.integrity || {}).reduce((s, v) => s + Number(v || 0), 0);
   assert.equal(flagged, 0, 'no bogus time_expired entries in the proctoring trail');
@@ -842,9 +955,11 @@ test('G2 · a paper that cannot cover every competency reports the gap as "untes
   assert.equal(served.length, 1, 'the whole bank is the one covered question');
 
   const ctok = await w.login('partial.candidate', 'partial-pass-x');
-  const submit = await w.call('POST', `/candidate/assessments/${id}/submit`, {
-    token: ctok, body: { answers: { [served[0].id]: 'b' } },
-  });
+  await w.call('GET', `/candidate/assessments/${id}`, { token: ctok });
+  assert.equal((await w.call('POST', `/candidate/assessments/${id}/next`, {
+    token: ctok, body: { question_id: served[0].id, answer: 'b' },
+  })).status, 200);
+  const submit = await w.call('POST', `/candidate/assessments/${id}/submit`, { token: ctok, body: { answers: {} } });
   assert.equal(submit.status, 200, JSON.stringify(submit.body));
 
   const fin = await w.call('POST', `/assessor/assessments/${id}/finalize`, { token: assessor });

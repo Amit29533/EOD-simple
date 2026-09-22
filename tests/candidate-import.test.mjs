@@ -276,3 +276,97 @@ test('too many rows is refused', async () => {
   assert.equal(res.status, 422);
   assert.match(res.body.error, /limit is 2000/);
 });
+
+/**
+ * The commit is paged. A commit costs ~22 ms per portal user before any
+ * network (a scrypt hash each, two at a time), so a 2000-row file — which the
+ * dry run validates in a blink — ran ~45 s as a single request: past a
+ * serverless function's timeout, killed with the candidates written and their
+ * logins not, and every re-upload then reported the rows as duplicates with
+ * no way left to create the users. Measured in-process: 500 rows, 11.2 s.
+ */
+test('a commit larger than one page is refused up front, with the way to do it', async () => {
+  const header = ['Name', 'Email'];
+  const rows = Array.from({ length: 201 }, (_, i) => [`Bulk ${i}`, `bulk${i}@example.com`]);
+  const before = (await store.list('candidates')).length;
+  const res = await call('POST', '/admin/candidates/import', {
+    token: adminToken,
+    body: { dry_run: false, create_users: false, csv: csv([header, ...rows]) },
+  });
+  assert.equal(res.status, 422);
+  assert.match(res.body.error, /at most 200 rows per request/);
+  assert.match(res.body.error, /offset.*limit/);
+  assert.equal((await store.list('candidates')).length, before, 'nothing was written');
+  // The dry run still validates the whole file at once.
+  const dry = await call('POST', '/admin/candidates/import', {
+    token: adminToken,
+    body: { dry_run: true, create_users: false, csv: csv([header, ...rows]) },
+  });
+  assert.equal(dry.status, 200);
+  assert.equal(dry.body.accepted, 201);
+});
+
+test('a paged commit imports the whole file page by page, credentials and counts adding up', async () => {
+  const header = ['Name', 'Email', 'Target role', 'Username', 'Password'];
+  const rows = Array.from({ length: 23 }, (_, i) => [`Paged ${i}`, `paged${i}@example.com`, 'Resident Solutions Architect (RSA)', `paged${i}`, `Onboard-${i}!`]);
+  // A rejected row and an in-file duplicate, so page reports carry only their own rows.
+  rows.splice(5, 0, ['', 'noname-paged@example.com', '', '', '']);
+  rows.splice(15, 0, ['Paged 0 again', 'paged0@example.com', '', 'paged0b', 'Onboard-x!']);
+  const file = csv([header, ...rows]);
+  const before = { c: (await store.list('candidates')).length, u: (await store.list('users')).length };
+
+  const pages = [];
+  let offset = 0;
+  for (;;) {
+    const res = await call('POST', '/admin/candidates/import', {
+      token: adminToken,
+      body: { dry_run: false, create_users: true, auto_allocate: false, csv: file, offset, limit: 10 },
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    pages.push(res.body);
+    if (res.body.page.next_offset == null) break;
+    offset = res.body.page.next_offset;
+  }
+  assert.deepEqual(pages.map((p) => p.page), [
+    { offset: 0, limit: 10, total: 25, next_offset: 10 },
+    { offset: 10, limit: 10, total: 25, next_offset: 20 },
+    { offset: 20, limit: 5, total: 25, next_offset: null },
+  ]);
+  assert.deepEqual(pages.map((p) => p.imported), [9, 9, 5], 'the blank name and the in-file repeat are skipped on their own pages');
+  assert.deepEqual(pages.map((p) => p.rejected), [1, 0, 0]);
+  assert.deepEqual(pages.map((p) => p.duplicates), [0, 1, 0]);
+  assert.equal(pages[0].errors.length, 1);
+  assert.equal(pages[1].duplicate_rows[0].line, 17);
+  const credentials = pages.flatMap((p) => p.credentials);
+  assert.equal(credentials.length, 23);
+  assert.deepEqual(credentials.slice(0, 2).map((c) => c.username), ['paged0', 'paged1']);
+  assert.equal((await store.list('candidates')).length, before.c + 23);
+  assert.equal((await store.list('users')).length, before.u + 23);
+  assert.equal(pages.reduce((n, p) => n + p.users_created, 0), 23);
+  assert.ok((await store.list('audit_log')).some((e) => /rows 11–20 of 25/.test(e.message)), 'each page leaves its own audit row');
+});
+
+test('after a partial import, uploading the same file again continues where it stopped', async () => {
+  const header = ['Name', 'Email', 'Username', 'Password'];
+  const rows = Array.from({ length: 12 }, (_, i) => [`Resume ${i}`, `resume${i}@example.com`, `resume${i}`, `Onboard-${i}!`]);
+  const file = csv([header, ...rows]);
+  // Page 1 lands; the request for page 2 never arrives (a killed function, a dropped connection).
+  const first = await call('POST', '/admin/candidates/import', {
+    token: adminToken, body: { dry_run: false, create_users: true, auto_allocate: false, csv: file, offset: 0, limit: 5 },
+  });
+  assert.equal(first.body.imported, 5);
+  // The admin uploads the file again and the dialog pages through it from the start.
+  const again = [];
+  let offset = 0;
+  for (;;) {
+    const res = await call('POST', '/admin/candidates/import', {
+      token: adminToken, body: { dry_run: false, create_users: true, auto_allocate: false, csv: file, offset, limit: 5 },
+    });
+    again.push(res.body);
+    if (res.body.page.next_offset == null) break;
+    offset = res.body.page.next_offset;
+  }
+  assert.deepEqual(again.map((p) => [p.imported, p.duplicates]), [[0, 5], [5, 0], [2, 0]], 'the first page is all duplicates now; the rest imports');
+  const users = await store.list('users');
+  for (let i = 0; i < 12; i += 1) assert.equal(users.filter((u) => u.username === `resume${i}`).length, 1, `resume${i} exists exactly once`);
+});

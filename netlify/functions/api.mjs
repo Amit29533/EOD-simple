@@ -1,6 +1,7 @@
 import { createStore } from '../../src/storage/index.mjs';
 import { createApp } from '../../src/api/app.mjs';
 import { corsAllowOrigin, corsHeaders } from '../../src/api/cors.mjs';
+import { MAX_SPREADSHEET_BYTES } from '../../src/core/constants.mjs';
 
 /**
  * Netlify Function wrapper around the transport-agnostic app.
@@ -37,7 +38,46 @@ const storageMisconfigured = () => ({
   }),
 });
 
-const MAX_BODY = 12_000_000; // 12MB max for uploads
+/**
+ * Request body caps — the same two tiers `server.mjs` enforces, so a payload
+ * that is refused locally is refused here too (and vice versa). Ordinary JSON
+ * is capped tight; the two spreadsheet imports get room for a base64-encoded
+ * file up to MAX_SPREADSHEET_BYTES. Note that Netlify itself stops buffered
+ * synchronous function payloads at 6 MB (≈4.5 MB of binary once base64
+ * encoded) before this code runs, so on this transport the import ceiling is
+ * effectively that platform limit — see the deploy notes in the README.
+ */
+const MAX_BODY_BYTES = 2e6;
+const MAX_UPLOAD_BODY_BYTES = MAX_SPREADSHEET_BYTES * 1.5 + 1024 * 1024;
+const UPLOAD_PATHS = ['/admin/candidates/import', '/admin/question-bank/import'];
+
+/** The header set every API response carries — mirrors `server.mjs`. */
+const SECURITY_HEADERS = {
+  'cache-control': 'no-store',
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'SAMEORIGIN',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+  'permissions-policy': 'camera=(), microphone=(self), geolocation=()',
+  'x-dns-prefetch-control': 'off',
+  // netlify.toml [[headers]] rules only cover static files; a function
+  // response has to carry HSTS itself for the API origin to be pinned.
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
+};
+
+/**
+ * The caller's address for the login throttle: Netlify sets
+ * `x-nf-client-connection-ip` on every function invocation; the first
+ * `x-forwarded-for` hop is the fallback (same rule as `server.mjs`).
+ */
+export const clientIp = (event) => {
+  const h = event.headers || {};
+  const direct = h['x-nf-client-connection-ip'];
+  if (direct) return String(direct).trim();
+  const forwarded = h['x-forwarded-for'];
+  return forwarded ? String(forwarded).split(',')[0].trim() : '';
+};
+
+const apiPath = (event) => (event.path || '/').replace(/^\/.netlify\/functions\/api/, '').replace(/^\/api/, '') || '/';
 
 export async function handler(event) {
   const cors = corsHeaders(corsAllowOrigin({
@@ -45,6 +85,11 @@ export async function handler(event) {
     host: event.headers?.['x-forwarded-host'] || event.headers?.host,
     allowlist: process.env.CORS_ORIGINS,
   }));
+  const reply = (statusCode, body, extra = {}) => ({
+    statusCode,
+    headers: { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS, ...cors, ...extra },
+    body: JSON.stringify(body),
+  });
   try {
     // CORS preflight
     if (event.httpMethod === 'OPTIONS') {
@@ -53,6 +98,21 @@ export async function handler(event) {
         headers: { ...cors, 'cache-control': 'no-store' },
         body: '',
       };
+    }
+
+    const path = apiPath(event);
+    // Size is checked before anything touches storage: an oversized request
+    // is refused the same way whether or not the backend is up.
+    let body;
+    if (event.body) {
+      const limit = UPLOAD_PATHS.includes(path) ? MAX_UPLOAD_BODY_BYTES : MAX_BODY_BYTES;
+      const size = event.isBase64Encoded ? Buffer.byteLength(event.body, 'base64') : Buffer.byteLength(event.body, 'utf8');
+      if (size > limit) return reply(413, { error: 'Payload too large' });
+      try {
+        body = JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body);
+      } catch {
+        return reply(400, { error: 'Invalid JSON body' });
+      }
     }
 
     let started;
@@ -65,57 +125,18 @@ export async function handler(event) {
     }
     const { kind, app } = started;
     if (kind === 'json-file') return storageMisconfigured();
-    let body;
-    if (event.body) {
-      if (event.body.length > MAX_BODY) {
-        return {
-          statusCode: 413,
-          headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-          body: JSON.stringify({ error: 'Payload too large' }),
-        };
-      }
-      try {
-        body = JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body);
-      } catch {
-        return {
-          statusCode: 400,
-          headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-          body: JSON.stringify({ error: 'Invalid JSON body' }),
-        };
-      }
-    }
-    const path = (event.path || '/').replace(/^\/.netlify\/functions\/api/, '').replace(/^\/api/, '') || '/';
     const result = await app({
       method: event.httpMethod,
       path,
       query: event.queryStringParameters || {},
       headers: event.headers || {},
       body,
+      ip: clientIp(event),
     });
-    return {
-      statusCode: result.status,
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
-        'x-frame-options': 'SAMEORIGIN',
-        'referrer-policy': 'strict-origin-when-cross-origin',
-        'permissions-policy': 'camera=(), microphone=(self), geolocation=()',
-        ...cors,
-      },
-      body: JSON.stringify(result.body),
-    };
+    return reply(result.status, result.body, result.headers || {});
   } catch (err) {
     console.error('[api] fatal:', err);
-    return {
-      statusCode: 500,
-      headers: {
-        'content-type': 'application/json',
-        'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
-      },
-      body: JSON.stringify({ error: 'Internal error. Please try again.' }),
-    };
+    return reply(500, { error: 'Internal error. Please try again.' });
   }
 }
 

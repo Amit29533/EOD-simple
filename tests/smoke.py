@@ -58,10 +58,16 @@ check('NO assessor identity in quiz payload', 'riya' not in blob)
 
 check('exam issues one live question', len(quiz.get('questions') or []) == 1 and quiz.get('current_question'))
 check('exam.total is the full snapshot', quiz['exam']['total'] >= 1)
-db = json.load(open(os.environ.get('DATA_FILE', 'data/ecod.json')))
+DATA_FILE = os.environ.get('DATA_FILE', 'data/ecod.json')
+db = json.load(open(DATA_FILE))
 qbank = {q['id']: q for q in db['tables']['questions'].values()}
 asmt = db['tables']['assessments'][aid]
-qs = asmt['snapshot_json']['questions']
+snap = asmt['snapshot_json']
+if isinstance(snap, dict) and snap.get('$detached'):
+    # the file store keeps the paper in its own file (src/storage/row-tables.mjs)
+    with open(os.path.join(DATA_FILE[:-5] + '.rows', 'columns', 'assessments', aid, 'snapshot_json.json')) as f:
+        snap = json.load(f)['value']
+qs = snap['questions']
 quiz_role = asmt.get('role_id') or (qbank[qs[0]['id']]['role_id'] if qs else None)
 bank_total = len([q for q in qbank.values() if q.get('active', True) and q['role_id'] == quiz_role])
 check('exam.total matches the seeded snapshot', quiz['exam']['total'] == len(qs))
@@ -80,9 +86,28 @@ for q in qs:
         elif q['type'] == 'scale': answers[q['id']] = 1  # weak self-rating
         else: answers[q['id']] = 'Restart the cluster and retry the job.'
 
-st, inc = call('POST', f'/candidate/assessments/{aid}/submit', rt, {'answers': dict(list(answers.items())[:5])})
-check('incomplete submit returns 422 with missing list', st == 422 and len(inc['missing_question_ids']) == len(qs) - 5)
-st, sub = call('POST', f'/candidate/assessments/{aid}/submit', rt, {'answers': answers})
+# The exam is answered one question at a time, inside each question's window:
+# an answer sheet in the submit body is never graded, so a paper that has not
+# been walked is incomplete however many answers the body carries.
+st, inc = call('POST', f'/candidate/assessments/{aid}/submit', rt, {'answers': answers})
+check('incomplete submit returns 422 with missing list', st == 422 and len(inc['missing_question_ids']) == len(qs))
+# Walk the paper the way the exam hall does: /phase for an open question's
+# review window, then lock each answer with /next.
+for _ in range(len(qs) * 3 + 5):
+    st, cur = call('GET', f'/candidate/assessments/{aid}', rt)
+    q = cur['current_question']
+    if not q or cur['exam'].get('complete'):
+        break
+    if q['type'] == 'text' and cur['exam'].get('phase') == 'review':
+        call('POST', f'/candidate/assessments/{aid}/phase', rt, {'phase': 'answer'})
+    a = answers[q['id']]
+    if q['type'] == 'text':
+        a = {'text': a, 'transcript': a, 'source': 'audio'}
+    st, nxt = call('POST', f'/candidate/assessments/{aid}/next', rt, {'question_id': q['id'], 'answer': a})
+    if st != 200:
+        print('   !! lock failed', st, nxt)
+        break
+st, sub = call('POST', f'/candidate/assessments/{aid}/submit', rt, {'answers': {}})
 check('submit ok', st == 200)
 st, _ = call('POST', f'/candidate/assessments/{aid}/submit', rt, {'answers': answers})
 check('resubmit blocked', st == 409)

@@ -1,10 +1,21 @@
 # ECOD Architecture Decisions
 
 ## 1. Transport-agnostic business logic
-Handlers are plain async functions over a context `{store, auth, params, query, body}`
-returning `{status, body}`. The **same** `createApp(store)` is wrapped by:
-- `server.mjs` (local dev: static files + `/api/*`), and
+Handlers are plain async functions over a context `{store, auth, params, query, body, headers, ip}`
+returning `{status, body}` (`ip` is the client address the transport resolved — the login
+throttle keys on it — so the handlers never read a socket or an `x-forwarded-for` header). The **same** `createApp(store)` is wrapped by:
+- `server.mjs` (local dev and self-hosting: static files + `/api/*`), and
 - `netlify/functions/api.mjs` (serverless on Netlify).
+
+Request budgets belong to the transport, not the handlers. `server.mjs` uses
+`src/api/rate-limit.mjs`, which budgets **per client** (a bearer token's own budget for
+authenticated API calls, a per-address budget for anonymous ones, high per-address ceilings
+for everything) because an exam room is many candidates behind one NAT address — a
+per-address budget was full at a dozen seats. A token earns its own budget only once the app
+has accepted it (`createApp` marks each result with a non-enumerable `authenticated` flag for
+this purpose); the public routes are always anonymous traffic. The Netlify transport relies on
+the platform. Password verification itself is gated process-wide in the login handler
+(`src/core/gate.mjs`), because scrypt shares the libuv threadpool with every static-file read.
 
 Consequence: the platform logic is not welded to Netlify — it can later be re-hosted on
 Express/Fastify/Cloudflare/Hono or folded into a custom application with zero rewrites.
@@ -12,9 +23,10 @@ Express/Fastify/Cloudflare/Hono or folded into a custom application with zero re
 ## 2. Storage adapter layer (Airtable now, database later)
 Every persistence call goes through five methods: `list/get/insert/update/remove`
 against named tables with *equality filters only*. Adapters may additionally expose
-`insertMany`/`updateMany` (one write per batch instead of one per row); handlers reach
-them through the `bulkInsert`/`bulkUpdate` helpers, which fall back to a loop when an
-adapter does not implement them — so batching is an optimization, never a requirement.
+`insertMany`/`updateMany`/`removeMany` (one write per batch instead of one per row); handlers
+reach them through the `bulkInsert`/`bulkUpdate`/`bulkRemove` helpers, which fall back to a loop
+when an adapter does not implement them — so batching is an optimization, never a requirement.
+All three shipped adapters implement all three (Airtable in chunks of ten, its per-request cap).
 
 Batching is not optional on the exam's write paths, though: every adapter rewrites a *whole*
 table per single-row write (the file store re-serialises the entire database, the blob store
@@ -40,6 +52,46 @@ as the contract test any new adapter should pass (its mock server is ~80 lines).
 Structured fields (question options, snapshots, reports, answers) are declared in
 `src/storage/schema.mjs`; the Airtable adapter transparently serializes them as JSON in
 long-text columns, while file/blobs adapters keep them native.
+
+**What lives outside the table objects.** The file and blobs adapters keep each table as one
+id-keyed object and rewrite it whole on every write — fine for rows of a few kilobytes,
+ruinous for anything that grows with every candidate. `src/storage/row-tables.mjs` declares
+three layouts the two adapters share (the same key strings: a file `<store>.rows/<key>.json`,
+a blob `<key>`; Airtable already stores records individually and needs none of this):
+
+- **Row tables** (`recordings`, sharded by `assessment_id`, keyed by `question_id`): **one row
+  per object** at `rows/<table>/<shard>/<id>`, ids minted as `<shard>/<key>` so a
+  `get`/`update`/`remove` needs no index and the per-question lookup the lock and the assessor
+  make is a single object read. A two-minute clip is ~320,000 base64 characters and a
+  whole-bank paper holds 33 of them, ~10 MB per finished candidate; none of it is ever moved
+  by another request. The stored open answer keeps only `audio_ref` (+ `audio_mime`); the
+  assessor detail projects that as `has_recording` and the scoring screen fetches clips one
+  question at a time from `GET /assessor/assessments/:id/recordings/:question_id`.
+- **Shard tables** (`responses`): **one object per assessment** at `shards/<table>/<shard>`
+  holding that paper's rows, same id scheme. Every read of `responses` filters by
+  `assessment_id`, and an exam step must not carry — or collide with — every other candidate's
+  answers. Rows a previous version left in the whole-table object are folded into their shard
+  whenever it is read and removed from the old object.
+- **Detached columns** (`assessments.snapshot_json`, `report_json`): the frozen paper (~90 KB)
+  and the report (~40 KB) are write-once, so they live at `columns/<table>/<id>/<column>` and
+  the row keeps a marker; `get` and `list` put them back (cached per instance), `list(t, filter,
+  { detached: false })` returns the small columns only for listings, which read the paper facts
+  allocation stores on the row instead (`question_count`, `total_points`, `question_limit`,
+  `bank_total`, `role_name` — `paperSummary`/`paperFacts` in `assessment-service.mjs`).
+
+Both halves of an id are validated (they become path segments); an unsafe filter value
+matches nothing. With this, an exam step at 300 allocated papers moves ~150 KB instead of
+26 MB, and the database file of the JSON store grows by rows only.
+
+**Compare-and-swap on Netlify Blobs.** A deploy runs many function instances behind one
+store and the adapter's lock is per process, so two instances mutating one object used to lose
+one of the writes (two candidates locking answers at once, two cursor advances, two logins).
+Every whole-object write — table blobs and shard objects alike — now reads the blob's ETag
+(`getWithMetadata`, strong) and writes with `onlyIfMatch` (or `onlyIfNew` for a blob that does
+not exist yet; `@netlify/blobs ≥ 10.7.12`); a refused write re-reads and re-applies the
+mutation (ids and timestamps fixed before the first attempt), with jittered pauses up to ten
+attempts, then `STORE_CONFLICT` → a retryable **503**. A backend without ETags (the SDK's local
+`BlobsServer` under `netlify dev`, older SDKs) degrades to the unconditional write.
 
 ## 2b. Assessment length is an allocation-time decision
 An admin may cap an assessment at **1–50 questions** instead of serving the whole bank.
@@ -288,7 +340,22 @@ assessments.
   the overall band down for questions nobody was asked.
 
 ## 7. Intentional v1 limits (honest list)
-- JSON/blobs persistence is single-writer; fine at MVP scale, size up via Airtable/Postgres.
+- JSON/blobs persistence has no cross-process lock; fine at MVP scale, size up via
+  Airtable/Postgres. Both adapters guard the common cases rather than assume a single writer:
+  the file store stamps every write with a revision (`{"rev", "tables"}`) and re-reads a file
+  another process changed before serving or mutating — `npm run seed` against a running server
+  composes with it instead of being overwritten by the server's next write — and refuses to
+  persist over a file it cannot re-read; the blob store starts every mutation from a strongly
+  consistent read so one function instance does not resurrect what another removed. Two
+  processes writing the *same* table at the *same* instant can still race (last writer wins
+  for that one write).
+- Airtable caps a text cell at 100,000 characters. The adapter splits the three columns that
+  can outgrow it (`snapshot_json`, `report_json`/`quiz_state`, `answer`) across a fixed set of
+  continuation columns (`schema.mjs` `overflow`: up to 4 cells for a paper, 5 for an answer —
+  a full-length recording is ~400k characters) and refuses anything larger with a
+  `VALUE_TOO_LARGE` error that the API surfaces as `413` naming the field. Airtable also drops
+  unchecked checkboxes from records; the adapter restores `false` for the boolean columns
+  listed in `schema.mjs` `flags`, since the app reads `active === false` as "deactivated".
 - No email notifications yet (assessor/candidate see state in-portal).
 - Enrichment & Validation are roadmap modules — roles/constants prepared, no data access yet.
 - Reports are immutable once finalized (correction path = new assessment) by design.

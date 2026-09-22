@@ -50,6 +50,7 @@ function countingStore(inner) {
       update: wrap('update', 'update'),
       updateMany: wrap('updateMany', 'updateMany'),
       remove: wrap('remove', 'remove'),
+      removeMany: wrap('removeMany', 'removeMany'),
     },
   };
 }
@@ -251,7 +252,7 @@ test('a whole-store rewrite is not paid for a legacy row whose keys were reorder
   await w.store.update('responses', row.id, {
     answer: {
       source: row.answer.source, audio_mime: row.answer.audio_mime,
-      audio_b64: row.answer.audio_b64, transcript: row.answer.transcript, text: row.answer.text,
+      audio_ref: row.answer.audio_ref, transcript: row.answer.transcript, text: row.answer.text,
     },
   });
 
@@ -270,16 +271,30 @@ test('answers autosaved (not locked) submit as one batch with their auto-scores'
   const w = await makeWorld();
   const allocId = await w.allocate();
   const paper = await w.paper(allocId);
-  // Advance through the paper with no answers at all (a candidate clicking
-  // through), then submit the answers that were autosaved by the notes route.
-  await w.walk(allocId);
-
-  const answers = {};
-  Object.assign(answers, w.answerMap(paper));
-  const saved = await w.call('PUT', `/candidate/assessments/${allocId}/answers`, {
-    token: w.tokens.candidate, body: { answers },
-  });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  // Autosave each answer while its question is on screen (the exam hall's
+  // draft path), then advance with an empty lock: the in-time draft is what
+  // gets locked. The final submit then only has the auto-scores to write.
+  const answers = w.answerMap(paper);
+  let d = await w.exam(allocId);
+  for (let i = 0; i < paper.length * 3 + 5 && !d.exam.complete; i += 1) {
+    const q = d.current_question;
+    if (d.exam.phase === 'review') {
+      await w.call('POST', `/candidate/assessments/${allocId}/phase`, { token: w.tokens.candidate, body: { phase: 'answer' } });
+      d = await w.exam(allocId);
+      continue;
+    }
+    const saved = await w.call('PUT', `/candidate/assessments/${allocId}/answers`, {
+      token: w.tokens.candidate, body: { answers: { [q.id]: answers[q.id] } },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.accepted_question_ids, [q.id], 'the live question\'s draft is taken');
+    const res = await w.call('POST', `/candidate/assessments/${allocId}/next`, {
+      token: w.tokens.candidate, body: { answer: null, question_id: q.id },
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    if (res.body.complete) break;
+    d = await w.exam(allocId);
+  }
 
   const { out, writes } = await w.during(() => w.call('POST', `/candidate/assessments/${allocId}/submit`, {
     token: w.tokens.candidate, body: { answers: {} },
@@ -295,7 +310,9 @@ test('answers autosaved (not locked) submit as one batch with their auto-scores'
   for (const q of paper) {
     const r = rows.find((x) => x.question_id === q.id);
     assert.ok(r, `a row must exist for ${q.prompt}`);
+    assert.ok(r.locked, 'the drafted answer was locked by the advance');
     if (q.type !== 'text') assert.ok(r.auto_score > 0, `auto-score computed at submit for ${q.type}`);
+    else assert.equal(r.answer.transcript, 'A considered spoken answer.', 'the drafted spoken answer is the one locked');
   }
 });
 
@@ -304,7 +321,12 @@ test('a paper with no answers at all submits its blanks in one batch', async () 
   const allocId = await w.allocate();
   const paper = await w.paper(allocId);
   await w.walk(allocId);
-  assert.equal((await w.rows(allocId)).length, 0, 'nothing is stored for an unanswered run');
+  // Every question the candidate clicked past is locked as a blank the moment
+  // it is left behind (so it can never be answered afterwards) — the submit
+  // has only the zero auto-scores to write.
+  const walked = await w.rows(allocId);
+  assert.equal(walked.length, paper.length, 'a skipped question is locked as a blank at once');
+  assert.ok(walked.every((r) => r.locked), 'and cannot be answered later');
 
   const { out, writes } = await w.during(() => w.call('POST', `/candidate/assessments/${allocId}/submit`, {
     token: w.tokens.candidate, body: { answers: {} },
@@ -312,16 +334,16 @@ test('a paper with no answers at all submits its blanks in one batch', async () 
   assert.equal(out.status, 200, JSON.stringify(out.body));
   assertBatched(forTable(writes, 'responses'), 'blank-paper submit');
   const responseWrites = forTable(writes, 'responses');
-  assert.equal(responseWrites.length, 1, 'every blank lands in a single batch');
-  assert.equal(responseWrites[0].op, 'insertMany');
-  assert.equal(responseWrites[0].rows, paper.length);
+  assert.equal(responseWrites.length, 1, 'the zero auto-scores land in a single batch');
+  assert.equal(responseWrites[0].op, 'updateMany');
+  assert.equal(responseWrites[0].rows, paper.filter((q) => q.type !== 'text').length);
 
   const rows = await w.rows(allocId);
   assert.equal(rows.length, paper.length, 'a blank row is stored for every question');
   for (const q of paper) {
     const r = rows.find((x) => x.question_id === q.id);
     if (q.type === 'text') {
-      assert.equal(r.answer.source, 'timed_out', 'a blank open answer is marked timed_out');
+      assert.equal(r.answer.source, 'skipped', 'a blank open answer the candidate clicked past is marked skipped');
       assert.equal(r.answer.text, '');
       assert.equal(r.audit_missing ?? null, null);
     } else if (q.type === 'mcq_multi') {
@@ -330,6 +352,32 @@ test('a paper with no answers at all submits its blanks in one batch', async () 
       assert.equal(r.answer, '');
     }
     if (q.type !== 'text') assert.equal(r.auto_score, 0, 'an unanswered auto question scores zero');
+  }
+});
+
+test('a paper whose cursor was pushed past the end still submits its missing blanks in one batch', async () => {
+  // The legacy path: rows for questions the walk never touched (a healed or
+  // tampered cursor) are written at submit, as timed-out blanks, in one batch.
+  const w = await makeWorld();
+  const allocId = await w.allocate();
+  const paper = await w.paper(allocId);
+  await w.exam(allocId);
+  const a = await w.store.get('assessments', allocId);
+  await w.store.update('assessments', allocId, { quiz_state: { ...a.quiz_state, index: paper.length } });
+
+  const { out, writes } = await w.during(() => w.call('POST', `/candidate/assessments/${allocId}/submit`, {
+    token: w.tokens.candidate, body: { answers: {} },
+  }));
+  assert.equal(out.status, 200, JSON.stringify(out.body));
+  assertBatched(forTable(writes, 'responses'), 'pushed-cursor submit');
+  const responseWrites = forTable(writes, 'responses');
+  assert.equal(responseWrites.length, 1, 'every blank lands in a single batch');
+  assert.equal(responseWrites[0].op, 'insertMany');
+  assert.equal(responseWrites[0].rows, paper.length);
+  const rows = await w.rows(allocId);
+  assert.equal(rows.length, paper.length);
+  for (const q of paper.filter((x) => x.type === 'text')) {
+    assert.equal(rows.find((r) => r.question_id === q.id).answer.source, 'timed_out');
   }
 });
 
@@ -395,4 +443,37 @@ test('scoring and finalization batch too (the assessor path on the same paper)',
   const a = await w.store.get('assessments', allocId);
   assert.equal(a.status, 'scored');
   assert.ok(a.report_json, 'the report is stored');
+});
+
+test('the delete cascades batch too: one removeMany per table, never a remove per row', async () => {
+  // Deleting an assessment, a candidate, a competency or a role used to delete
+  // its dependants one row at a time — a whole-store rewrite per response row
+  // on the file/blob adapters, and n requests on Airtable.
+  const w = await makeWorld();
+  const allocId = await w.allocate();
+  const paper = await w.paper(allocId);
+  await w.walk(allocId, { answers: w.answerMap(paper) });
+  assert.equal((await w.rows(allocId)).length, paper.length);
+
+  const del = await w.during(() => w.call('DELETE', `/admin/assessments/${allocId}`, { token: w.tokens.admin }));
+  assert.equal(del.out.status, 200, JSON.stringify(del.out.body));
+  const perRow = del.writes.filter((x) => x.op === 'remove' && x.table === 'responses');
+  assert.deepEqual(perRow, [], 'no per-row response deletes');
+  const batched = del.writes.filter((x) => x.op === 'removeMany' && x.table === 'responses');
+  assert.equal(batched.length, 1, 'one batch for the whole paper');
+  assert.equal(batched[0].rows, paper.length);
+  assert.equal((await w.rows(allocId)).length, 0);
+
+  // The candidate cascade (users + sessions + assessments + responses).
+  const again = await w.allocate();
+  await w.walk(again, { answers: w.answerMap(await w.paper(again)) });
+  const cdel = await w.during(() => w.call('DELETE', `/admin/candidates/${w.candidate.id}`, {
+    token: w.tokens.admin, body: { password: 'admin-pass-x' },
+  }));
+  assert.equal(cdel.out.status, 200, JSON.stringify(cdel.out.body));
+  assert.deepEqual(cdel.writes.filter((x) => x.op === 'remove' && ['responses', 'sessions', 'users'].includes(x.table)), [],
+    'dependants of a candidate are removed in batches');
+  assert.equal(cdel.writes.filter((x) => x.op === 'removeMany' && x.table === 'responses').length, 1);
+  assert.equal((await w.store.list('responses', { assessment_id: again })).length, 0);
+  assert.equal((await w.store.list('users', { candidate_id: w.candidate.id })).length, 0);
 });

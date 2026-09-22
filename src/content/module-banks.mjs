@@ -55,7 +55,9 @@ export const MODULE_BANKS = {
 /** The published module bank for a role key, or null. */
 export function moduleBankFor(roleKey) {
   if (roleKey === undefined || roleKey === null || roleKey === '') return MODULE_BANKS[DEFAULT_MODULE_BANK_ROLE_KEY];
-  return MODULE_BANKS[roleKey] || null;
+  // Own keys only — `MODULE_BANKS["constructor"]` is a function, not a bank,
+  // and every bank route that trusted the truthy lookup 500'd on it.
+  return typeof roleKey === 'string' && Object.hasOwn(MODULE_BANKS, roleKey) ? MODULE_BANKS[roleKey] : null;
 }
 
 /** Every published module bank, in registry order, for UI selectors. */

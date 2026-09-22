@@ -13,6 +13,7 @@ const apiUrl = process.env.AIRTABLE_API_URL || 'https://api.airtable.com/v0';
 // Importable (tests pin SCHEMA coverage) without provisioning: the run below
 // only fires when the file is executed directly.
 import { pathToFileURL } from 'node:url';
+import { overflowColumns } from '../src/storage/schema.mjs';
 const isMain = (() => {
   try {
     return Boolean(process.argv[1]) && pathToFileURL(process.argv[1]).href === import.meta.url;
@@ -60,13 +61,24 @@ export const SCHEMA = {
                 .concat([{ name: 'active', ...chk }]),
   frameworks:   ['role_id', 'name', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'config', ...long }, { name: 'active', ...chk }]),
-  assessments:  ['candidate_id', 'role_id', 'assessor_id', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label'].map((f) => ({ name: f, ...txt }))
+  // The `*__2`, `*__3`… long-text columns are continuation cells: Airtable caps
+  // a cell at 100,000 characters, and a whole-bank paper or a recorded answer
+  // runs past that. The adapter splits/rejoins them (src/storage/schema.mjs
+  // `overflow` declares how many each column has).
+  assessments:  ['candidate_id', 'role_id', 'assessor_id', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label', 'role_name'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'quiz_state', ...long },
-                         { name: 'overall_pct', ...num }, { name: 'question_count', ...num }]),
+                         { name: 'overall_pct', ...num }, { name: 'question_count', ...num },
+                         // listing facts kept beside the paper (src/api/assessment-service.mjs paperSummary)
+                         { name: 'total_points', ...num }, { name: 'question_limit', ...num }, { name: 'bank_total', ...num }])
+                .concat(overflowColumns('assessments').map((f) => ({ name: f, ...long }))),
   responses:    ['assessment_id', 'question_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'answer', ...long }, { name: 'assessor_comment', ...long },
                          { name: 'auto_score', ...num }, { name: 'assessor_score', ...num }, { name: 'final_score', ...num },
-                         { name: 'locked', ...chk }]),
+                         { name: 'locked', ...chk }])
+                .concat(overflowColumns('responses').map((f) => ({ name: f, ...long }))),
+  recordings:   ['assessment_id', 'question_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+                .concat([{ name: 'audio', ...long }])
+                .concat(overflowColumns('recordings').map((f) => ({ name: f, ...long }))),
   audit_log:    ['actor_id', 'actor_name', 'action', 'entity', 'entity_id', 'created_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'message', ...long }, { name: 'meta', ...long }]),
 };
@@ -104,8 +116,11 @@ async function main() {
     // app to write to it.
     console.log('\n[airtable] existing tables were left untouched. If this base was created by an older');
     console.log('[airtable] run, add any missing columns manually: questions.question_set,');
-    console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count,');
-    console.log('[airtable] responses.locked, and the bank_questions / bank_question_overrides tables.');
+    console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
+    console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
+    console.log('[airtable] responses.locked, the bank_questions / bank_question_overrides tables, the recordings');
+    console.log(`[airtable] table (recorded answers), and the long-text continuation columns ${[...overflowColumns('assessments'), ...overflowColumns('responses'), ...overflowColumns('recordings')].join(', ')}`);
+    console.log('[airtable] (without them, papers and recorded answers over 100,000 characters cannot be saved).');
   }
   console.log('\n[airtable] schema ready. Next: STORAGE=airtable node scripts/seed.mjs');
 }

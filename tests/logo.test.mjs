@@ -6,8 +6,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const PUBLIC = path.join(import.meta.dirname, '..', 'public');
+const PUBLIC = fileURLToPath(new URL('../public', import.meta.url));
 const read = (p) => fs.readFileSync(path.join(PUBLIC, p), 'utf8');
 
 const { logoSvg, LOGO_INNER, LOGO_VIEWBOX } = await import('../public/js/logo.js');

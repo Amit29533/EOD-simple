@@ -10,3 +10,5 @@ data/
 # Python test/build helpers
 __pycache__/
 *.pyc
+# Ad-hoc audit probes (in-process fuzz/race scripts); not part of the suite
+.probe/
