@@ -84,6 +84,37 @@ test('two instances updating different rows of one table at the same moment: bot
   assert.equal((await inst2.get('assessments', 'A')).quiz_state.index, 1);
 });
 
+test('two instances conditionally advancing one assessment only start the next clock once', async () => {
+  const be = blobBackend({ latency: 4 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  await first.insert('assessments', { id: 'asm', status: 'in_progress', quiz_state: { index: 0, question_started_at: 'first' } });
+  const blob = be.module.getStore();
+  const read = blob.getWithMetadata.bind(blob);
+  let arrived = 0;
+  let release;
+  const both = new Promise((resolve) => { release = resolve; });
+  blob.getWithMetadata = async (name, opts) => {
+    const value = await read(name, opts);
+    if (name === 'assessments' && ++arrived <= 2) {
+      if (arrived === 2) release();
+      await both;
+    }
+    return value;
+  };
+  const transition = (name) => (row) => row?.quiz_state?.index === 0
+    ? { quiz_state: { index: 1, question_started_at: name } } : undefined;
+  const attempts = await Promise.all([
+    first.changeRow('assessments', { id: 'asm' }, transition('first lock')),
+    second.changeRow('assessments', { id: 'asm' }, transition('second lock')),
+  ]);
+  assert.deepEqual(attempts.map((a) => a.changed).sort(), [false, true]);
+  const state = (await first.get('assessments', 'asm')).quiz_state;
+  assert.equal(state.index, 1);
+  assert.equal(state.question_started_at, attempts.find((a) => a.changed).row.quiz_state.question_started_at);
+  assert.ok(be.stats.conflicts >= 1, 'the losing request re-evaluated its guard after the ETag conflict');
+});
+
 test('two instances inserting into one table at the same moment: both rows survive, ids unique, a retried insert is not duplicated', async () => {
   const be = blobBackend({ latency: 10, jitter: 10 });
   const instances = await Promise.all([1, 2, 3].map(() => createBlobsStore({ blobsModule: be.module })));
@@ -247,4 +278,176 @@ test('two candidates on two function instances lock answers at the same moment: 
   assert.equal(after1.body.exam.index, 1);
   assert.equal(after2.body.exam.index, 1);
   assert.notEqual(after1.body.current_question.id, open1.body.current_question.id, 'candidate one is not re-served the question they just left');
+});
+
+test('Lock & continue handles a draft inserted after its response read on another function instance', async () => {
+  const be = blobBackend({ latency: 3 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  const { role, assessor, cands } = await seedWorld(first);
+  const app1 = await createApp(first);
+  const app2 = await createApp(second);
+  const call = (app, method, path, token, body) => app({ method, path, body, headers: { authorization: `Bearer ${token}` } });
+  const admin = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'admin', password: 'admin-pass-x' } })).body.token;
+  const alloc = await call(app1, 'POST', '/admin/assessments', admin,
+    { candidate_id: cands[0].id, role_id: role.id, assessor_id: assessor.id });
+  assert.equal(alloc.status, 201);
+  const id = alloc.body.id;
+  const token = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'one', password: 'one-pass-x' } })).body.token;
+  const open = await call(app1, 'GET', `/candidate/assessments/${id}`, token);
+  assert.equal(open.status, 200);
+  const qid = open.body.current_question.id;
+
+  // Simulate /next having read a response snapshot before the autosave on
+  // another function instance inserted the deterministic <paper>/<question>
+  // id. The real per-process mutex cannot cover both Netlify instances. An
+  // insert based on that snapshot would throw DUPLICATE_ID (409) mid-exam.
+  const draft = await call(app1, 'PUT', `/candidate/assessments/${id}/answers`, token, { answers: { [qid]: 'a' } });
+  assert.equal(draft.status, 200, JSON.stringify(draft.body));
+  const list = second.list.bind(second);
+  let snapshotDelivered = false;
+  second.list = (table, filter, opts) => {
+    if (table === 'responses' && filter?.assessment_id === id && !snapshotDelivered) {
+      snapshotDelivered = true;
+      return Promise.resolve([]);
+    }
+    return list(table, filter, opts);
+  };
+  const next = await call(app2, 'POST', `/candidate/assessments/${id}/next`, token, { question_id: qid, answer: 'b' });
+  assert.equal(snapshotDelivered, true, 'the advance planned its write from the pre-draft snapshot');
+  assert.equal(next.status, 200, JSON.stringify(next.body));
+  assert.equal(next.body.index, 1);
+  const rows = await first.list('responses', { assessment_id: id });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].locked, true);
+  assert.equal(rows[0].answer, 'b', 'the lock, not the racing draft, determines the final answer');
+  assert.equal((await first.get('assessments', id)).quiz_state.index, 1);
+
+  // If the lock itself carries no answer, the draft saved in time must win,
+  // even when it appeared after this instance's response snapshot.
+  const q2 = (await call(app1, 'GET', `/candidate/assessments/${id}`, token)).body.current_question.id;
+  await call(app1, 'PUT', `/candidate/assessments/${id}/answers`, token, { answers: { [q2]: 'b' } });
+  snapshotDelivered = false;
+  const blankLock = await call(app2, 'POST', `/candidate/assessments/${id}/next`, token, { question_id: q2, answer: null });
+  assert.equal(blankLock.status, 200, JSON.stringify(blankLock.body));
+  assert.equal(blankLock.body.index, 2);
+  const savedDraft = await first.get('responses', `${id}/${q2}`);
+  assert.equal(savedDraft.answer, 'b', 'the newest draft is locked instead of a blank');
+  assert.equal(savedDraft.locked, true);
+});
+
+test('a duplicate Lock & continue cannot restart the next question’s clock or erase integrity events', async () => {
+  const be = blobBackend({ latency: 2 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  const { role, assessor, cands } = await seedWorld(first);
+  const app1 = await createApp(first);
+  const app2 = await createApp(second);
+  const call = (app, method, path, token, body) => app({ method, path, body, headers: { authorization: `Bearer ${token}` } });
+  const admin = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'admin', password: 'admin-pass-x' } })).body.token;
+  const alloc = await call(app1, 'POST', '/admin/assessments', admin,
+    { candidate_id: cands[0].id, role_id: role.id, assessor_id: assessor.id });
+  const id = alloc.body.id;
+  const token = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'one', password: 'one-pass-x' } })).body.token;
+  const open = await call(app1, 'GET', `/candidate/assessments/${id}`, token);
+  const qid = open.body.current_question.id;
+  const before = await second.get('assessments', id);
+  await call(app1, 'POST', `/candidate/assessments/${id}/integrity`, token, { event: 'copy', detail: 'blocked' });
+  const firstLock = await call(app1, 'POST', `/candidate/assessments/${id}/next`, token, { question_id: qid, answer: 'b' });
+  assert.equal(firstLock.status, 200);
+  const advanced = (await first.get('assessments', id)).quiz_state;
+  assert.equal(advanced.integrity.copy, 1);
+
+  // The other function started while this question was live. The response is
+  // already locked and the cursor is already advanced by the time it finishes.
+  const get = second.get.bind(second);
+  second.get = (table, recordId) => table === 'assessments' && recordId === id
+    ? Promise.resolve(before) : get(table, recordId);
+  const duplicate = await call(app2, 'POST', `/candidate/assessments/${id}/next`, token,
+    { question_id: qid, answer: 'a' });
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(duplicate.body.index, 1);
+  assert.equal((await first.get('responses', `${id}/${qid}`)).answer, 'b');
+  const after = (await first.get('assessments', id)).quiz_state;
+  assert.equal(after.question_started_at, advanced.question_started_at, 'the new question keeps its original deadline');
+  assert.equal(after.integrity.copy, 1);
+  assert.equal(after.events.filter((e) => e.event === 'copy').length, 1);
+});
+
+test('two instances CAS a draft and a lock for the same question: one locked row, no 409 or late overwrite', async () => {
+  const be = blobBackend({ latency: 3 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  const key = { assessment_id: 'asm', question_id: 'q1' };
+  // Both changeRow calls see the shard before either writes. The losing CAS
+  // must rerun its decision using the winner's row, not retry an insert of
+  // the same natural id or apply a stale draft over a locked answer.
+  const blob = be.module.getStore();
+  const read = blob.getWithMetadata.bind(blob);
+  let arrived = 0;
+  let release;
+  const both = new Promise((resolve) => { release = resolve; });
+  blob.getWithMetadata = async (name, opts) => {
+    const value = await read(name, opts);
+    if (name === 'shards/responses/asm' && ++arrived <= 2) {
+      if (arrived === 2) release();
+      await both;
+    }
+    return value;
+  };
+  const draft = (row) => row?.locked ? undefined : { answer: 'draft' };
+  const lock = (row) => row?.locked ? undefined : { answer: 'final', locked: true };
+  await Promise.all([
+    first.changeRow('responses', key, draft),
+    second.changeRow('responses', key, lock),
+  ]);
+  const rows = await first.list('responses', { assessment_id: 'asm' });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 'asm/q1');
+  assert.equal(rows[0].answer, 'final');
+  assert.equal(rows[0].locked, true);
+  assert.ok(be.stats.conflicts >= 1, 'a refused ETag write was retried against the winning row');
+  const late = await first.changeRow('responses', key, draft);
+  assert.equal(late.changed, false, 'a delayed autosave cannot change a locked answer');
+  assert.equal((await second.get('responses', 'asm/q1')).answer, 'final');
+});
+
+test('an autosave delayed until after the lock cannot change that answer, even with a stale exam snapshot', async () => {
+  const be = blobBackend({ latency: 2 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  const { role, assessor, cands } = await seedWorld(first);
+  const app1 = await createApp(first);
+  const app2 = await createApp(second);
+  const call = (app, method, path, token, body) => app({ method, path, body, headers: { authorization: `Bearer ${token}` } });
+  const admin = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'admin', password: 'admin-pass-x' } })).body.token;
+  const alloc = await call(app1, 'POST', '/admin/assessments', admin,
+    { candidate_id: cands[0].id, role_id: role.id, assessor_id: assessor.id });
+  const id = alloc.body.id;
+  const token = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'one', password: 'one-pass-x' } })).body.token;
+  const open = await call(app1, 'GET', `/candidate/assessments/${id}`, token);
+  const qid = open.body.current_question.id;
+  await call(app1, 'PUT', `/candidate/assessments/${id}/answers`, token, { answers: { [qid]: 'a' } });
+  const oldAssessment = await second.get('assessments', id);
+  const oldResponse = (await second.list('responses', { assessment_id: id }))[0];
+  const next = await call(app1, 'POST', `/candidate/assessments/${id}/next`, token,
+    { question_id: qid, answer: 'b' });
+  assert.equal(next.status, 200);
+
+  // The old PUT has been in flight on instance two. Before the fix a stale
+  // response list would lead it to UPDATE the row blindly, replacing the
+  // locked 'b' with 'a' while keeping locked=true (and grading the wrong answer).
+  const get = second.get.bind(second);
+  second.get = (table, recordId) => table === 'assessments' && recordId === id
+    ? Promise.resolve(oldAssessment) : get(table, recordId);
+  const list = second.list.bind(second);
+  second.list = (table, filter, opts) => table === 'responses' && filter?.assessment_id === id
+    ? Promise.resolve([oldResponse]) : list(table, filter, opts);
+  const late = await call(app2, 'PUT', `/candidate/assessments/${id}/answers`, token, { answers: { [qid]: 'a' } });
+  assert.equal(late.status, 200);
+  assert.deepEqual(late.body.accepted_question_ids, []);
+  assert.deepEqual(late.body.ignored_question_ids, [qid]);
+  assert.equal((await first.get('responses', `${id}/${qid}`)).answer, 'b');
+  assert.equal((await first.get('assessments', id)).quiz_state.index, 1);
 });

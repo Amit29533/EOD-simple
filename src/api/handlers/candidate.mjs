@@ -152,18 +152,44 @@ async function dropRecordings(store, assessmentId, questionId) {
   if (rows.length) await bulkRemove(store, 'recordings', rows.map((r) => r.id));
 }
 
-/**
- * The stored form of an answer, its recording saved to the recordings table
- * and referenced from the row. An open answer that arrives from the client
- * without a clip drops whatever recording a draft left for the question —
- * the posted answer is the answer, exactly as when the clip rode on the row —
- * unless it asked to keep it (`audio_keep`, see splitAnswer).
- */
-async function persistAnswer(store, assessmentId, q, value, opts = {}) {
-  const { answer, audio, kept } = splitAnswer(q, value, opts);
+/** Submit-time migration for older response rows that still carry inline audio. */
+async function persistAnswer(store, assessmentId, q, value) {
+  const { answer, audio } = splitAnswer(q, value, { trusted: true });
   if (audio) answer.audio_ref = await saveRecording(store, assessmentId, q.id, audio);
-  else if (q.type === 'text' && !opts.trusted && !kept) await dropRecordings(store, assessmentId, q.id);
   return answer;
+}
+
+/**
+ * Change a response using the row currently in storage, not a list snapshot
+ * taken before a concurrent draft/lock on a different function instance. The
+ * JSON and Blobs adapters re-run `decide` under their shard lock / ETag CAS;
+ * Airtable has no conditional-write primitive here, so it uses the same
+ * decision contract with its existing per-process exam lock.
+ * `decide` is pure: undefined = leave alone, null = delete, object = patch.
+ */
+async function changeResponse(store, assessmentId, questionId, decide) {
+  const key = { assessment_id: assessmentId, question_id: questionId };
+  if (typeof store.changeRow === 'function') return store.changeRow('responses', key, decide);
+  const current = (await store.list('responses', key))[0] || null;
+  const patch = decide(current);
+  if (patch === undefined || (patch === null && !current)) return { row: current, changed: false };
+  if (patch === null) {
+    await store.remove('responses', current.id);
+    return { row: null, changed: true };
+  }
+  const row = current
+    ? await store.update('responses', current.id, patch)
+    : await store.insert('responses', { ...key, ...patch });
+  return { row, changed: true };
+}
+
+/** Move the exam cursor only if the question being locked is still current. */
+async function changeAssessment(store, assessmentId, decide) {
+  if (typeof store.changeRow === 'function') return store.changeRow('assessments', { id: assessmentId }, decide);
+  const current = await store.get('assessments', assessmentId);
+  const patch = decide(current);
+  if (!current || patch === undefined) return { row: current, changed: false };
+  return { row: await store.update('assessments', assessmentId, patch), changed: true };
 }
 
 /** Does this open answer ask to keep a recording that `prior` actually holds? */
@@ -307,44 +333,53 @@ export function candidateHandlers(route) {
     const quiz = ensureQuizState(a, questions);
     const live = a.quiz_state ? questions[quiz.index] || null : null;
     const inTime = live ? remainingTimeMs(live, quiz, Date.now()) >= -EXAM_GRACE_MS : false;
-    const existing = await store.list('responses', { assessment_id: a.id });
-    const byQid = responseIndex(existing);
-    // One write for the whole autosave instead of one per answer. The file and
-    // blob adapters rewrite the entire table on every single-row write, so a
-    // per-answer loop over a full paper is hundreds of whole-table rewrites —
-    // and this route is the chatty one (recording stop, note edits).
-    const updates = [];
-    const inserts = [];
-    const removals = [];
     const accepted = [];
     const ignored = [];
+    // A malformed value is a client bug whichever question it names, even if
+    // it is not the live question. Validate the whole request before writing.
     for (const [qid, value] of Object.entries(answers)) {
       const q = qById.get(qid);
       if (!q) continue;
       const clearing = value === null || value === '' || (Array.isArray(value) && !value.length);
-      // A malformed value is a client bug whichever question it names, so it
-      // is still refused; only the *storing* is limited to the live question.
       if (!clearing && !validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
-      const prior = byQid.get(qid);
-      if (!live || q.id !== live.id || !inTime || prior?.locked) {
+    }
+    for (const [qid, value] of Object.entries(answers)) {
+      const q = qById.get(qid);
+      if (!q) continue;
+      if (!live || q.id !== live.id || !inTime) {
         ignored.push(qid);
         continue;
       }
-      accepted.push(qid);
-      // Notes cleared while a recording stays on the server is still an
-      // answer (the recording), not a request to wipe the question.
-      if (clearing || (q.type === 'text' && !openAnswerHasContent(value) && !keepsRecording(q, value, prior))) {
-        if (prior) removals.push(prior.id);
-        if (q.type === 'text') await dropRecordings(store, a.id, q.id);
+      const clearing = value === null || value === '' || (Array.isArray(value) && !value.length);
+      // The clip lives outside the response shard. Its reference is attached
+      // to the answer only if the row is still writable. `audio_keep` resolves
+      // against the row inside the CAS loop, not an earlier list snapshot.
+      const audio = !clearing && q.type === 'text' ? splitAnswer(q, value).audio : null;
+      // A stale exam snapshot may still call this after /next locked the row.
+      // Do not replace its recording before the CAS can reject the draft.
+      if (audio && (await store.list('responses', { assessment_id: a.id, question_id: qid }))[0]?.locked) {
+        ignored.push(qid);
         continue;
       }
-      const stored = await persistAnswer(store, a.id, q, value, { keep: prior?.answer });
-      if (!prior) inserts.push({ assessment_id: a.id, question_id: qid, answer: stored });
-      else if (stableJson(prior.answer) !== stableJson(stored)) updates.push({ id: prior.id, patch: { answer: stored } });
+      const audioRef = audio ? await saveRecording(store, a.id, qid, audio) : null;
+      const result = await changeResponse(store, a.id, qid, (current) => {
+        if (current?.locked) return undefined;
+        if (clearing || (q.type === 'text' && !openAnswerHasContent(value) && !keepsRecording(q, value, current)))
+          return current ? null : undefined;
+        const stored = q.type === 'text' ? splitAnswer(q, value, { keep: current?.answer }).answer : value;
+        if (audioRef) stored.audio_ref = audioRef;
+        if (stableJson(current?.answer) === stableJson(stored)) return undefined;
+        return { answer: stored };
+      });
+      if (result.row?.locked) ignored.push(qid);
+      else {
+        accepted.push(qid);
+        // Deleting the old recording before the CAS could delete a clip that
+        // a concurrent /next just locked; only remove it after our change.
+        if (result.changed && q.type === 'text' && !result.row?.answer?.audio_ref)
+          await dropRecordings(store, a.id, qid);
+      }
     }
-    await bulkUpdate(store, 'responses', updates);
-    await bulkInsert(store, 'responses', inserts);
-    await bulkRemove(store, 'responses', removals);
     if (a.status === 'assigned')
       await store.update('assessments', a.id, { status: 'in_progress', started_at: new Date().toISOString() });
     return ok({ ok: true, saved_at: new Date().toISOString(), accepted_question_ids: accepted, ignored_question_ids: ignored });
@@ -469,31 +504,19 @@ export function candidateHandlers(route) {
     }
 
     // Whatever happens below, the question being left behind ends up with a
-    // LOCKED response row: the answer that was posted, the draft autosave took
-    // while the clock was running, or a blank. A blank advance used to store
-    // nothing at all, which left the question open to be answered later — by a
-    // draft PUT or by the final submit — long after its window had closed.
+    // LOCKED response row: the posted answer, an in-time draft, or a blank.
+    // Read the draft here for the usual fast path (and to avoid re-uploading a
+    // clip already locked), but choose the final answer under the response
+    // shard's CAS: another Netlify instance may save a draft between this read
+    // and the lock. A stale insert must neither throw DUPLICATE_ID nor let a
+    // late autosave change the locked answer.
     const existing = await store.list('responses', { assessment_id: a.id });
     const r = existing.find((x) => x.question_id === q.id);
-    // An unlocked draft can only have been written inside the question's
-    // window (the autosave route refuses anything else), so it is an answer
-    // given in time even when the lock itself arrives late.
-    const draft = r && !r.locked && !isBlank(q, r.answer) ? r.answer : null;
-    const lockRow = (answer) => (r
-      ? store.update('responses', r.id, { answer, locked: true })
-      : store.insert('responses', { assessment_id: a.id, question_id: q.id, answer, locked: true }));
 
-    // Answer flow: allow answering in review or answer phase (review is UI guidance, not hard gate)
-    let answerToLock = body?.answer;
-    if (hardExpired) {
-      answerToLock = null; // a late answer is not accepted
-      base = integrityPatch(
-        base,
-        'time_expired',
-        `Q${quiz.index + 1} time expired - auto-advanced ${draft ? 'with the answer saved in time' : 'as blank'}.`,
-        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-      );
-    }
+    // Answer flow: allow answering in review or answer phase (review is UI
+    // guidance, not a hard gate). Past the grace window, only a draft saved in
+    // time may be locked; the newly posted answer is ignored.
+    const answerToLock = hardExpired ? null : body?.answer;
 
     // The spoken-answer contract leaves the same trail however the answer got
     // locked. It used to fire only for an answer posted with the advance: a
@@ -501,14 +524,17 @@ export function candidateHandlers(route) {
     // blank or expired advance carried `audio_missing` on the row (so the
     // assessor saw the warning) while the integrity counter, the exam event
     // trail and the audit log all stayed silent for it.
-    const noteMissingSpoken = async (stored) => {
+    const pendingEvents = [];
+    const noteMissingSpoken = async (stored, logAudit = true) => {
       if (!stored || typeof stored !== 'object' || stored.audio_missing !== true) return;
-      base = integrityPatch(
-        base,
-        'spoken_answer_missing',
-        `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
-        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-      );
+      pendingEvents.push({
+        event: 'spoken_answer_missing',
+        detail: `Q${quiz.index + 1} required a recorded answer; only typed notes were submitted.`,
+      });
+      // A previous /next may have locked the row and still be writing its
+      // cursor/audit (or may have died mid-request). The CAS below lets only
+      // one advance add the integrity event. Do not duplicate its audit row.
+      if (!logAudit) return;
       const candidate = await myCandidate(store, auth.user);
       await audit(
         store,
@@ -521,46 +547,77 @@ export function candidateHandlers(route) {
       );
     };
 
-    // An open answer whose only content is the recording it asks to keep is
-    // not blank: it locks that recording (with whatever notes came with it).
-    const usable = answerToLock !== undefined && answerToLock !== null
-      && (!isBlank(q, answerToLock) || keepsRecording(q, answerToLock, r));
-    if (usable) {
-      if (!validateAnswerShape(q, answerToLock))
-        return unprocessable('Invalid answer for the current question.');
-      const stored = await persistAnswer(store, a.id, q, answerToLock, { keep: r?.answer });
-      await lockRow(stored);
+    // A recording-only answer with audio_keep is usable if the *latest* draft
+    // holds the clip, even if the initial list saw no draft yet.
+    const posted = answerToLock !== undefined && answerToLock !== null && !isBlank(q, answerToLock);
+    const keepRequest = q.type === 'text' && answerToLock && typeof answerToLock === 'object'
+      && answerToLock.audio_keep === true;
+    if ((posted || keepRequest) && !validateAnswerShape(q, answerToLock))
+      return unprocessable('Invalid answer for the current question.');
+    const audio = posted && q.type === 'text' && !r?.locked ? splitAnswer(q, answerToLock).audio : null;
+    const audioRef = audio ? await saveRecording(store, a.id, q.id, audio) : null;
+    const locked = await changeResponse(store, a.id, q.id, (current) => {
+      if (current?.locked) return undefined; // another /next already took this answer
+      const usable = posted || (answerToLock !== null && answerToLock !== undefined
+        && keepsRecording(q, answerToLock, current));
+      let answer;
+      if (usable) {
+        answer = q.type === 'text' ? splitAnswer(q, answerToLock, { keep: current?.answer }).answer : answerToLock;
+        if (audioRef) answer.audio_ref = audioRef;
+      } else {
+        // An unlocked draft was saved while this question was live; it wins
+        // over a late or blank POST. A previously locked row is never changed.
+        answer = current && !isBlank(q, current.answer)
+          ? current.answer : blankAnswerFor(q, timeExpired ? 'timed_out' : 'skipped');
+      }
+      return { answer, locked: true };
+    });
+    if (locked.changed) {
+      const stored = locked.row.answer;
+      const draftUsed = !posted && !isBlank(q, stored);
+      if (q.type === 'text' && !stored?.audio_ref) await dropRecordings(store, a.id, q.id);
       await noteMissingSpoken(stored);
+      if (hardExpired) {
+        pendingEvents.unshift({
+          event: 'time_expired',
+          detail: `Q${quiz.index + 1} time expired - auto-advanced ${draftUsed ? 'with the answer saved in time' : 'as blank'}.`,
+        });
+      } else if (timeExpired && !draftUsed && isBlank(q, stored)) {
+        pendingEvents.push({ event: 'time_expired', detail: `Q${quiz.index + 1} time expired - recorded as blank.` });
+      }
     } else {
-      // No usable answer arrived with the advance: lock the in-time draft if
-      // there is one, otherwise record the question as a blank — exactly what
-      // the rules on the gate page promise for a question that is left behind.
-      // (A row that is already locked — a cursor wound back over it — keeps
-      // the answer it holds rather than being blanked.)
-      if (!r?.locked) {
-        await lockRow(draft ?? blankAnswerFor(q, timeExpired ? 'timed_out' : 'skipped'));
-        await noteMissingSpoken(draft);
-      }
-      if (timeExpired && !hardExpired && !draft) {
-        base = integrityPatch(
-          base,
-          'time_expired',
-          `Q${quiz.index + 1} time expired - recorded as blank.`,
-          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-        );
-      }
+      // Recover a partially completed lock: the response was committed but
+      // the first instance has not yet advanced the cursor. If this request
+      // wins that advance, the missing-recording counter must still be kept.
+      await noteMissingSpoken(locked.row?.answer, false);
     }
 
     const nextIndex = quiz.index + 1;
     const nextQ = questions[nextIndex];
-    const nextState = {
-      ...base,
-      index: nextIndex,
-      question_started_at: new Date().toISOString(),
-      phase: nextQ && isOpenQuestion(nextQ) ? 'review' : 'answer',
-    };
-    await store.update('assessments', a.id, { quiz_state: nextState });
-    return ok({ complete: nextIndex >= questions.length, index: nextIndex, total: questions.length });
+    // The row lock and the cursor live in different objects. Another /next
+    // may have locked the row first but not yet advanced the cursor, so a
+    // second call may help it finish. If it already advanced, do NOT restart
+    // the next question's clock or erase the first call's integrity events.
+    // Apply our events to the latest quiz state *inside* the table CAS, so an
+    // integrity beacon that arrived meanwhile is kept too.
+    const moved = await changeAssessment(store, a.id, (current) => {
+      if (!current || !['assigned', 'in_progress'].includes(current.status)) return undefined;
+      const latest = ensureQuizState(current, questions);
+      if (latest.index !== quiz.index) return undefined;
+      let state = latest;
+      for (const { event, detail } of pendingEvents) {
+        state = integrityPatch(state, event, detail,
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt });
+      }
+      return { quiz_state: {
+        ...state, index: nextIndex, question_started_at: new Date().toISOString(),
+        phase: nextQ && isOpenQuestion(nextQ) ? 'review' : 'answer',
+      } };
+    });
+    if (!moved.row) return notFound('Assessment not found.');
+    const index = moved.row.quiz_state?.index ?? quiz.index;
+    return ok({ complete: index >= questions.length, index, total: questions.length,
+      ...(!moved.changed ? { duplicate: true } : {}) });
   }));
 
   route('POST', '/candidate/assessments/:id/submit', R, locked(async ({ store, auth, params, body }) => {
@@ -618,7 +675,7 @@ export function candidateHandlers(route) {
       // pushed past it — is written here, as a timed-out blank.
       // `raw` is a stored row (or a legacy one still carrying its clip inline,
       // which moves to the recordings table here): trusted.
-      const value = blank ? (r?.answer ?? blankAnswerFor(q)) : await persistAnswer(store, a.id, q, raw, { trusted: true });
+      const value = blank ? (r?.answer ?? blankAnswerFor(q)) : await persistAnswer(store, a.id, q, raw);
       const scoreInput = q.type === 'text' ? textValue(value) : value;
       const auto = isAutoQuestion(q) ? (blank ? 0 : (autoScore(q, scoreInput) ?? 0)) : null;
       if (!r) {
