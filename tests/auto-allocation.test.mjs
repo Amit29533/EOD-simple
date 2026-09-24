@@ -529,3 +529,57 @@ test('candidate rows are written without an assessor_id key when none is set (ol
   const pam = (await store.list('candidates')).find((c) => c.email === 'pam@example.com');
   assert.ok(!('assessor_id' in pam));
 });
+
+test('the batch assessor endpoint is a fixed number of store writes, however many candidates', async () => {
+  const two = (await store.list('users', { username: 'assessor.two' }))[0];
+  const cands = [];
+  for (let i = 0; i < 6; i += 1) {
+    const c = await mkCandidate(`Batch ${i}`);
+    await call('POST', '/admin/users', { token: adminToken, body: { username: `batch.${i}`, name: `Batch ${i}`, role: 'candidate', candidate_id: c.id, password: 'batch-pass-1234' } });
+    cands.push(c.id);
+  }
+  const { default: fs } = await import('node:fs');
+  const realWrite = fs.writeFileSync;
+  let writes = 0;
+  fs.writeFileSync = (...args) => { writes += 1; return realWrite(...args); };
+  let res;
+  try {
+    res = await call('POST', '/admin/candidates/assessor', { token: adminToken, body: { candidate_ids: cands, assessor_id: two.id } });
+  } finally { fs.writeFileSync = realWrite; }
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.updated, 6);
+  assert.equal(res.body.reassigned_assessments, 6);
+  // candidates + assessments + audit rows + audit line: one persist each, not one per candidate.
+  assert.ok(writes <= 4, `expected at most 4 store writes for 6 candidates, saw ${writes}`);
+});
+
+test('an invalid assessor_id on Create user is a 400 before the login is written', async () => {
+  const cand = await mkCandidate('Bad Ref Bea');
+  const res = await call('POST', '/admin/users', {
+    token: adminToken,
+    body: { username: 'bad.ref.bea', name: 'Bad Ref Bea', role: 'candidate', candidate_id: cand.id, password: 'bea-pass-12345', assessor_id: 'no-such-user' },
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.equal((await store.list('users', { username: 'bad.ref.bea' })).length, 0, 'nothing was written');
+  // Staff roles ignore the field entirely.
+  const staff = await call('POST', '/admin/users', {
+    token: adminToken, body: { username: 'staff.ignore', name: 'Staff', role: 'trainer', password: 'staff-pass-1234', assessor_id: 'no-such-user' },
+  });
+  assert.equal(staff.status, 201);
+});
+
+test('deactivating an assessor reports the open papers still assigned to them', async () => {
+  const held = await store.insert('users', {
+    username: 'assessor.held', name: 'Assessor Held', role: 'assessor', email: '', active: true,
+    password_hash: hashPassword('assessor-pass-123'),
+  });
+  const cand = await mkCandidate('Held Hank');
+  await call('POST', '/admin/users', { token: adminToken, body: { username: 'held.hank', name: 'Held Hank', role: 'candidate', candidate_id: cand.id, password: 'hank-pass-1234', assessor_id: held.id } });
+  const off = await call('PATCH', `/admin/users/${held.id}`, { token: adminToken, body: { active: false } });
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.open_assessments, 1);
+  const on = await call('PATCH', `/admin/users/${held.id}`, { token: adminToken, body: { active: true } });
+  assert.equal(on.body.open_assessments, undefined, 'only reported when switching off');
+  const staffOff = await call('PATCH', `/admin/users/${(await store.list('users', { username: 'not.assessor' }))[0].id}`, { token: adminToken, body: { active: false } });
+  assert.equal(staffOff.body.open_assessments, undefined, 'and only for assessors');
+});

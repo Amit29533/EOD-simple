@@ -757,25 +757,46 @@ export function adminHandlers(route) {
   // imported" step of the import dialog. Same rules and same paper moves as
   // editing each candidate; unknown ids are reported, not fatal.
   route('POST', '/admin/candidates/assessor', A, async ({ store, body, auth }) => {
-    const ids = Array.isArray(body.candidate_ids) ? body.candidate_ids.filter((v) => typeof v === 'string' && v).slice(0, MAX_IMPORT_ROWS) : [];
+    const ids = Array.isArray(body.candidate_ids)
+      ? [...new Set(body.candidate_ids.filter((v) => typeof v === 'string' && v))].slice(0, MAX_IMPORT_ROWS)
+      : [];
     if (!ids.length) return bad('candidate_ids must list at least one candidate.');
     const assessorField = await candidateAssessorField(store, body.assessor_id);
     if (assessorField.error) return bad(assessorField.error);
-    const assessorName = assessorField.id ? (await store.get('users', assessorField.id))?.name || '' : '';
-    let updated = 0;
-    let reassigned = 0;
-    const missing = [];
-    for (const id of ids) {
-      const c = await store.get('candidates', id);
-      if (!c) { missing.push(id); continue; }
-      const out = await setCandidateAssessor(store, auth.user, c, assessorField.id);
-      updated += 1;
-      reassigned += out.moved.length;
+    const nextAssessor = assessorField.id;
+    const assessorName = nextAssessor ? (await store.get('users', nextAssessor))?.name || '' : '';
+    // Batched, not per candidate: right after a 2,000-row import this touches
+    // 2,000 candidates and their papers, and the file/blob adapters rewrite a
+    // whole table per single-row write. One read of each table, one write per
+    // table, one audit batch — the same rule every other bulk path follows.
+    const wanted = new Set(ids);
+    const [allCandidates, allPapers] = await Promise.all([
+      store.list('candidates'), store.list('assessments', {}, { detached: false }),
+    ]);
+    const found = allCandidates.filter((c) => wanted.has(c.id));
+    const foundIds = new Set(found.map((c) => c.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    const candidatePatches = found
+      .filter((c) => (c.assessor_id || null) !== nextAssessor)
+      .map((c) => ({ id: c.id, patch: { assessor_id: nextAssessor } }));
+    const paperPatches = allPapers
+      .filter((a) => foundIds.has(a.candidate_id) && (a.assessor_id || null) !== nextAssessor)
+      .map((a) => ({ id: a.id, patch: { assessor_id: nextAssessor } }));
+    await bulkUpdate(store, 'candidates', candidatePatches);
+    const moved = await bulkUpdate(store, 'assessments', paperPatches);
+    if (moved.length) {
+      try {
+        await bulkInsert(store, 'audit_log', moved.map((a) => ({
+          actor_id: auth.user.id, actor_name: auth.user.name || 'admin',
+          action: 'assessment_reassigned', entity: 'assessments', entity_id: a.id,
+          message: nextAssessor ? 'Assessor allocation updated for a batch of candidates' : 'Assessor unassigned for a batch of candidates',
+        })));
+      } catch { /* audit must never break the request */ }
     }
     await audit(store, auth.user, 'candidates_assessor_set', 'candidates', '',
-      `Assessor ${assessorName ? `"${assessorName}"` : 'cleared'} for ${updated} candidate(s)`
-      + (reassigned ? ` (${reassigned} assessment(s) moved)` : ''));
-    return ok({ updated, reassigned_assessments: reassigned, missing, assessor_id: assessorField.id, assessor_name: assessorName });
+      `Assessor ${assessorName ? `"${assessorName}"` : 'cleared'} for ${found.length} candidate(s)`
+      + (moved.length ? ` (${moved.length} assessment(s) moved)` : ''));
+    return ok({ updated: found.length, reassigned_assessments: moved.length, missing, assessor_id: nextAssessor, assessor_name: assessorName });
   });
 
   // Password-gated destructive delete. The signed-in admin must re-enter
@@ -855,6 +876,13 @@ export function adminHandlers(route) {
     if (!/^[a-z0-9._-]{3,}$/.test(username)) return bad('Username must be 3+ chars: a-z 0-9 . _ -');
     const passwordProblem = passwordError(body.password);
     if (passwordProblem) return bad(passwordProblem);
+    // An assessor named for the automatic paper must be able to score it —
+    // the same 400 the manual Allocate gives, rather than a login whose paper
+    // silently landed unassigned. Checked before anything is written.
+    if (body.role === 'candidate' && body.assessor_id) {
+      if (typeof body.assessor_id !== 'string' || !(await resolveAssessorId(store, body.assessor_id)))
+        return bad('Assessor must be an active assessor user.');
+    }
     // Username and candidate-link uniqueness are check-then-insert; a double
     // submit of the Add user form used to create two logins with one username
     // (and two portal users for one candidate). User creation is rare enough
@@ -969,8 +997,17 @@ export function adminHandlers(route) {
         .filter((sess) => sess.id !== keep)
         .map((sess) => store.remove('sessions', sess.id).catch(() => {})));
     }
-    await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`);
-    return ok(publicUser(updated));
+    // Deactivating an assessor strands the papers still waiting on them: the
+    // exam can go on, but nobody can score. Report how many so the admin can
+    // reassign (the papers are left as they are — an audit trail, not a move).
+    let stranded;
+    if (switchedOff && u.role === 'assessor') {
+      stranded = (await store.list('assessments', { assessor_id: u.id }, { detached: false }))
+        .filter((a) => ['assigned', 'in_progress', 'submitted'].includes(a.status)).length;
+    }
+    await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`
+      + (stranded ? ` (${stranded} open assessment(s) still assigned to this deactivated assessor)` : ''));
+    return ok(stranded !== undefined ? { ...publicUser(updated), open_assessments: stranded } : publicUser(updated));
   });
 
   // ------------------------------------------------ roles (assessment tracks)

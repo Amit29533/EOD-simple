@@ -1181,7 +1181,10 @@ export async function usersView(view) {
     if (saved) toast('Password reset', 'success');
   }));
   const toggle = async (id, active) => {
-    await attempt(() => api(`/admin/users/${id}`, { method: 'PATCH', body: { active } }), { okMessage: active ? 'User reactivated' : 'User deactivated' });
+    const out = await attempt(() => api(`/admin/users/${id}`, { method: 'PATCH', body: { active } }), { okMessage: active ? 'User reactivated' : 'User deactivated' });
+    if (out?.open_assessments) {
+      toast(`${out.open_assessments} open assessment${out.open_assessments === 1 ? ' is' : 's are'} still assigned to this assessor — reassign them under Assessments or from each candidate's Edit form.`, 'error', 8000);
+    }
     usersView(view);
   };
   view.querySelectorAll('[data-off]').forEach((b) => (b.onclick = () => toggle(b.dataset.off, false)));
