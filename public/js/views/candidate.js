@@ -999,9 +999,10 @@ async function runExamSession(view, id, payload) {
             // way the refetch repaints whatever the server says is current.
             api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
               .catch(() => null)
-              .then(async () => {
+              .then(async (switched) => {
+                if (unmounted) return;
                 try {
-                  d = await api(`/candidate/assessments/${id}`);
+                  d = switched?.screen || await api(`/candidate/assessments/${id}`);
                   currentAnswer = d.current_answer;
                   paint();
                 } catch {

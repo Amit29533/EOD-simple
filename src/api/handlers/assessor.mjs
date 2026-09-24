@@ -122,7 +122,7 @@ export function assessorHandlers(route) {
     // that finalization then ignores.
     const qById = new Map(sortedQuestions(a.snapshot_json).map((q) => [q.id, q]));
     const updates = [];
-    const inserts = [];
+    const inserts = new Map(); // question_id -> row
     for (const e of entries) {
       // A null (or otherwise non-object) entry used to throw a TypeError on
       // `.question_id` and 500 the endpoint; it is malformed input instead.
@@ -160,12 +160,16 @@ export function assessorHandlers(route) {
       // carrying neither a score nor a comment has nothing to store.
       if (existing) {
         if (Object.keys(patch).length) updates.push({ id: existing.id, patch });
-      } else {
-        inserts.push({ assessment_id: a.id, question_id: e.question_id, answer: null, ...patch });
+      } else if (Object.keys(patch).length) {
+        // One row per question: a sheet naming the same unanswered question
+        // twice merges (last value wins) instead of inserting two rows under
+        // one natural key, which the shard store refuses as a duplicate.
+        const prior = inserts.get(e.question_id) || { assessment_id: a.id, question_id: e.question_id, answer: null };
+        inserts.set(e.question_id, { ...prior, ...patch });
       }
     }
     await bulkUpdate(store, 'responses', updates);
-    await bulkInsert(store, 'responses', inserts);
+    await bulkInsert(store, 'responses', [...inserts.values()]);
     return ok({ ok: true });
   }));
 
