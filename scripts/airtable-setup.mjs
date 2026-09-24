@@ -115,7 +115,7 @@ async function main() {
     // keeps its old columns: name the fields that must exist for the current
     // app to write to it.
     console.log('\n[airtable] existing tables were left untouched. If this base was created by an older');
-    console.log('[airtable] run, add any missing columns manually: questions.question_set,');
+    console.log('[airtable] run, add any missing columns manually: candidates.assessor_id (text), questions.question_set,');
     console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
     console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
     console.log('[airtable] responses.locked, the bank_questions / bank_question_overrides tables, the recordings');

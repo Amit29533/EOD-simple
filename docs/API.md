@@ -43,7 +43,7 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | POST   | /admin/content/sync          | add the published questions the matching track is missing (body `role_key` scopes to a track, default RSA; idempotent; never duplicates, reactivates or edits existing records; audited as `catalogue_synced`) |
 | GET    | /admin/content/tracks        | every published track (`databricks-rsa`, `databricks-ai-bi-genie`, `senior-consultant`, `technology-risk-sama`) with its install state in this workspace: `installed`, `active`, `role`, `competency_total`, `catalogue_total`, `bank_total`, `missing`, `authoring_only` |
 | POST   | /admin/content/tracks        | install a published track that the workspace does not have (body `role_key`, required): creates the role, its default scoring framework, competencies and published questions → 201 + `track_installed` audit event; an installed track is topped up instead (200, same counters as `/sync`); a deactivated track is refused with 409 (reactivate it, never a second role); unknown key → 400. This is what **Roles & frameworks → Published tracks → Add to workspace** and the `npm run seed` migration path call |
-| PATCH/DELETE | /admin/assessments/:id    | reassign assessor (unscored); delete (pre-submit) |
+| PATCH/DELETE | /admin/assessments/:id    | reassign assessor (unscored; the candidate record's `assessor_id` follows); delete (pre-submit) |
 | GET    | /admin/reports/:id            | full report incl. assessor + comments             |
 | GET    | /admin/audit                  | audit trail                                       |
 

@@ -75,7 +75,7 @@ export async function dashboardView(view) {
 }
 
 /* ================================ Candidates ================================ */
-const candidateFields = (roles, assessors = []) => [
+const candidateFields = (roles, assessors = [], current = {}) => [
   { name: 'name', label: 'Full name', required: true },
   { name: 'email', label: 'Email', type: 'email' },
   { name: 'phone', label: 'Phone' },
@@ -86,7 +86,14 @@ const candidateFields = (roles, assessors = []) => [
   { name: 'target_role_id', label: 'Target role (assessment track)', type: 'select', options: roles.map((r) => ({ value: r.id, label: r.name })) },
   {
     name: 'assessor_id', label: 'Assessor', type: 'select',
-    options: assessors.map((u) => ({ value: u.id, label: u.name })),
+    // A candidate whose assessor has since been deactivated keeps that
+    // assessor selectable: otherwise the select would open blank and saving
+    // an unrelated field would silently unassign every paper.
+    options: [
+      ...assessors.map((u) => ({ value: u.id, label: u.name })),
+      ...(current.assessor_id && !assessors.some((u) => u.id === current.assessor_id)
+        ? [{ value: current.assessor_id, label: `${current.assessor_name || 'Current assessor'} (deactivated)` }] : []),
+    ],
     help: assessors.length
       ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves all of this candidate\'s assessments — before, during or after the test.'
       : 'No active assessor users yet — create one under Users & Access.',
@@ -172,7 +179,7 @@ async function candidateAction(act, c, roles, assessors = null) {
   if (act === 'edit') {
     const list = assessors || await loadAssessors();
     const saved = await formModal({
-      title: `Edit ${c.name}`, fields: candidateFields(roles, list), values: c,
+      title: `Edit ${c.name}`, fields: candidateFields(roles, list, c), values: c,
       onSubmit: (vals) => api(`/admin/candidates/${c.id}`, { method: 'PATCH', body: vals }),
     });
     if (!saved) return;
@@ -486,7 +493,7 @@ export async function candidateDetailView(view, { id }) {
       </div>
     </div>`;
   const [{ roles }, assessors] = await Promise.all([api('/admin/roles'), loadAssessors()]);
-  view.querySelector('#edit').onclick = () => candidateAction('edit', c, roles, assessors);
+  view.querySelector('#edit').onclick = () => candidateAction('edit', { ...c, assessor_name: d.assessor_name }, roles, assessors);
   view.querySelector('#alloc').onclick = () => allocateAssessorModal(c, c.target_role_id);
   view.querySelector('#del').onclick = () => deleteCandidateFlow(c, { goBack: true });
 }

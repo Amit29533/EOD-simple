@@ -479,3 +479,53 @@ test('the import commit returns the ids of the candidates it wrote', async () =>
   assert.equal(commit.body.imported_candidate_ids.length, 1);
   assert.equal((await store.get('candidates', commit.body.imported_candidate_ids[0])).name, 'Id Ira');
 });
+
+test('a deactivated assessor on the record never blocks or silently breaks an edit', async () => {
+  const gone = await store.insert('users', {
+    username: 'assessor.gone', name: 'Assessor Gone', role: 'assessor', email: '', active: true,
+    password_hash: hashPassword('assessor-pass-123'),
+  });
+  const cand = await mkCandidate('Stale Stan');
+  await call('PATCH', `/admin/candidates/${cand.id}`, { token: adminToken, body: { assessor_id: gone.id } });
+  const user = await call('POST', '/admin/users', { token: adminToken, body: { username: 'stale.stan', name: 'Stale Stan', role: 'candidate', candidate_id: cand.id, password: 'stan-pass-1234' } });
+  const paperId = user.body.auto_allocation.assessment_id;
+  assert.equal((await store.get('assessments', paperId)).assessor_id, gone.id);
+  await store.update('users', gone.id, { active: false });
+
+  // The form sends the current (now inactive) assessor back: accepted, nothing moves.
+  const same = await call('PATCH', `/admin/candidates/${cand.id}`, { token: adminToken, body: { phone: '123', assessor_id: gone.id } });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal(same.body.reassigned_assessments, 0);
+  assert.equal((await store.get('assessments', paperId)).assessor_id, gone.id);
+  // The listing still names them so the admin can see who it was.
+  const listed = await call('GET', '/admin/candidates', { token: adminToken, query: { q: 'Stale Stan' } });
+  assert.equal(listed.body.candidates[0].assessor_name, 'Assessor Gone');
+  // A fresh auto-allocation does not go to an inactive assessor.
+  const other = await mkCandidate('Fresh Fay', alphaId);
+  await store.update('candidates', other.id, { assessor_id: gone.id });
+  const u2 = await call('POST', '/admin/users', { token: adminToken, body: { username: 'fresh.fay', name: 'Fresh Fay', role: 'candidate', candidate_id: other.id, password: 'fay-pass-12345' } });
+  assert.equal(u2.body.auto_allocation.assessor_id, null);
+});
+
+test('reassigning from the Assessments page keeps the candidate record in step', async () => {
+  const two = (await store.list('users', { username: 'assessor.two' }))[0];
+  const cand = await mkCandidate('Sync Sam');
+  const user = await call('POST', '/admin/users', { token: adminToken, body: { username: 'sync.sam', name: 'Sync Sam', role: 'candidate', candidate_id: cand.id, password: 'sam-pass-12345' } });
+  const paperId = user.body.auto_allocation.assessment_id;
+  const res = await call('PATCH', `/admin/assessments/${paperId}`, { token: adminToken, body: { assessor_id: two.id } });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal((await store.get('candidates', cand.id)).assessor_id, two.id, 'the candidate default follows the paper');
+});
+
+test('candidate rows are written without an assessor_id key when none is set (older Airtable bases)', async () => {
+  const res = await call('POST', '/admin/candidates', { token: adminToken, body: { name: 'Plain Pat' } });
+  assert.equal(res.status, 201);
+  assert.ok(!('assessor_id' in res.body), JSON.stringify(res.body));
+  const imp = await call('POST', '/admin/candidates/import', {
+    token: adminToken,
+    body: { dry_run: false, create_users: false, filename: 'p.csv', csv: csv([['Name', 'Email'], ['Plain Pam', 'pam@example.com']]) },
+  });
+  assert.equal(imp.status, 200);
+  const pam = (await store.list('candidates')).find((c) => c.email === 'pam@example.com');
+  assert.ok(!('assessor_id' in pam));
+});

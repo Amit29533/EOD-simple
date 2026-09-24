@@ -386,7 +386,9 @@ export function adminHandlers(route) {
       current_title: str(body.current_title, 120), years_experience: yearsExperience(body.years_experience),
       location: str(body.location, 120), source: str(body.source, 120), notes: str(body.notes, 4000),
       target_role_id: body.target_role_id || null,
-      assessor_id: assessorField.id,
+      // Only written when set: an Airtable base created before this column
+      // existed rejects a row that names it (422), even with a null value.
+      ...(assessorField.id ? { assessor_id: assessorField.id } : {}),
       stage: body.stage || (body.target_role_id ? 'role_mapped' : 'intake'),
       created_by: auth.user.id,
     });
@@ -555,7 +557,7 @@ export function adminHandlers(route) {
         source: candidate.source,
         notes: candidate.notes,
         target_role_id,
-        assessor_id: candidate.assessor_id || defaultAssessorId || null,
+        ...((candidate.assessor_id || defaultAssessorId) ? { assessor_id: candidate.assessor_id || defaultAssessorId } : {}),
         stage,
         created_by: auth.user.id,
       };
@@ -736,7 +738,10 @@ export function adminHandlers(route) {
     // progress, submitted or already scored) to the new assessor.
     let updated;
     let reassigned = [];
-    if (body.assessor_id !== undefined) {
+    // An unchanged assessor is never re-validated: the form sends the current
+    // value back on every save, and a since-deactivated assessor must not
+    // block editing the candidate's phone number.
+    if (body.assessor_id !== undefined && (body.assessor_id || null) !== (c.assessor_id || null)) {
       const assessorField = await candidateAssessorField(store, body.assessor_id);
       if (assessorField.error) return bad(assessorField.error);
       ({ updated, moved: reassigned } = await setCandidateAssessor(store, auth.user, c, assessorField.id, patch));
@@ -1815,6 +1820,12 @@ export function adminHandlers(route) {
         if (!u || u.role !== 'assessor' || u.active === false) return bad('Assessor must be an active assessor user.');
       }
       const updated = await store.update('assessments', params.id, { assessor_id: body.assessor_id || null });
+      // The candidate's own assessor follows, so the Edit candidate form and
+      // the next auto-allocated paper agree with the reassignment.
+      const cand = await store.get('candidates', a.candidate_id);
+      if (cand && (cand.assessor_id || null) !== (body.assessor_id || null)) {
+        await store.update('candidates', cand.id, { assessor_id: body.assessor_id || null });
+      }
       await audit(store, auth.user, 'assessment_reassigned', 'assessments', params.id, 'Assessor allocation updated');
       return ok(updated);
     }

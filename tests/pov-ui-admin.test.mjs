@@ -397,3 +397,27 @@ test('candidates: the import dialog has a default Assessor select and previews t
     }
   } finally { spa.teardown(); }
 });
+
+test('candidate record: a deactivated assessor stays selected in Edit, so saving another field does not unassign the paper', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('old.assessor');
+  const { cand, assessmentId } = await w.candidateUser('keep.assessor', { name: 'Keep Assessor' });
+  await w.call('PATCH', `/admin/candidates/${cand.id}`, { token: w.tok, body: { assessor_id: assessor.id } });
+  await w.call('PATCH', `/admin/users/${assessor.id}`, { token: w.tok, body: { active: false } });
+  const spa = await bootSpa({ hash: `#/candidates/${cand.id}`, backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.equal(select.value, assessor.id, 'the current assessor is still the selected value');
+    assert.match(select.selectedOptions[0].textContent, /old\.assessor \(deactivated\)/);
+    type(modal.querySelector('input[name="phone"]'), '+91 1');
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('candidates', cand.id)).phone, '+91 1', 'the edit saved');
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, assessor.id, 'the paper was not unassigned');
+  } finally { spa.teardown(); }
+});
