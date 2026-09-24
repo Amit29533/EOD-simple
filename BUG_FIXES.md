@@ -238,11 +238,167 @@ it writes, and hashes before it inserts so a killed request leaves nothing behin
 20 pages, slowest **3.0 s**, all 2000 candidates, logins and papers. The published question
 catalogues and the SPA's remaining trust boundaries were re-read for this pass and found clean.
 
-Current verification: **558/558 Node tests** on Node 22 (527 of them also verified on Node 20,
-the deploy runtime per `netlify.toml`), **39/39 smoke tests**, **216/216 feature tests**, and
-**76/76 final-gauntlet checks** pass.
+The newest pass re-read the project one part at a time and tested it from each role's point of
+view, running the real screens in jsdom against the real in-process API. It adds a route × role
+guard matrix read from the live router. Nine defects were reproduced, fixed and pinned:
 
-## 📥 Bulk-onboarding pass — a 2000-row import was one 45-second request (latest)
+- A nameless integrity beacon wrote an audit row per request outside the flood cap.
+- One blocked paste was logged twice.
+- The submit handover took a storage race for a submission.
+- The admin integrity tiles hid copy, paste, screenshot and right-click counts.
+- Bulk-imported papers made the listing fetch and rewrite every paper.
+- A candidate's timeline never showed their assessments.
+- The report legend printed raw weights as if they were shares of the score.
+- The spreadsheet reader's zip-bomb guard trusted the archive's own size claim: a 600 KB file
+  allocated ~599 MB.
+- An uploaded workbook could inject a regular expression that blocked the server for hours.
+
+Current verification (Node 22.22): **632 Node tests: 630 pass, 0 fail, 2 skipped** (the SAMA
+workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
+**216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
+
+## 🎭 Point-of-view pass: what each role actually sees, through the real API (latest)
+
+**Method.** The whole project was re-read one part at a time: the API handlers, the scoring and
+selection core, quiz sessions, the spreadsheet parser, candidate import, storage, and every SPA
+view. Each part was then checked from the point of view of the person who uses it. Every
+suspected defect was reproduced by a probe (`.probe/`, gitignored) before it was touched, fixed,
+and pinned by a regression test that fails without the fix. The new suites run the real views in
+jsdom against the **real in-process API** instead of a stubbed `fetch`, so what a screen shows is
+what the server holds:
+
+- `tests/helpers/world.mjs` builds a throwaway world (a JSON store, the real app, an admin, a
+  two-competency track, MCQ and open questions) with helpers to onboard, allocate, walk, submit,
+  assign, score and finalize.
+- `tests/helpers/spa.mjs` boots the SPA with either a stubbed or a real backend.
+- `tests/pov-candidate`, `pov-admin` and `pov-assessor` cover the API side of each role.
+- `tests/pov-ui-candidate`, `pov-ui-admin`, `pov-ui-assessor` and `pov-ui-report` cover the
+  screens.
+- `tests/pov-rbac` is a route × role matrix read from the live router, so a route added later is
+  covered automatically. Every guarded route returns 401 signed out and 403 to a wrong role. The
+  right role is let through, and gets a client error, never a 500, on junk input. The policy test
+  also fails if a new route's guard does not match its prefix.
+
+`npm test`: **632 tests, 630 pass, 0 fail, 2 skipped** (was 587, with 2 failing).
+
+### Candidate
+
+- **BUG AO — nameless integrity beacons could flush the audit log.** `POST
+  /candidate/assessments/:id/integrity` with no `event` (or a non-string one) was ignored by
+  `integrityPatch`. So it never entered the exam trail and never counted toward the 200-event cap
+  that stops audit floods. Each one still cost an assessment write and an `integrity_integrity`
+  audit row. A candidate's browser, or a script with their token, could send them without limit
+  and push every admin action out of the 2,000-row rotating audit log. The route now refuses a
+  beacon without a string name with a 400, before any read or write. The exam client always sends
+  a literal name. Pinned by `tests/pov-candidate.test.mjs` (a nameless beacon writes nothing; a
+  flood of them leaves admin actions in the log).
+- **BUG AP — one blocked paste was logged twice.** The answer box had its own `onpaste` beacon on
+  top of the exam's document-level paste guard, so a single paste into `#exam-ta` sent two
+  `paste_attempt` events and doubled the candidate's count on the admin's trail. The duplicate
+  handler is removed. Pinned in `tests/pov-ui-candidate.test.mjs`.
+- **BUG AQ — the submit handover took a storage race for a submission.** `submitExam` treated
+  *every* 409 as "already submitted". The route's own conflicts ("already submitted", "already
+  scored") do mean an earlier attempt landed. But the storage layer's insert race ("That record
+  was created by another request…") is also a 409 and means nothing was written. The candidate
+  was told "Assessment submitted" and sent to a journey page that still showed the exam open. That
+  409 is now retried like a 5xx, as the exam's own lock already does, and it fails loudly if it
+  persists. Pinned in `tests/pov-ui-candidate.test.mjs`.
+
+### Admin
+
+- **BUG AR — the integrity screen's tiles hid most of what they counted.** The headline summed
+  every counter, but the tile grid left out `copy`, `paste`, `screenshot`, `contextmenu` and every
+  unrecognised event (`other`). A trail could read "0" on every copy tile while the headline
+  counted the copies. The legacy `visibility` and `blur` names were not tiled either. The tiles
+  are now data-driven: every key in `INTEGRITY_EVENT_KEYS` (now exported from
+  `src/api/quiz-session.mjs`) lands in exactly one tile, and a new "Screenshot / right-click /
+  other" tile holds the rest. The routine `exam_start` and `tab_return` counters stay in the
+  headline only. `copy` and `paste` badges are amber rather than grey, and the headline says
+  "1 event", not "1 events". Pinned in `tests/pov-ui-admin.test.mjs`, which iterates the real
+  registry, so a counter added later without a tile fails the suite.
+- **BUG AS — bulk-imported papers lacked the listing facts.** The bulk import built its assessment
+  rows with a bare `question_count`, while single allocations spread `paperSummary(snapshot)`. So
+  the first listing after an import fetched every imported paper whole, snapshot included, to work
+  out `question_limit`, `bank_total` and `total_points`, then rewrote each row to backfill them: a
+  read-only screen doing one read and one write per imported paper (2,000 of each after a full
+  import), which is exactly what the summary exists to avoid. The batch now spreads the same
+  summary. Pinned in `tests/pov-admin.test.mjs` (imported rows carry the same facts as a single
+  allocation, and a listing after an import makes no paper reads and no writes).
+- **BUG AT — a candidate's timeline never showed their assessments.** `GET
+  /admin/candidates/:id` built the timeline from audit rows on the *candidate* entity only. Every
+  milestone of the candidate's papers (allocated, reassigned, submitted, scored) is audited
+  against the *assessment*, so none of them appeared. A candidate created by a spreadsheet import
+  (one audit row for the whole file, with no entity id) read "No events yet" despite having a
+  login and a paper. The timeline now also includes the `assessment_*` rows of the candidate's own
+  papers. Integrity beacons stay out: they have their own screen, and up to 200 of them would push
+  the milestones out of the 30-row list. Pinned by two cases in `tests/pov-admin.test.mjs` and the
+  record screen in `tests/pov-ui-admin.test.mjs`.
+
+### Reports (all audiences)
+
+- **BUG AU — the report's pie and legend showed raw weights, not shares of the score.** The
+  legend printed each competency's configured weight with a "%" after it. That only reads right
+  when the weights sum to 100 and every competency was assessed. Custom weights of 50/50/50 read
+  "50%" three times. A competency the capped paper never reached kept a slice of a score it had no
+  part in, while `computeReport` blends only assessed competencies, normalised over their weight.
+  The pie and legend now show that same share (or equal shares when every weight is 0, as the
+  blend does), and an unassessed competency reads "not assessed" with no slice. A latent drawing
+  bug is fixed too: one competency carrying the whole score is a single 2π arc whose start and end
+  points coincide, which SVG draws as nothing, so that pie was blank. The four published tracks
+  (weights summing to 100) render exactly as before. Pinned by `tests/pov-ui-report.test.mjs`
+  (eight cases, including the legend agreeing with a real `computeReport` run).
+
+### Spreadsheet uploads (candidate and question-bank imports)
+
+- **BUG AV — the zip-bomb guard trusted the archive's own size claim.** `unzip()` refused a part
+  whose *declared* size was absurd, but the declared size is whatever the archive says. A part can
+  claim 1,000 bytes and inflate to gigabytes, and the running total was checked only after the
+  whole part was already in memory. Measured (`.probe/zipbomb.mjs`): a 100 KB file claiming 1,000
+  bytes was inflated to 100 MB and accepted, and a 600 KB file allocated **~599 MB** before being
+  refused. Memory tracked the true expansion, so an 8 MB upload (the route's limit, about 1000:1
+  for deflate) could demand gigabytes and take the process down. The realistic path is an admin
+  importing a candidate list received from a third party. `inflateRawSync` now runs with
+  `maxOutputLength` set to what is left of the budget, so the inflate itself stops. The same three
+  files are refused in ~50 ms with a ~60 MB high-water mark. Pinned in
+  `tests/deployment-hardening.test.mjs` (a part claiming 1,000 bytes that expands to 200 MB is
+  refused with memory bounded; the old reader held ~400 MB).
+- **BUG AW — a workbook could inject a regular expression into the sheet lookup.** The first
+  sheet's `r:id`, text from the uploaded file, was spliced into `new RegExp(...)`. An `r:id` of
+  `(a+)+b` against a relationship `Id` of repeated "a"s backtracks exponentially: measured 92 ms
+  for 24 of them, 208 ms for 25, and **9.3 s** for 28 (`.probe/redos.mjs`). Around 40 would block
+  the event loop, which every request shares, candidates' exam locks included, for hours. Each
+  `<Relationship>` tag is now matched with a fixed pattern and its `Id` compared as a plain string
+  (0–1 ms at any length). The old pattern also required `Id` to come before `Target`. Packages
+  written by .NET's packaging library put `Target` first, so their workbooks silently fell back to
+  `sheet1.xml`, the wrong tab whenever the first tab is stored under another name. Attribute order
+  no longer matters. Pinned by two cases in `tests/deployment-hardening.test.mjs` (the first tab
+  resolved through the relationships with `Target` before `Id`; the smuggled pattern parses in
+  under 500 ms).
+
+### Test suite
+
+- `tests/sama-workbook.test.mjs` read the SAMA source workbook, which is not in the repository, so
+  a clean checkout failed 2 tests with `ENOENT`. Those tests now skip, with the reason, when the
+  workbook is absent. They run as before when it is present.
+
+### Verified and left as-is
+
+- Question ids are `rec_<hex>` everywhere (317 questions and 222 snapshot questions checked), so
+  the assessor screen's `#score-${id}` selectors are always valid CSS.
+- Manual scoring means `type === 'text'` in both `isManualQuestion` and the assessor screen, so
+  what the screen asks for is exactly what finalize requires.
+- `new RegExp` elsewhere (the router, the client router, form patterns) is built from
+  developer-written patterns, never uploaded text.
+- The JSON store writes atomically (a unique temp file, then rename), quarantines a corrupt file
+  instead of crashing, and rolls back memory if a write fails. Deactivating a user revokes their
+  live sessions at once.
+- Generated import passwords are 17 characters. The only policy is eight characters (form, reset
+  and import alike), so a generated password without a digit is not a problem.
+- The assessor detail route answers 409 for an unsubmitted paper, so the assessor screen's own
+  "Not ready for scoring" branch is effectively unreachable. The router's error page shows the
+  server's message instead. Harmless, and the workspace never links an unsubmitted paper.
+
+## 📥 Bulk-onboarding pass — a 2000-row import was one 45-second request (previous)
 
 **Method.** The largest write the product invites — `POST /admin/candidates/import` with
 `create_users` and auto-allocation for the 2000 rows the dry run accepts — timed in-process

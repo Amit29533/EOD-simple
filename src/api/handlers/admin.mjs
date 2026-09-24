@@ -523,7 +523,12 @@ export function adminHandlers(route) {
         assessmentBatch.push({
           candidate_id: rec.id, role_id: plan.role.id, assessor_id: bulkAssessorId,
           status: 'assigned', snapshot_json: plan.snapshot, report_json: null,
-          question_count: plan.question_count,
+          // The same listing facts every other allocation path stamps. Without
+          // them the file and blob adapters (which store the paper apart from
+          // the row) made the first assessments listing after an import fetch
+          // each imported paper whole and rewrite its row, one after another:
+          // up to 2,000 sequential reads and writes for one import.
+          ...paperSummary(plan.snapshot),
           overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
         });
         allocatedIdx.push(i);
@@ -571,8 +576,21 @@ export function adminHandlers(route) {
     const assessorName = Object.fromEntries(users.map((u) => [u.id, u.name]));
     assessments.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const facts = await paperFacts(store, assessments);
-    const events = (await store.list('audit_log', { entity: 'candidates', entity_id: c.id }))
-      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 30);
+    // The timeline is the candidate's journey. Their papers' milestones
+    // (allocated, reassigned, submitted, scored) are audited against the
+    // assessment, not the candidate, so a timeline built from candidate
+    // events alone never showed any of them, and a candidate created by a
+    // spreadsheet import (one audit row for the whole file) read "No events
+    // yet". Integrity beacons and exam notices stay out: they have their own
+    // screen, and up to 200 of them per paper would push the milestones out
+    // of the 30-event list.
+    const events = [...await store.list('audit_log', { entity: 'candidates', entity_id: c.id })];
+    for (const a of assessments) {
+      const rows = await store.list('audit_log', { entity: 'assessments', entity_id: a.id });
+      events.push(...rows.filter((e) => String(e.action || '').startsWith('assessment_')));
+    }
+    events.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    events.splice(30);
     return ok({
       candidate: c,
       role_name: roleName[c.target_role_id] || '',

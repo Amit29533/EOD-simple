@@ -781,7 +781,9 @@ async function runExamSession(view, id, payload) {
         });
       };
       ta.oninput = () => { text = ta.value; syncNext(); queueDraft(q.id, currentOpenAnswer(), DRAFT_DELAY_MS.text); };
-      ta.onpaste = () => logIntegrity('paste');
+      // No paste handler of its own: the session's document-level listener
+      // blocks the paste and logs it once as `paste_attempt`. A second
+      // `paste` beacon from here used to count each blocked paste twice.
       const recBtn = body.querySelector('#rec-btn');
       const recLabel = body.querySelector('#rec-label');
       const recState = body.querySelector('#rec-state');
@@ -1071,6 +1073,14 @@ export async function submitExam(id, { attempts = 3, backoffMs = 1200, timeoutMs
       });
       return out && typeof out === 'object' ? out : { status: 'submitted' };
     } catch (err) {
+      // The submit route's own conflicts ("already submitted", "already
+      // scored") mean the paper is in: an earlier attempt landed. The storage
+      // layer's insert race ("record was created by another request") is
+      // also a 409 but means this attempt wrote nothing. It used to be taken
+      // as success too, so the candidate was told "submitted" and sent to a
+      // journey page that still showed the exam open. It is retried like a
+      // 5xx, as the exam's own lock already does.
+      if (err?.status === 409 && /created by another request/i.test(err.message || '')) { lastError = err; continue; }
       if (err?.status === 409) return { status: 'submitted', already: true };
       if (err?.status && err.status !== 429 && err.status < 500) throw err;
       lastError = err; // network failure, timeout, 429 or 5xx — worth another attempt

@@ -496,6 +496,59 @@ test('a worksheet part that declares an absurd size is refused, not inflated', (
   assert.throws(() => parseSheet(zip), /zip bomb/);
 });
 
+test('a worksheet part that under-declares its size is stopped mid-inflate, not inflated whole first', () => {
+  // The declared size is the archive's own claim. This part claims 1,000
+  // bytes and really expands to 200 MB (past MAX_XLSX_ENTRY_BYTES): the
+  // reader used to inflate every byte of it and only then compare the
+  // running total, so memory tracked the true expansion (an 8 MB upload of
+  // this shape can demand gigabytes). The inflate itself is now capped.
+  const zip = buildZip([{
+    name: 'xl/worksheets/sheet1.xml',
+    method: 8,
+    data: deflateRawSync(Buffer.alloc(200 * 1024 * 1024, 0x20), { level: 9 }),
+    declared: 1000,
+  }]);
+  assert.ok(zip.length < 1024 * 1024, 'the archive itself is tiny');
+  const before = process.memoryUsage().arrayBuffers;
+  let peak = before;
+  const started = Date.now();
+  assert.throws(() => parseSheet(zip), /zip bomb/);
+  peak = Math.max(peak, process.memoryUsage().arrayBuffers);
+  assert.ok(Date.now() - started < 5000, 'refused quickly');
+  // The budget for one part is 64 MB; the old reader held all 200 MB.
+  assert.ok(peak - before < 150 * 1024 * 1024, `memory stayed bounded (~${Math.round((peak - before) / 1048576)} MB)`);
+});
+
+test('the first tab is found through the workbook relationships, whatever its file name or attribute order', () => {
+  const part = (name, text) => ({ name, method: 8, data: deflateRawSync(Buffer.from(text)), declared: Buffer.byteLength(text) });
+  const zip = buildZip([
+    part('xl/workbook.xml', '<workbook><sheets><sheet name="Candidates" sheetId="3" r:id="rId7"/><sheet name="Old" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    // Target before Id, and a TargetMode attribute that must not be taken for Target.
+    part('xl/_rels/workbook.xml.rels', '<Relationships><Relationship Target="worksheets/sheet1.xml" Id="rId1"/><Relationship TargetMode="Internal" Target="/xl/worksheets/sheet3.xml" Type="ws" Id="rId7"/></Relationships>'),
+    part('xl/worksheets/sheet1.xml', sheetXml([['Stale', 'Tab'], ['x', 'y']]).toString()),
+    part('xl/worksheets/sheet3.xml', sheetXml([['Name', 'Email'], ['Asha Rao', 'asha@example.com']]).toString()),
+  ]);
+  const { headers, rows } = parseSheet(zip);
+  assert.deepEqual(headers, ['name', 'email']);
+  assert.deepEqual(rows, [{ name: 'Asha Rao', email: 'asha@example.com' }]);
+});
+
+test('a workbook cannot smuggle a regular expression into the sheet lookup', () => {
+  // The first sheet's r:id used to be spliced into a RegExp: `(a+)+b` against
+  // an Id made of "a"s backtracks exponentially (27 of them took seconds, 40
+  // would take hours) on the thread every request shares.
+  const part = (name, text) => ({ name, method: 8, data: deflateRawSync(Buffer.from(text)), declared: Buffer.byteLength(text) });
+  const zip = buildZip([
+    part('xl/workbook.xml', '<workbook><sheets><sheet name="S" sheetId="1" r:id="(a+)+b"/></sheets></workbook>'),
+    part('xl/_rels/workbook.xml.rels', `<Relationships><Relationship Id="${'a'.repeat(27)}c" Target="worksheets/sheet1.xml"/></Relationships>`),
+    part('xl/worksheets/sheet1.xml', sheetXml([['Name', 'Email'], ['Ravi', 'ravi@example.com']]).toString()),
+  ]);
+  const started = Date.now();
+  const { rows } = parseSheet(zip);
+  assert.ok(Date.now() - started < 500, `parsed in ${Date.now() - started} ms`);
+  assert.deepEqual(rows, [{ name: 'Ravi', email: 'ravi@example.com' }], 'falls back to the default sheet');
+});
+
 test('a hostile sheet with far more rows than allowed is capped, not read to the end', () => {
   const rows = [['Prompt', 'Answer']];
   for (let i = 0; i < MAX_SHEET_ROWS + 50; i += 1) rows.push([`Question ${i}`, `Answer ${i}`]);

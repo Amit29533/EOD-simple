@@ -533,6 +533,10 @@ const INTEGRITY_EVENT_TONE = {
   tab_switch: 'red', browser_close: 'red', exam_exit: 'red', exam_reopen: 'red',
   multi_window: 'red', devtools_key: 'red', devtools_resize: 'red',
   paste_attempt: 'amber', copy_attempt: 'amber', cut_attempt: 'amber',
+  // `copy` is copying exam content outside an answer field (the in-field
+  // attempt is `copy_attempt`); `paste` is the name older clients logged a
+  // blocked paste under. Both were grey, as if routine.
+  copy: 'amber', paste: 'amber',
   screenshot: 'red', fullscreen_exit: 'red', contextmenu: 'amber',
   // Logged by the API when an open question is locked without a recording.
   spoken_answer_missing: 'amber',
@@ -548,6 +552,29 @@ const integrityTone = (event) => (typeof event === 'string' && Object.hasOwn(INT
   ? INTEGRITY_EVENT_TONE[event]
   : 'grey');
 
+/**
+ * The integrity tiles, each the sum of the counters it names. Every counter the
+ * API keeps (INTEGRITY_EVENT_KEYS in src/api/quiz-session.mjs) belongs to
+ * exactly one tile, except the two routine ones (the exam starting, the
+ * candidate returning to the tab), which only the headline total includes.
+ * The grid used to leave out copy, paste, screenshot, right-click and every
+ * unrecognised event, so a trail could read "0" on every copy tile while the
+ * headline counted the copies. `blur` and `visibility` are the names older
+ * clients logged the window-blur and tab-switch signals under.
+ */
+const INTEGRITY_TILES = [
+  { label: 'Tab switches', keys: ['tab_switch', 'visibility'] },
+  { label: 'Window blur / browser close', keys: ['window_blur', 'blur', 'browser_close'] },
+  { label: 'Exit / reopen exam', keys: ['exam_exit', 'exam_reopen'] },
+  { label: 'Copy / paste / devtools', keys: ['copy', 'copy_attempt', 'cut_attempt', 'paste', 'paste_attempt', 'devtools_key', 'devtools_resize'] },
+  { label: 'Fullscreen exit', keys: ['fullscreen_exit'] },
+  { label: 'Multi-window', keys: ['multi_window'] },
+  { label: 'Open answers locked without a recording', keys: ['spoken_answer_missing'] },
+  { label: 'Questions timed out', keys: ['time_expired'] },
+  { label: 'Screenshot / right-click / other', keys: ['screenshot', 'contextmenu', 'other'] },
+];
+const counterSum = (counters, keys) => keys.reduce((sum, k) => sum + (Number(counters[k]) || 0), 0);
+
 export async function integrityView(view, { id }) {
   view.innerHTML = loading();
   const d = await api(`/admin/assessments/${id}/integrity`);
@@ -560,17 +587,10 @@ export async function integrityView(view, { id }) {
       <div class="row between">
         <div><div class="section-kicker">Proctoring / integrity trail</div><h2 style="margin:0">${esc(d.candidate?.name || 'Candidate')} · ${esc(d.assessment.id)}</h2>
           <div class="small muted" style="margin-top:5px">Status: ${esc(d.assessment.status)} · Started ${d.assessment.started_at ? esc(fmtDateTime(d.assessment.started_at)) : '—'}</div></div>
-        <div class="row">${badge(`${total} events`, total ? 'amber' : 'green')}${severeEvents ? badge(`${severeEvents} severe`, 'red') : badge('no severe events', 'green')}</div>
+        <div class="row">${badge(`${total} event${total === 1 ? '' : 's'}`, total ? 'amber' : 'green')}${severeEvents ? badge(`${severeEvents} severe`, 'red') : badge('no severe events', 'green')}</div>
       </div>
       <div class="grid cols-3 metric-grid" style="margin-top:16px">
-        <div class="stat"><div class="lbl">Tab switches</div><div class="num">${counters.tab_switch || 0}</div></div>
-        <div class="stat"><div class="lbl">Window blur / browser close</div><div class="num">${((counters.window_blur || 0) + (counters.browser_close || 0))}</div></div>
-        <div class="stat"><div class="lbl">Exit / reopen exam</div><div class="num">${((counters.exam_exit || 0) + (counters.exam_reopen || 0))}</div></div>
-        <div class="stat"><div class="lbl">Copy / paste / devtools</div><div class="num">${((counters.copy_attempt || 0) + (counters.paste_attempt || 0) + (counters.cut_attempt || 0) + (counters.devtools_key || 0) + (counters.devtools_resize || 0))}</div></div>
-        <div class="stat"><div class="lbl">Fullscreen exit</div><div class="num">${counters.fullscreen_exit || 0}</div></div>
-        <div class="stat"><div class="lbl">Multi-window</div><div class="num">${counters.multi_window || 0}</div></div>
-        <div class="stat"><div class="lbl">Open answers locked without a recording</div><div class="num">${counters.spoken_answer_missing || 0}</div></div>
-        <div class="stat"><div class="lbl">Questions timed out</div><div class="num">${counters.time_expired || 0}</div></div>
+        ${INTEGRITY_TILES.map((tile) => `<div class="stat"><div class="lbl">${esc(tile.label)}</div><div class="num">${counterSum(counters, tile.keys)}</div></div>`).join('')}
       </div>
     </div>
     <div class="card table-card">

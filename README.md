@@ -35,7 +35,12 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 576 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 632 tests: scoring engine, question apportionment, API/RBAC journey,
+                    #           a route x role guard matrix read from the live router,
+                    #           candidate / assessor / admin point-of-view suites (API, and
+                    #           the real screens in jsdom against the real in-process API:
+                    #           exam hall to report card, scoring to finalize, integrity
+                    #           trail, lists, records, audit),
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,

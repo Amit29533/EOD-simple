@@ -386,6 +386,15 @@ export function candidateHandlers(route) {
   }));
 
   route('POST', '/candidate/assessments/:id/integrity', R, locked(async ({ store, auth, params, body }) => {
+    // A beacon must name its event. `integrityPatch` ignores a nameless one, so
+    // it never entered the exam trail and never counted toward the audit cap
+    // below, yet each one still cost an assessment write and an
+    // `integrity_integrity` audit row. A client could send them without limit
+    // and push every admin action out of the 2,000-row audit log, which is the
+    // flood the cap exists to stop. The exam client always sends a literal
+    // name, so these beacons are refused before any read or write.
+    const eventName = typeof body?.event === 'string' ? body.event.trim() : '';
+    if (!eventName) return bad('An integrity event name is required.');
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
@@ -397,7 +406,7 @@ export function candidateHandlers(route) {
       : body?.detail && typeof body.detail === 'object'
         ? JSON.stringify(body.detail).slice(0, 500)
         : '';
-    const quiz = integrityPatch(base, body?.event, detail, {
+    const quiz = integrityPatch(base, eventName, detail, {
       question_index: base.index,
       question_id: q?.id || '',
       question_prompt: q?.prompt || '',
@@ -413,7 +422,7 @@ export function candidateHandlers(route) {
     const totalEvents = (quiz.events || []).length + (Number(quiz.events_dropped) || 0);
     if (totalEvents > MAX_INTEGRITY_EVENTS) return ok({ integrity: quiz.integrity, events: quiz.events });
     const candidate = await myCandidate(store, auth.user);
-    const event = String(body?.event || 'integrity').slice(0, 80);
+    const event = eventName.slice(0, 80);
     await audit(
       store,
       auth.user,

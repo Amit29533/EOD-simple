@@ -730,6 +730,9 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 .report-legend-dot { width: 7px; height: 7px; border-radius: 50%; }
 .report-legend-name { overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
 .report-legend b { color: var(--ink); font-size: 10px; }
+/* A competency the paper never reached: listed for completeness, no slice. */
+.report-legend li.is-untested .report-legend-dot { opacity: .35; }
+.report-legend li.is-untested b { color: var(--ink-3); font-weight: 500; }
 .report-bars-panel { margin-top: 14px; }
 .report-bars { display: grid; gap: 11px; }
 .report-bar-row { display: grid; grid-template-columns: minmax(190px, .9fr) minmax(180px, 1.65fr) 58px; align-items: center; gap: 12px; }

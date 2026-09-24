@@ -81,8 +81,15 @@ function unzip(buffer) {
         throw new Error('That .xlsx declares more data than can be safely read (possible zip bomb).');
       }
       const slice = buf.subarray(start, Math.min(buf.length, start + compressedSize));
+      // The declared size above is whatever the archive claims. A part can
+      // claim a few bytes and still inflate to gigabytes, and the running
+      // total used to be checked only after the whole part was already in
+      // memory. zlib's `maxOutputLength` stops the inflate itself once the
+      // part passes what is left of the budget, so memory stays bounded
+      // whatever the archive says about itself.
+      const budget = Math.max(1, Math.min(MAX_XLSX_ENTRY_BYTES, MAX_XLSX_TOTAL_BYTES - inflatedTotal));
       try {
-        const part = method === 0 ? slice : inflateRawSync(slice);
+        const part = method === 0 ? slice : inflateRawSync(slice, { maxOutputLength: budget });
         inflatedTotal += part.length;
         if (inflatedTotal > MAX_XLSX_TOTAL_BYTES) {
           throw new Error('That .xlsx expands to more data than can be safely read (possible zip bomb).');
@@ -90,6 +97,9 @@ function unzip(buffer) {
         files.set(name, part);
       } catch (err) {
         if (err && /zip bomb/.test(err.message)) throw err;
+        if (err?.code === 'ERR_BUFFER_TOO_LARGE') {
+          throw new Error('That .xlsx expands to more data than can be safely read (possible zip bomb).');
+        }
         /* a part we cannot inflate is simply unavailable */
       }
     }
@@ -157,8 +167,17 @@ function parseXlsx(buffer) {
   const workbook = files.get('xl/workbook.xml')?.toString('utf8') || '';
   const rels = files.get('xl/_rels/workbook.xml.rels')?.toString('utf8') || '';
   const firstSheetRid = workbook.match(/<sheet[^>]*r:id="([^"]+)"/)?.[1];
+  // The r:id is text from the uploaded file. It used to be spliced into a
+  // RegExp, so a workbook could smuggle in a pattern: `(a+)+b` against a
+  // relationship Id of forty "a"s backtracks for hours on the one thread
+  // every request shares. Each <Relationship> tag is matched with a fixed
+  // pattern and its Id compared as a plain string instead (attribute order
+  // no longer matters, either).
   const relTarget = firstSheetRid
-    ? rels.match(new RegExp(`<Relationship[^>]*Id="${firstSheetRid}"[^>]*Target="([^"]+)"`))?.[1]
+    ? [...rels.matchAll(/<Relationship\b[^>]*>/g)]
+      .map((m) => m[0])
+      .find((tag) => tag.match(/\sId="([^"]*)"/)?.[1] === firstSheetRid)
+      ?.match(/\sTarget="([^"]+)"/)?.[1] ?? null
     : null;
 
   const candidates = [
