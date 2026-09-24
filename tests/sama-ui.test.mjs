@@ -199,7 +199,7 @@ test('Question Bank lists the SAMA bank in the track selector and renders its te
     assert.deepEqual(cards.map((c) => c.dataset.module), SAMA_MODULES.map((m) => m.key));
     const text = view.textContent.replace(/\s+/g, ' ');
     for (const m of SAMA_MODULES) assert.match(text, new RegExp(m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `module ${m.key}`);
-    assert.match(text, /34/, 'the 34-question blueprint is stated');
+    assert.match(text, /30/, 'the 30-question blueprint is stated');
     const ids = [...view.querySelectorAll('.family-table .mono')].map((n) => n.textContent);
     assert.ok(ids.includes('R01:sama-csf-saudi-regulatory-assessment'), ids.join(','));
     assert.ok(ids.includes('C01:banking-reporting-client-management'));

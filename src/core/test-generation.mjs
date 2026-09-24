@@ -60,6 +60,25 @@ export const TEST_BLUEPRINT = {
 };
 
 /**
+ * Quotas for a specific module: if the module specifies its own quota
+ * (e.g. SAMA's custom 30-question blueprint: 25 objective + 5 open across
+ * its 10 modules), use it; otherwise fall back to the default per-group quotas.
+ */
+export function moduleQuota(mod) {
+  if (mod.quota && typeof mod.quota.objective === 'number' && typeof mod.quota.open === 'number') {
+    return { objective: mod.quota.objective, open: mod.quota.open };
+  }
+  if (typeof mod.objective_quota === 'number' && typeof mod.open_quota === 'number') {
+    return { objective: mod.objective_quota, open: mod.open_quota };
+  }
+  const technical = mod.technical === true;
+  return {
+    objective: technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0,
+    open: technical ? TECHNICAL_OPEN_PER_MODULE : NON_TECHNICAL_OPEN_PER_MODULE,
+  };
+}
+
+/**
  * Paper-wide totals derived from a SPECIFIC module list: the same numbers
  * TEST_BLUEPRINT carries, but computed from the modules actually present, so
  * a track whose module set differs (e.g. the AI/BI & Genie bank's 10 modules:
@@ -69,21 +88,28 @@ export const TEST_BLUEPRINT = {
 export function blueprintFor(modules = []) {
   let technicalObjective = 0;
   let technicalOpen = 0;
+  let nonTechnicalObjective = 0;
   let nonTechnicalOpen = 0;
   for (const mod of modules) {
+    const q = moduleQuota(mod);
     if (mod.technical === true) {
-      technicalObjective += TECHNICAL_OBJECTIVE_PER_MODULE;
-      technicalOpen += TECHNICAL_OPEN_PER_MODULE;
+      technicalObjective += q.objective;
+      technicalOpen += q.open;
     } else {
-      nonTechnicalOpen += NON_TECHNICAL_OPEN_PER_MODULE;
+      nonTechnicalObjective += q.objective;
+      nonTechnicalOpen += q.open;
     }
   }
-  return {
+  const bp = {
     technical_objective: technicalObjective,
     technical_open: technicalOpen,
     non_technical_open: nonTechnicalOpen,
-    total: technicalObjective + technicalOpen + nonTechnicalOpen,
+    total: technicalObjective + technicalOpen + nonTechnicalObjective + nonTechnicalOpen,
   };
+  if (nonTechnicalObjective > 0) {
+    bp.non_technical_objective = nonTechnicalObjective;
+  }
+  return bp;
 }
 
 const isObjective = (q) => q?.type === 'objective';
@@ -177,9 +203,10 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
   for (const mod of orderedModules(modules)) {
     const pool = byModule.get(mod.key) || [];
     const technical = mod.technical === true;
+    const q = moduleQuota(mod);
 
-    const wantObjective = technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0;
-    const wantOpen = technical ? TECHNICAL_OPEN_PER_MODULE : NON_TECHNICAL_OPEN_PER_MODULE;
+    const wantObjective = q.objective;
+    const wantOpen = q.open;
 
     const objective = draw(pool, isObjective, wantObjective, rng);
     const open = draw(pool, isOpen, wantOpen, rng);
@@ -218,13 +245,20 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
 
   const technicalSections = sections.filter((s) => s.technical);
   const nonTechnicalSections = sections.filter((s) => !s.technical);
+  const technicalObjective = technicalSections.reduce((n, s) => n + s.objective, 0);
+  const technicalOpen = technicalSections.reduce((n, s) => n + s.open, 0);
+  const nonTechnicalObjective = nonTechnicalSections.reduce((n, s) => n + s.objective, 0);
+  const nonTechnicalOpen = nonTechnicalSections.reduce((n, s) => n + s.open, 0);
   const counts = {
-    technical_objective: technicalSections.reduce((n, s) => n + s.objective, 0),
-    technical_open: technicalSections.reduce((n, s) => n + s.open, 0),
-    non_technical_open: nonTechnicalSections.reduce((n, s) => n + s.open, 0),
+    technical_objective: technicalObjective,
+    technical_open: technicalOpen,
+    non_technical_open: nonTechnicalOpen,
     total: paper.length,
     from_optional: usedOptional,
   };
+  if (nonTechnicalObjective > 0) {
+    counts.non_technical_objective = nonTechnicalObjective;
+  }
 
   // Derived from the module list, so a bank with a different module set
   // reports its own paper shape (identical to TEST_BLUEPRINT for RSA's).
@@ -248,9 +282,10 @@ export function testPlan({ modules = [], questions = [] } = {}) {
   for (const mod of orderedModules(modules)) {
     const technical = mod.technical === true;
     const pool = (byModule.get(mod.key) || []).filter(isActive);
+    const q = moduleQuota(mod);
 
-    const wantObjective = technical ? TECHNICAL_OBJECTIVE_PER_MODULE : 0;
-    const wantOpen = technical ? TECHNICAL_OPEN_PER_MODULE : NON_TECHNICAL_OPEN_PER_MODULE;
+    const wantObjective = q.objective;
+    const wantOpen = q.open;
 
     const objectivePool = pool.filter((q) => isObjective(q) && !isOptional(q));
     const openPool = pool.filter((q) => isOpen(q) && !isOptional(q));

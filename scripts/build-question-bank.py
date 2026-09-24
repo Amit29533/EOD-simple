@@ -223,8 +223,13 @@ def build(bank_path, out_path, version=None, config=None):
         families = modules[key]
         group = group_of[key[0]]
         is_technical = 'true' if key in technical else 'false'
+        quotas = config.get('moduleQuotas', {})
+        quota_clause = ''
+        if key in quotas:
+            q = quotas[key]
+            quota_clause = f"\n    quota: {{ objective: {q['objective']}, open: {q['open']} }},"
         w(f"  {{ key: '{key}', name: {js(titles[key])}, group: '{group}', order: {order_value[key]},")
-        w(f"    technical: {is_technical},")
+        w(f"    technical: {is_technical},{quota_clause}")
         w('    families: [')
         for name, members in families.items():
             # Counts describe what the family actually holds, so a family row

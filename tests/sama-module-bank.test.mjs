@@ -97,22 +97,21 @@ test('generated SAMA papers hold the 8 risk & control + 2 reporting structure ex
   const rng = (n) => () => ((n = (n * 1103515245 + 12345) % 2147483648) / 2147483648);
   for (let seed = 1; seed <= 8; seed += 1) {
     const result = generateTest({ modules: SAMA_MODULES, questions: SAMA_QUESTIONS }, { rng: rng(seed) });
-    assert.equal(result.counts.total, 34, `seed ${seed}: paper length`);
-    assert.equal(result.counts.technical_objective, 24);
-    assert.equal(result.counts.technical_open, 8);
-    assert.equal(result.counts.non_technical_open, 2);
+    assert.equal(result.counts.total, 30, `seed ${seed}: paper length`);
+    assert.equal(result.counts.technical_objective, 20);
+    assert.equal(result.counts.technical_open, 4);
+    assert.equal(result.counts.non_technical_objective, 5);
+    assert.equal(result.counts.non_technical_open, 1);
     assert.deepEqual(result.warnings, [], `seed ${seed}: every module meets its quota`);
 
     const perModule = new Map(result.sections.map((s) => [s.module, s]));
     for (const m of SAMA_MODULES) {
       const s = perModule.get(m.key);
       assert.ok(s, `seed ${seed}: section for ${m.key}`);
-      if (m.technical) {
-        assert.equal(s.objective, 3, `seed ${seed}: ${m.key} objective quota`);
-        assert.equal(s.open, 1, `seed ${seed}: ${m.key} open quota`);
-      } else {
-        assert.equal(s.objective, 0, `seed ${seed}: ${m.key} has no objective seat`);
-        assert.equal(s.open, 1, `seed ${seed}: ${m.key} open quota`);
+      assert.equal(s.objective + s.open, 3, `seed ${seed}: ${m.key} total quota is 3`);
+      if (m.quota) {
+        assert.equal(s.objective, m.quota.objective, `seed ${seed}: ${m.key} objective quota`);
+        assert.equal(s.open, m.quota.open, `seed ${seed}: ${m.key} open quota`);
       }
     }
     // Interleaved: no two open questions back to back.
@@ -121,14 +120,14 @@ test('generated SAMA papers hold the 8 risk & control + 2 reporting structure ex
       assert.ok(!(types[i] === 'open' && types[i + 1] === 'open'), `seed ${seed}: no adjacent opens at ${i}`);
     }
     // Every id on the paper is a real published id, none repeated.
-    assert.equal(new Set(result.questions.map((q) => q.id)).size, 34);
+    assert.equal(new Set(result.questions.map((q) => q.id)).size, 30);
   }
 });
 
 test('testPlan reports the SAMA blueprint from the module list', () => {
   const plan = testPlan({ modules: SAMA_MODULES, questions: SAMA_QUESTIONS });
   assert.deepEqual(plan.blueprint, {
-    technical_objective: 24, technical_open: 8, non_technical_open: 2, total: 34,
+    technical_objective: 20, technical_open: 4, non_technical_open: 1, non_technical_objective: 5, total: 30,
   });
   assert.equal(plan.ready, true);
   assert.equal(plan.bank_total, 100);
@@ -146,7 +145,7 @@ test('the Question Bank modules/plan/preview/family endpoints serve the SAMA ban
   assert.equal(modules.body.version, SAMA_VERSION);
   assert.equal(modules.body.bank_total, 100);
   assert.deepEqual(modules.body.blueprint, {
-    technical_objective: 24, technical_open: 8, non_technical_open: 2, total: 34,
+    technical_objective: 20, technical_open: 4, non_technical_open: 1, non_technical_objective: 5, total: 30,
   });
   assert.equal(modules.body.technical_modules, 8);
   assert.equal(modules.body.non_technical_modules, 2);
@@ -161,13 +160,17 @@ test('the Question Bank modules/plan/preview/family endpoints serve the SAMA ban
 
   const plan = await call('GET', '/admin/question-bank/plan', { query: { role_key: SAMA_KEY } });
   assert.equal(plan.status, 200);
-  assert.equal(plan.body.blueprint.total, 34);
+  assert.equal(plan.body.blueprint.total, 30);
   assert.equal(plan.body.ready, true);
 
   const preview = await call('POST', '/admin/question-bank/preview', { body: { role_key: SAMA_KEY } });
   assert.equal(preview.status, 200);
-  assert.equal(preview.body.counts.total, 34);
-  assert.equal(preview.body.questions.length, 34);
+  assert.equal(preview.body.counts.total, 30);
+  assert.equal(preview.body.counts.technical_objective, 20);
+  assert.equal(preview.body.counts.technical_open, 4);
+  assert.equal(preview.body.counts.non_technical_objective, 5);
+  assert.equal(preview.body.counts.non_technical_open, 1);
+  assert.equal(preview.body.questions.length, 30);
 
   const family = await call('GET', '/admin/question-bank/families/R01:sama-csf-saudi-regulatory-assessment', { query: { role_key: SAMA_KEY } });
   assert.equal(family.status, 200, JSON.stringify(family.body));

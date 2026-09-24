@@ -7,11 +7,15 @@
  * ("SAMA Question bank 1.1.xlsx"); edit the generator (or the Admin UI),
  * not this file by hand.
  *
- *   R01, R02, A01, I01, O01, D01, B01, T01   Risk & Control   3 objective + 1 open served per module
- *   F01, C01                                 Reporting & Client 1 open served per module
+ *   R01, A01, O01, B01   Risk & Control   2 objective + 1 open served per module
+ *   R02, I01, D01, T01   Risk & Control   3 objective served per module
+ *   F01                  Reporting & Client 2 objective + 1 open served per module
+ *   C01                  Reporting & Client 3 objective served per module
  *
- * Every generated test is (8 x 4) + (2 x 1) = 34 questions, shuffled so
+ * Every generated test is 30 questions (25 objective + 5 open), shuffled so
  * objective and open questions interleave rather than arriving in blocks.
+ * Every module provides exactly 3 questions: 5 modules provide 2 objective + 1 open,
+ * and 5 modules provide 3 objective (3 questions per module across all 10 modules).
  * See src/core/test-generation.mjs for the selection logic.
  *
  * FAMILIES ARE SCOPED TO A MODULE. Each module in this bank is built around
@@ -43,60 +47,70 @@ export const MODULE_GROUPS = [
 export const MODULES = [
   { key: 'R01', name: 'SAMA CSF & Saudi Regulatory Assessment', group: 'technical', order: 11,
     technical: true,
+    quota: { objective: 2, open: 1 },
     families: [
       { id: 'R01:sama-csf-saudi-regulatory-assessment', key: 'sama-csf-saudi-regulatory-assessment', name: 'SAMA CSF & Saudi Regulatory Assessment',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'R02', name: 'SAMA ITGF & Technology Governance', group: 'technical', order: 12,
     technical: true,
+    quota: { objective: 3, open: 0 },
     families: [
       { id: 'R02:sama-itgf-technology-governance', key: 'sama-itgf-technology-governance', name: 'SAMA ITGF & Technology Governance',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'A01', name: 'Technology Risk & Control Assessment', group: 'technical', order: 13,
     technical: true,
+    quota: { objective: 2, open: 1 },
     families: [
       { id: 'A01:technology-risk-control-assessment', key: 'technology-risk-control-assessment', name: 'Technology Risk & Control Assessment',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'I01', name: 'IAM, PAM & Segregation of Duties', group: 'technical', order: 14,
     technical: true,
+    quota: { objective: 3, open: 0 },
     families: [
       { id: 'I01:iam-pam-segregation-of-duties', key: 'iam-pam-segregation-of-duties', name: 'IAM, PAM & Segregation of Duties',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'O01', name: 'Infrastructure & Security Operations', group: 'technical', order: 15,
     technical: true,
+    quota: { objective: 2, open: 1 },
     families: [
       { id: 'O01:infrastructure-security-operations', key: 'infrastructure-security-operations', name: 'Infrastructure & Security Operations',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'D01', name: 'Change, SDLC & Application Security', group: 'technical', order: 16,
     technical: true,
+    quota: { objective: 3, open: 0 },
     families: [
       { id: 'D01:change-sdlc-application-security', key: 'change-sdlc-application-security', name: 'Change, SDLC & Application Security',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'B01', name: 'Resilience, Incident & Recovery', group: 'technical', order: 17,
     technical: true,
+    quota: { objective: 2, open: 1 },
     families: [
       { id: 'B01:resilience-incident-recovery', key: 'resilience-incident-recovery', name: 'Resilience, Incident & Recovery',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'T01', name: 'Third-Party, Cloud & Data Protection', group: 'technical', order: 18,
     technical: true,
+    quota: { objective: 3, open: 0 },
     families: [
       { id: 'T01:third-party-cloud-data-protection', key: 'third-party-cloud-data-protection', name: 'Third-Party, Cloud & Data Protection',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'F01', name: 'Findings, Remediation & Closure', group: 'consulting', order: 21,
     technical: false,
+    quota: { objective: 2, open: 1 },
     families: [
       { id: 'F01:findings-remediation-closure', key: 'findings-remediation-closure', name: 'Findings, Remediation & Closure',
         role: 'mixed', objective: 6, open: 4 },
     ] },
   { key: 'C01', name: 'Banking, Reporting & Client Management', group: 'consulting', order: 22,
     technical: false,
+    quota: { objective: 3, open: 0 },
     families: [
       { id: 'C01:banking-reporting-client-management', key: 'banking-reporting-client-management', name: 'Banking, Reporting & Client Management',
         role: 'mixed', objective: 6, open: 4 },

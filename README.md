@@ -219,14 +219,16 @@ by track, so the banks can never bleed into each other:
   python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
   ```
 - **Technology Risk Consultant - SAMA v1.1** — 100 questions across 10 modules
-  (`R01`, `R02`, `A01`, `I01`, `O01`, `D01`, `B01`, `T01` risk & control — 3 objective +
-  1 open each; `F01`, `C01` reporting & client — 1 open each), generated from the published
-  `SAMA Question bank 1.1.xlsx` workbook; every generated test contains **exactly 34
-  questions** (24 objective + 10 open). Each module is one competency in the served bank
-  (SAMA CSF, SAMA ITGF, risk & control assessment, IAM/PAM & SoD, infrastructure & security
-  operations, change/SDLC & AppSec, resilience & recovery, third-party/cloud & data
-  protection, findings & remediation, banking reporting & client management). Regenerate
-  it with `npm run bank:sama-rebuild`, or step by step:
+  (`R01`, `A01`, `O01`, `B01` risk & control — 2 objective + 1 open each; `R02`, `I01`,
+  `D01`, `T01` risk & control — 3 objective each; `F01` reporting & client — 2 objective +
+  1 open; `C01` reporting & client — 3 objective), generated from the published
+  `SAMA Question bank 1.1.xlsx` workbook; every generated test contains **exactly 30
+  questions** (25 objective + 5 open across all 10 modules: 20 technical objective +
+  4 technical open + 5 consulting objective + 1 consulting open). Each module is one
+  competency in the served bank (SAMA CSF, SAMA ITGF, risk & control assessment, IAM/PAM & SoD,
+  infrastructure & security operations, change/SDLC & AppSec, resilience & recovery,
+  third-party/cloud & data protection, findings & remediation, banking reporting & client
+  management). Regenerate it with `npm run bank:sama-rebuild`, or step by step:
 
   ```bash
   node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.1.xlsx" data/sama-bank.json
