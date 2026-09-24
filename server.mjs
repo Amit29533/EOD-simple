@@ -143,6 +143,7 @@ const store = await createStore();
 const app = await createApp(store);
 console.log(`[ecod] storage backend: ${store.kind} | env: ${NODE_ENV}`);
 
+/** Writes the response; resolves once it has been handed to the socket. */
 function send(req, res, status, body, extraHeaders = {}) {
   const isHead = req?.method === 'HEAD';
   const isObj = typeof body === 'object' && body !== null && !Buffer.isBuffer(body);
@@ -174,16 +175,24 @@ function send(req, res, status, body, extraHeaders = {}) {
     /^(text\/|application\/(json|javascript)|image\/svg\+xml)/i.test(headers['content-type'] || '');
 
   if (canCompress) {
-    const compressed = zlib.gzipSync(buf);
-    headers['content-encoding'] = 'gzip';
-    headers['content-length'] = String(compressed.length);
-    res.writeHead(status, headers);
-    if (isHead) {
-      res.end();
-    } else {
-      res.end(compressed);
-    }
-    return;
+    // Off the event loop: a synchronous gzip of a multi-megabyte body (the
+    // question-bank export, a 50-question paper for a room of candidates)
+    // stalled every other request for its duration.
+    return new Promise((resolve) => {
+      zlib.gzip(buf, (err, compressed) => {
+        if (err) {
+          headers['content-length'] = String(buf.length);
+          res.writeHead(status, headers);
+          res.end(isHead ? undefined : buf);
+        } else {
+          headers['content-encoding'] = 'gzip';
+          headers['content-length'] = String(compressed.length);
+          res.writeHead(status, headers);
+          res.end(isHead ? undefined : compressed);
+        }
+        resolve();
+      });
+    });
   }
 
   headers['content-length'] = String(buf.length);
@@ -368,7 +377,7 @@ const server = http.createServer(async (req, res) => {
         if (result.authenticated) rateLimiter.accepted({ token });
         else if (result.status === 401) rateLimiter.rejected({ ip });
       }
-      send(req, res, result.status, result.body, result.headers);
+      await send(req, res, result.status, result.body, result.headers);
     } catch (err) {
       console.error(`[api] ${req.method} ${url.pathname} [${reqId}] failed:`, err);
       send(req, res, 500, { error: 'Internal error. Please try again.' });

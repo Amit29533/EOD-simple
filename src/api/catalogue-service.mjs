@@ -166,9 +166,6 @@ export function applySpokenContract(questions = []) {
   return healSpokenContract(oralHealed);
 }
 
-/** Kept as an alias: the contract used to cover only the published oral set. */
-export const applyOralContract = applySpokenContract;
-
 /** Status payload for the admin UI: what a sync would (and would not) do. */
 export async function catalogueStatus(store, roleKey) {
   const catalogue = catalogueForRoleKey(roleKey);

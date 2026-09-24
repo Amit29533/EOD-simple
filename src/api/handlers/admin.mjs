@@ -859,7 +859,7 @@ export function adminHandlers(route) {
     const users = (await store.list('users')).map(publicUser);
     const candidates = await store.list('candidates');
     const cname = Object.fromEntries(candidates.map((c) => [c.id, c.name]));
-    users.sort((a, b) => a.role.localeCompare(b.role) || a.name.localeCompare(b.name));
+    users.sort((a, b) => String(a.role || '').localeCompare(String(b.role || '')) || String(a.name || '').localeCompare(String(b.name || '')));
     const page = paginate(users, query, null);
     return ok({
       users: page.rows.map((u) => ({ ...u, candidate_name: cname[u.candidate_id] || null })),

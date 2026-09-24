@@ -21,9 +21,6 @@ export const candidateForAssessor = (c) => c && ({
   years_experience: c.years_experience ?? null, target_role_id: c.target_role_id || null,
 });
 
-/** Full candidate (admin only). */
-export const candidateForAdmin = (c) => c && ({ ...c });
-
 /**
  * Question as seen by a CANDIDATE: prompt + options only.
  * correct_option_ids and the assessor rubric are never sent.

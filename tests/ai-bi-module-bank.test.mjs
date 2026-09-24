@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createJsonStore } from '../src/storage/json-file.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
-import { MODULES as RSA_MODULES, QUESTIONS as RSA_QUESTIONS } from '../src/content/rsa-question-bank.mjs';
+import { QUESTIONS as RSA_QUESTIONS } from '../src/content/rsa-question-bank.mjs';
 import {
   MODULES as AIBI_MODULES, QUESTIONS as AIBI_QUESTIONS, QUESTION_BANK_VERSION as AIBI_VERSION,
 } from '../src/content/ai-bi-genie-question-bank.mjs';
