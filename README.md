@@ -19,7 +19,7 @@ The published assessment tracks are:
   `AI BI G Question bank 1.1.xlsx`),
 - **Technology Risk Consultant - SAMA** (`technology-risk-sama`) — 100-question served
   bank + the 100-question module Question Bank (generated from
-  `SAMA Question bank 1.1.xlsx`),
+  `SAMA Question bank 1.2.xlsx`),
 - **Senior Consultant** (`senior-consultant`) — competency framework published; its
   question bank is authored from the Admin UI as the track ships.
 
@@ -218,11 +218,11 @@ by track, so the banks can never bleed into each other:
   node scripts/extract-ai-bi-bank-from-xlsx.mjs "AI BI G Question bank 1.1.xlsx" data/ai-bi-bank.json
   python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
   ```
-- **Technology Risk Consultant - SAMA v1.1** — 100 questions across 10 modules
+- **Technology Risk Consultant - SAMA v1.2** — 100 questions across 10 modules
   (`R01`, `A01`, `O01`, `B01` risk & control — 2 objective + 1 open each; `R02`, `I01`,
   `D01`, `T01` risk & control — 3 objective each; `F01` reporting & client — 2 objective +
   1 open; `C01` reporting & client — 3 objective), generated from the published
-  `SAMA Question bank 1.1.xlsx` workbook; every generated test contains **exactly 30
+  `SAMA Question bank 1.2.xlsx` workbook; every generated test contains **exactly 30
   questions** (25 objective + 5 open across all 10 modules: 20 technical objective +
   4 technical open + 5 consulting objective + 1 consulting open). Each module is one
   competency in the served bank (SAMA CSF, SAMA ITGF, risk & control assessment, IAM/PAM & SoD,
@@ -231,8 +231,8 @@ by track, so the banks can never bleed into each other:
   management). Regenerate it with `npm run bank:sama-rebuild`, or step by step:
 
   ```bash
-  node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.1.xlsx" data/sama-bank.json
-  python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.1 scripts/sama-bank-config.json
+  node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.2.xlsx" data/sama-bank.json
+  python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.2 scripts/sama-bank-config.json
   ```
 
 Both the module bank and each track's *served* question bank (what allocation

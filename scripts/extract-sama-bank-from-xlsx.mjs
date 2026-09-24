@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Extract the published Technology Risk Consultant - SAMA question
- * bank from the source spreadsheet ("SAMA Question bank 1.1.xlsx").
+ * bank from the source spreadsheet ("SAMA Question bank 1.2.xlsx").
  *
  * Sibling of scripts/extract-ai-bi-bank-from-xlsx.mjs (AI/BI bank): the same
  * one-row-per-question export shape, adapted to this workbook's column names:
@@ -18,15 +18,15 @@
  *
  * The JSON it writes feeds scripts/build-question-bank.py with the SAMA
  * config:
- *   node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.1.xlsx" data/sama-bank.json
- *   python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.1 scripts/sama-bank-config.json
+ *   node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.2.xlsx" data/sama-bank.json
+ *   python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.2 scripts/sama-bank-config.json
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseSheet } from '../src/core/sheet-parser.mjs';
 import { correctFromCell } from '../src/core/question-intake.mjs';
 
-const source = process.argv[2] || 'SAMA Question bank 1.1.xlsx';
+const source = process.argv[2] || 'SAMA Question bank 1.2.xlsx';
 const outPath = process.argv[3] || 'data/sama-bank.json';
 fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
 
