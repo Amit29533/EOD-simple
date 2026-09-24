@@ -41,7 +41,7 @@ async function setup() {
 
 test('the registry holds one published bank per published track', () => {
   assert.equal(DEFAULT_MODULE_BANK_ROLE_KEY, 'databricks-rsa');
-  assert.deepEqual(Object.keys(MODULE_BANKS).sort(), ['databricks-ai-bi-genie', 'databricks-rsa']);
+  assert.deepEqual(Object.keys(MODULE_BANKS).sort(), ['databricks-ai-bi-genie', 'databricks-rsa', 'technology-risk-sama']);
   const rsa = MODULE_BANKS['databricks-rsa'];
   assert.equal(rsa.modules.length, 20);
   assert.equal(rsa.questions.length, RSA_QUESTIONS.length);

@@ -1,6 +1,7 @@
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS, RSA_ORAL_QUESTIONS, RSA_ORAL_SET } from '../content/rsa-catalogue.mjs';
 import { AIBI_ROLE, AIBI_COMPETENCIES, AIBI_QUESTIONS } from '../content/ai-bi-genie-catalogue.mjs';
 import { SC_ROLE, SC_COMPETENCIES, SC_QUESTIONS } from '../content/senior-consultant-catalogue.mjs';
+import { SAMA_ROLE, SAMA_COMPETENCIES, SAMA_QUESTIONS } from '../content/sama-catalogue.mjs';
 import { promptKey, stripPromptLabel } from '../core/question-selection.mjs';
 import { healSpokenContract, isOpenQuestion, requiresSpokenAnswer } from '../core/spoken-answer.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../core/constants.mjs';
@@ -54,6 +55,7 @@ export const PUBLISHED_CATALOGUES = {
   [RSA_ROLE.key]: { role: RSA_ROLE, competencies: RSA_COMPETENCIES, questions: RSA_QUESTIONS },
   [AIBI_ROLE.key]: { role: AIBI_ROLE, competencies: AIBI_COMPETENCIES, questions: AIBI_QUESTIONS },
   [SC_ROLE.key]: { role: SC_ROLE, competencies: SC_COMPETENCIES, questions: SC_QUESTIONS },
+  [SAMA_ROLE.key]: { role: SAMA_ROLE, competencies: SAMA_COMPETENCIES, questions: SAMA_QUESTIONS },
 };
 
 export const DEFAULT_CATALOGUE_ROLE_KEY = RSA_ROLE.key;

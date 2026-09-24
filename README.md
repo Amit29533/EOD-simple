@@ -17,6 +17,9 @@ The published assessment tracks are:
 - **Senior Databricks AI/BI & Genie Consultant** (`databricks-ai-bi-genie`) — 100-question
   served bank + the 100-question module Question Bank (generated from
   `AI BI G Question bank 1.1.xlsx`),
+- **Technology Risk Consultant - SAMA** (`technology-risk-sama`) — 100-question served
+  bank + the 100-question module Question Bank (generated from
+  `SAMA Question bank 1.1.xlsx`),
 - **Senior Consultant** (`senior-consultant`) — competency framework published; its
   question bank is authored from the Admin UI as the track ships.
 
@@ -32,7 +35,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 558 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 576 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           exam session & open-question microphone contract, the full
                     #           exam lifecycle (phases/timers/audio/scoring/report), the exam
                     #           answer screen (jsdom: countdown, options, lock, expiry,
@@ -44,7 +47,9 @@ npm test            # 558 tests: scoring engine, question apportionment, API/RBA
                     #           audit-log rotation, multi-writer guard), server-side exam
                     #           enforcement, the exam hall's draft autosave + lost-lock
                     #           recovery, the login throttle and sign-in gate, the server's
-                    #           per-session request budgets, the seed's worked example and
+                    #           per-session request budgets, the SAMA track (catalogue,
+                    #           module bank, install, timed exam journey and its screens),
+                    #           the seed's worked example and
                     #           the health probe
                     #           (jsdom is optional; `npm install` pulls a release that runs
                     #           on Node 20 and 22 — without it the UI suites skip, with an
@@ -213,9 +218,23 @@ by track, so the banks can never bleed into each other:
   node scripts/extract-ai-bi-bank-from-xlsx.mjs "AI BI G Question bank 1.1.xlsx" data/ai-bi-bank.json
   python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
   ```
+- **Technology Risk Consultant - SAMA v1.1** — 100 questions across 10 modules
+  (`R01`, `R02`, `A01`, `I01`, `O01`, `D01`, `B01`, `T01` risk & control — 3 objective +
+  1 open each; `F01`, `C01` reporting & client — 1 open each), generated from the published
+  `SAMA Question bank 1.1.xlsx` workbook; every generated test contains **exactly 34
+  questions** (24 objective + 10 open). Each module is one competency in the served bank
+  (SAMA CSF, SAMA ITGF, risk & control assessment, IAM/PAM & SoD, infrastructure & security
+  operations, change/SDLC & AppSec, resilience & recovery, third-party/cloud & data
+  protection, findings & remediation, banking reporting & client management). Regenerate
+  it with `npm run bank:sama-rebuild`, or step by step:
+
+  ```bash
+  node scripts/extract-sama-bank-from-xlsx.mjs "SAMA Question bank 1.1.xlsx" data/sama-bank.json
+  python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.1 scripts/sama-bank-config.json
+  ```
 
 Both the module bank and each track's *served* question bank (what allocation
-actually draws from — 115 questions for RSA, 100 for AI/BI & Genie) ship as published
+actually draws from — 115 questions for RSA, 100 for AI/BI & Genie, 100 for SAMA) ship as published
 content and are kept in sync by `npm run seed` and the in-app catalogue top-up. A
 workspace seeded before a track was published does not get it automatically: **Roles &
 frameworks → Published tracks** lists every published track with its state and adds a

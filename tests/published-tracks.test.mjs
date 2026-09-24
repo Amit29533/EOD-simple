@@ -12,6 +12,7 @@ import { DEFAULT_FRAMEWORK_CONFIG, MAX_ASSESSMENT_QUESTIONS } from '../src/core/
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
 import { AIBI_ROLE, AIBI_COMPETENCIES, AIBI_QUESTIONS } from '../src/content/ai-bi-genie-catalogue.mjs';
 import { SC_ROLE, SC_COMPETENCIES } from '../src/content/senior-consultant-catalogue.mjs';
+import { SAMA_ROLE, SAMA_COMPETENCIES, SAMA_QUESTIONS } from '../src/content/sama-catalogue.mjs';
 import { installCatalogue, listCatalogues, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
 
 /**
@@ -314,6 +315,7 @@ test('the service installs into an empty workspace too', async () => {
   assert.equal(after.find((t) => t.role_key === RSA_ROLE.key).bank_total, RSA_QUESTIONS.length);
   assert.equal(after.find((t) => t.role_key === AIBI_ROLE.key).bank_total, AIBI_QUESTIONS.length);
   assert.equal(after.find((t) => t.role_key === SC_ROLE.key).bank_total, 0);
+  assert.equal(after.find((t) => t.role_key === SAMA_ROLE.key).bank_total, SAMA_QUESTIONS.length);
   assert.equal(await installCatalogue(store, 'nope').then((r) => r.error && true), true);
 });
 
@@ -328,12 +330,18 @@ test('`npm run seed` on an existing workspace adds the published tracks it is mi
   const out = run();
   assert.match(out, /existing databricks-rsa bank synchronized/);
   assert.match(out, /published track "Senior Databricks AI\/BI & Genie Consultant" added: 10 competencies, 100 questions/);
+  assert.match(out, /published track "Technology Risk Consultant - SAMA" added: 10 competencies, 100 questions/);
   assert.match(out, /senior-consultant: deactivated in this workspace, left as is/);
 
   // Re-read from disk: the seed process wrote the file.
   const reread = createJsonStore(file);
   const roles = await reread.list('roles');
-  assert.deepEqual(roles.map((r) => r.key).sort(), [AIBI_ROLE.key, RSA_ROLE.key, SC_ROLE.key]);
+  assert.deepEqual(roles.map((r) => r.key).sort(), [AIBI_ROLE.key, RSA_ROLE.key, SC_ROLE.key, SAMA_ROLE.key].sort());
+  const sama = roles.find((r) => r.key === SAMA_ROLE.key);
+  assert.equal(sama.active, true);
+  assert.equal((await reread.list('questions', { role_id: sama.id })).length, SAMA_QUESTIONS.length);
+  assert.equal((await reread.list('competencies', { role_id: sama.id })).length, SAMA_COMPETENCIES.length);
+  assert.equal((await reread.list('frameworks', { role_id: sama.id })).length, 1);
   const aibi = roles.find((r) => r.key === AIBI_ROLE.key);
   assert.equal(aibi.active, true);
   assert.equal((await reread.list('questions', { role_id: aibi.id })).length, AIBI_QUESTIONS.length);
@@ -348,8 +356,10 @@ test('`npm run seed` on an existing workspace adds the published tracks it is mi
   // Second run: nothing new, nothing duplicated.
   const again = run();
   assert.match(again, /existing databricks-ai-bi-genie bank synchronized: added 0 question\(s\)/);
+  assert.match(again, /existing technology-risk-sama bank synchronized: added 0 question\(s\)/);
   const rereadAgain = createJsonStore(file);
-  assert.equal((await rereadAgain.list('roles')).length, 3);
+  assert.equal((await rereadAgain.list('roles')).length, 4);
+  assert.equal((await rereadAgain.list('questions', { role_id: sama.id })).length, SAMA_QUESTIONS.length);
   assert.equal((await rereadAgain.list('questions', { role_id: aibi.id })).length, AIBI_QUESTIONS.length);
 });
 
