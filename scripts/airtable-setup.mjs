@@ -39,7 +39,7 @@ const num = N, txt = { type: T }, long = { type: L }, chk = { type: C, options: 
 export const SCHEMA = {
   users:        ['username', 'name', 'email', 'role', 'password_hash', 'candidate_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }]),
   sessions:     ['token', 'user_id', 'expires_at', 'created_at'].map((f) => ({ name: f, ...txt })),
-  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }]),
   roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'active', ...chk }]),
@@ -115,7 +115,7 @@ async function main() {
     // keeps its old columns: name the fields that must exist for the current
     // app to write to it.
     console.log('\n[airtable] existing tables were left untouched. If this base was created by an older');
-    console.log('[airtable] run, add any missing columns manually: questions.question_set,');
+    console.log('[airtable] run, add any missing columns manually: candidates.assessor_id (text), questions.question_set,');
     console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
     console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
     console.log('[airtable] responses.locked, the bank_questions / bank_question_overrides tables, the recordings');

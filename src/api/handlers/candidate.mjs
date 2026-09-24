@@ -61,6 +61,49 @@ function blankAnswerFor(q, source = 'timed_out') {
   return '';
 }
 
+/**
+ * The exam hall's screen for one assessment: the live question, its clock and
+ * the candidate's own draft for it — nothing else from the paper. Built the
+ * same way by the GET and by a successful /next, so the browser can paint the
+ * next question straight from the lock's response instead of a second
+ * round trip (on a remote store that round trip was ~4 more storage calls
+ * behind the same per-assessment lock, i.e. a full second of a 30 s window).
+ */
+function examScreen(a, questions, quiz, responses) {
+  const snap = a.snapshot_json;
+  const answers = Object.fromEntries(responses.map((r) => [r.question_id, r.answer]));
+  const idx = Math.min(quiz.index, questions.length);
+  const current = questions[idx] || null;
+  const now = Date.now();
+  const remaining = current ? remainingMs(current, quiz, now) : 0;
+  const budgets = current ? budgetsFor(current) : null;
+  const competency = current
+    ? (snap.competencies || []).find((c) => c.id === current.competency_id)
+    : null;
+  return {
+    assessment: {
+      id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at,
+      role: snap.role ? { name: snap.role.name, description: snap.role.description } : null,
+    },
+    exam: {
+      index: idx,
+      total: questions.length,
+      phase: quiz.phase || 'answer',
+      remaining_ms: remaining,
+      server_now: new Date(now).toISOString(),
+      budgets,
+      integrity: quiz.integrity || {},
+      complete: idx >= questions.length,
+    },
+    current_question: current ? questionForCandidate(current) : null,
+    current_answer: current ? (answers[current.id] ?? null) : null,
+    competency: competency ? competencyForCandidate(competency) : null,
+    questions: current ? [questionForCandidate(current)] : [],
+    competencies: competency ? [competencyForCandidate(competency)] : [],
+    answers: current && answers[current.id] !== undefined ? { [current.id]: answers[current.id] } : {},
+  };
+}
+
 /** Has this question already got a row on the paper? (keyed by question id) */
 const responseIndex = (rows) => new Map(rows.map((r) => [r.question_id, r]));
 
@@ -303,38 +346,7 @@ export function candidateHandlers(route) {
     if (Object.keys(patch).length) await store.update('assessments', a.id, patch);
 
     const responses = await store.list('responses', { assessment_id: a.id });
-    const answers = Object.fromEntries(responses.map((r) => [r.question_id, r.answer]));
-    const idx = Math.min(quiz.index, questions.length);
-    const current = questions[idx] || null;
-    const now = Date.now();
-    const remaining = current ? remainingMs(current, quiz, now) : 0;
-    const budgets = current ? budgetsFor(current) : null;
-    const competency = current
-      ? (snap.competencies || []).find((c) => c.id === current.competency_id)
-      : null;
-
-    return ok({
-      assessment: {
-        id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at,
-        role: snap.role ? { name: snap.role.name, description: snap.role.description } : null,
-      },
-      exam: {
-        index: idx,
-        total: questions.length,
-        phase: quiz.phase || 'answer',
-        remaining_ms: remaining,
-        server_now: new Date(now).toISOString(),
-        budgets,
-        integrity: quiz.integrity || {},
-        complete: idx >= questions.length,
-      },
-      current_question: current ? questionForCandidate(current) : null,
-      current_answer: current ? (answers[current.id] ?? null) : null,
-      competency: competency ? competencyForCandidate(competency) : null,
-      questions: current ? [questionForCandidate(current)] : [],
-      competencies: competency ? [competencyForCandidate(competency)] : [],
-      answers: current && answers[current.id] !== undefined ? { [current.id]: answers[current.id] } : {},
-    });
+    return ok(examScreen(a, questions, quiz, responses));
   }));
 
   route('PUT', '/candidate/assessments/:id/answers', R, locked(async ({ store, auth, params, body }) => {
@@ -343,7 +355,7 @@ export function candidateHandlers(route) {
     if (!['assigned', 'in_progress'].includes(a.status))
       return conflict('This assessment has already been submitted.');
     const answers = body.answers;
-    if (!answers || typeof answers !== 'object') return bad('answers must be an object keyed by question id.');
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return bad('answers must be an object keyed by question id.');
     // Validate against the SERVED paper (de-duplicated, spoken-contract
     // healed), exactly as /next and /submit do — the raw snapshot can still
     // hold a legacy twin or a flag-less open row, and a draft checked against
@@ -492,7 +504,11 @@ export function candidateHandlers(route) {
     }
     const next = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
     await store.update('assessments', a.id, { quiz_state: next });
-    return ok({ phase: 'answer', remaining_ms: budgetsFor(q).answer_ms });
+    // The answer screen rides along, as it does with /next (see examScreen),
+    // so the hall paints it without a second round trip.
+    const responses = await store.list('responses', { assessment_id: a.id });
+    return ok({ phase: 'answer', remaining_ms: budgetsFor(q).answer_ms,
+      screen: examScreen({ ...a, quiz_state: next }, questions, next, responses) });
   }));
 
   route('POST', '/candidate/assessments/:id/next', R, locked(async ({ store, auth, params, body }) => {
@@ -655,8 +671,20 @@ export function candidateHandlers(route) {
     });
     if (!moved.row) return notFound('Assessment not found.');
     const index = moved.row.quiz_state?.index ?? quiz.index;
-    return ok({ complete: index >= questions.length, index, total: questions.length,
-      ...(!moved.changed ? { duplicate: true } : {}) });
+    const complete = index >= questions.length;
+    // The next screen rides along with a successful advance (see examScreen).
+    // `existing` was read before the lock; the only row it can be missing is
+    // the one just locked, which is not the next question's, and a draft for
+    // a not-yet-served question is never accepted — so it is current for the
+    // question about to be painted. A duplicate (no-op) advance sends no
+    // screen: the caller's own advance already carried it.
+    // (`a` keeps the paper — a row-table backend may return the updated row
+    // without its inline snapshot — the moved row supplies the new cursor.)
+    const after = { ...a, status: moved.row.status ?? a.status, quiz_state: moved.row.quiz_state };
+    const screen = moved.changed && !complete
+      ? examScreen(after, questions, ensureQuizState(after, questions), existing) : undefined;
+    return ok({ complete, index, total: questions.length,
+      ...(!moved.changed ? { duplicate: true } : {}), ...(screen ? { screen } : {}) });
   }));
 
   route('POST', '/candidate/assessments/:id/submit', R, locked(async ({ store, auth, params, body }) => {

@@ -48,12 +48,6 @@ export function setThemePref(pref) { return applyTheme(pref, { persist: true });
 /** Flip between the two explicit themes (used by the topbar switch). */
 export function toggleTheme() { return setThemePref(resolvedTheme() === 'dark' ? 'light' : 'dark'); }
 
-/** Cycle auto → light → dark (used by keyboard shortcuts / icon cycling). */
-export function nextThemePref() {
-  const i = THEME_PREFS.indexOf(themePref());
-  return setThemePref(THEME_PREFS[(i + 1) % THEME_PREFS.length]);
-}
-
 export function onThemeChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);

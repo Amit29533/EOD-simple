@@ -18,7 +18,6 @@ import { spawn } from 'node:child_process';
 import zlib from 'node:zlib';
 
 const TEST_PORT = 3899;
-const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
 let serverProc = null;
 
 function httpRequest(options, body = null) {

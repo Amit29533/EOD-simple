@@ -233,3 +233,223 @@ test('report: the admin copy of a finalized report names the assessor and shows 
     assert.deepEqual([...spa.view.querySelectorAll('.report-legend li b')].map((b) => b.textContent.trim()), ['60%', '40%']);
   } finally { spa.teardown(); }
 });
+
+/* ------------------------------------------------------------------------- */
+/* The assessor on the candidate record. Auto-allocated papers used to show   */
+/* "unassigned" with no way to fix that from the candidate itself.           */
+/* ------------------------------------------------------------------------- */
+
+test('candidate record: Edit offers an Assessor select; saving moves the open paper, and a scored one keeps its scorer', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { cand, assessmentId } = await w.candidateUser('edit.assessor', { name: 'Edit Assessor' });
+  const { user: assessor } = await w.assessorUser('kim.assessor');
+  assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, null, 'starts unassigned');
+  const spa = await bootSpa({ hash: `#/candidates/${cand.id}`, backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    assert.match(spa.text(), /Assessor: unassigned/, 'the record says so');
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.ok(select, 'the Edit form has an Assessor field');
+    assert.ok([...select.options].some((o) => o.value === assessor.id && /kim\.assessor/.test(o.textContent)), 'active assessors are offered');
+    type(select, assessor.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('candidates', cand.id)).assessor_id, assessor.id, 'the candidate remembers the assessor');
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, assessor.id, 'the open paper follows');
+    assert.equal(spa.callsTo(`/admin/candidates/${cand.id}`, 'PATCH').length, 1);
+
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    assert.match(spa.text(), /Assessor: Assessor kim\.assessor/);
+    const row = spa.view.querySelector('table.data tbody tr');
+    assert.equal(row.cells[1].textContent.trim(), 'Assessor kim.assessor', 'the paper row names the assessor');
+
+    // Once the test is scored, Edit changes the candidate's default but the
+    // report keeps the assessor who scored it.
+    await w.store.update('assessments', assessmentId, { status: 'scored', overall_pct: 70 });
+    const { user: second } = await w.assessorUser('raj.assessor');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    type(modal.querySelector('select[name="assessor_id"]'), second.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, assessor.id, 'the scored paper keeps its scorer');
+    assert.equal((await w.store.get('candidates', cand.id)).assessor_id, second.id, 'future papers go to the new default');
+  } finally { spa.teardown(); }
+});
+
+test('users & access: creating a candidate user (auto-allocation) offers an Assessor select and the paper gets it', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('uma.assessor');
+  const { cand } = await w.candidateUser('no.user.yet', { name: 'Needs Login', allocate: false });
+  // Remove that helper's login so the candidate can be provisioned from the screen.
+  for (const u of await w.store.list('users', { candidate_id: cand.id })) await w.store.remove('users', u.id);
+  const spa = await bootSpa({ hash: '#/users', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.usersView(spa.view);
+    spa.view.querySelector('#add-user').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.ok(select, 'the Create user form offers an assessor for the auto-allocated paper');
+    assert.ok(modal.querySelector('input[name="auto_allocate"]').checked, 'auto-allocation is on');
+    assert.ok([...select.options].some((o) => o.value === assessor.id));
+    type(modal.querySelector('input[name="username"]'), 'needs.login');
+    type(modal.querySelector('input[name="name"]'), 'Needs Login');
+    type(modal.querySelector('select[name="role"]'), 'candidate');
+    type(modal.querySelector('input[name="password"]'), 'Login-pass-123');
+    type(modal.querySelector('select[name="candidate_id"]'), cand.id);
+    type(select, assessor.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(400);
+    const papers = await w.store.list('assessments', { candidate_id: cand.id });
+    assert.equal(papers.length, 1, 'the paper was auto-allocated');
+    assert.equal(papers[0].assessor_id, assessor.id, 'to the chosen assessor, not "unassigned"');
+  } finally { spa.teardown(); }
+});
+
+test('candidates list: shows each candidate\'s assessor; the Add form offers the same select', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('lee.assessor');
+  await w.candidateUser('with.assessor', { name: 'With Assessor' });
+  await w.call('PATCH', `/admin/candidates/${(await w.store.list('candidates'))[0].id}`, { token: w.tok, body: { assessor_id: assessor.id } });
+  await w.candidateUser('sans.assessor', { name: 'Sans Assessor' });
+  const spa = await bootSpa({ hash: '#/candidates', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidatesView(spa.view);
+    const heads = [...spa.view.querySelectorAll('#cand-list thead th')].map((th) => th.textContent.trim());
+    assert.ok(heads.includes('Assessor'), 'the directory has an Assessor column');
+    const col = heads.indexOf('Assessor');
+    const cells = Object.fromEntries([...spa.view.querySelectorAll('#cand-list tbody tr')]
+      .map((r) => [r.querySelector('b').textContent, r.cells[col].textContent.trim()]));
+    assert.equal(cells['With Assessor'], 'Assessor lee.assessor');
+    assert.equal(cells['Sans Assessor'], 'unassigned');
+
+    spa.view.querySelector('#add-cand').click();
+    await flush(60);
+    const select = spa.document.querySelector('#modal-root select[name="assessor_id"]');
+    assert.ok(select, 'Add candidate offers the Assessor field too');
+    assert.ok([...select.options].some((o) => o.value === assessor.id));
+  } finally { spa.teardown(); }
+});
+
+test('candidates: the import dialog has a default Assessor select and previews the assessor per row', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('mia.assessor');
+  const { user: other } = await w.assessorUser('noa.assessor');
+  const spa = await bootSpa({ hash: '#/candidates', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidatesView(spa.view);
+    spa.view.querySelector('#import-cands').click();
+    await flush(120);
+    const dialog = spa.document.querySelector('#modal-root .modal');
+    const select = dialog.querySelector('#ic-assessor');
+    assert.ok(select, 'the dialog has an assessor selector');
+    assert.ok([...select.options].some((o) => o.value === assessor.id), 'assessors are listed');
+    assert.match(dialog.textContent, /Assessor · Username/, 'the column list advertises the Assessor column');
+    type(select, other.id);
+
+    const csv = 'Name,Email,Target role,Assessor\nRow Rita,rita@example.com,POV Track,mia.assessor\nRow Ron,ron@example.com,POV Track,\n';
+    const input = dialog.querySelector('#ic-file');
+    const file = new spa.window.File([csv], 'people.csv', { type: 'text/csv' });
+    Object.defineProperty(input, 'files', { value: [file] });
+    input.dispatchEvent(new spa.window.Event('change'));
+    await flush(300);
+
+    const heads = [...dialog.querySelectorAll('#ic-report thead th')].map((th) => th.textContent.trim());
+    assert.ok(heads.includes('Assessor'), 'the preview has an Assessor column');
+    const col = heads.indexOf('Assessor');
+    const rows = Object.fromEntries([...dialog.querySelectorAll('#ic-report tbody tr')]
+      .map((r) => [r.querySelector('b')?.textContent, r.cells[col]?.textContent.trim()]));
+    assert.equal(rows['Row Rita'], 'Assessor mia.assessor', 'the row column wins');
+    assert.equal(rows['Row Ron'], 'Assessor noa.assessor', 'a blank cell takes the dialog default');
+
+    [...dialog.querySelectorAll('.m-foot .btn')].at(-1).click();
+    await flush(400);
+    const papers = await w.store.list('assessments');
+    const byName = {};
+    for (const p of papers) byName[(await w.store.get('candidates', p.candidate_id)).name] = p.assessor_id;
+    assert.equal(byName['Row Rita'], assessor.id);
+    assert.equal(byName['Row Ron'], other.id);
+
+    // After the import: one assessor for everyone just imported, in one click.
+    const { user: third } = await w.assessorUser('zed.assessor');
+    const apply = dialog.querySelector('#ic-apply-assessor');
+    assert.ok(apply, 'the result panel offers an assessor for all imported candidates');
+    assert.ok([...apply.options].some((o) => o.value === assessor.id), 'it lists the assessors');
+    const opt = spa.document.createElement('option'); opt.value = third.id; opt.textContent = 'Assessor zed.assessor';
+    apply.appendChild(opt); // this one was created after the dialog loaded its list
+    type(apply, third.id);
+    dialog.querySelector('#ic-apply-btn').click();
+    await flush(400);
+    assert.match(dialog.querySelector('#ic-apply-status').textContent, /set on 2 candidates · 2 assessments moved/);
+    for (const p of await w.store.list('assessments')) {
+      const c = await w.store.get('candidates', p.candidate_id);
+      if (/^Row /.test(c.name)) {
+        assert.equal(p.assessor_id, third.id, `${c.name}'s paper moved`);
+        assert.equal(c.assessor_id, third.id, `${c.name} remembers the assessor`);
+      }
+    }
+  } finally { spa.teardown(); }
+});
+
+test('candidate record: a deactivated assessor stays selected in Edit, so saving another field does not unassign the paper', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('old.assessor');
+  const { cand, assessmentId } = await w.candidateUser('keep.assessor', { name: 'Keep Assessor' });
+  await w.call('PATCH', `/admin/candidates/${cand.id}`, { token: w.tok, body: { assessor_id: assessor.id } });
+  await w.call('PATCH', `/admin/users/${assessor.id}`, { token: w.tok, body: { active: false } });
+  const spa = await bootSpa({ hash: `#/candidates/${cand.id}`, backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.equal(select.value, assessor.id, 'the current assessor is still the selected value');
+    assert.match(select.selectedOptions[0].textContent, /old\.assessor \(deactivated\)/);
+    type(modal.querySelector('input[name="phone"]'), '+91 1');
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('candidates', cand.id)).phone, '+91 1', 'the edit saved');
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, assessor.id, 'the paper was not unassigned');
+  } finally { spa.teardown(); }
+});
+
+test('candidate record: an inactive target track stays selected as "(inactive)" in Edit and an unrelated save keeps it', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { cand } = await w.candidateUser('inactive.track', { name: 'Inactive Track', allocate: false });
+  await w.call('PATCH', `/admin/roles/${w.role.id}`, { token: w.tok, body: { active: false } });
+  const spa = await bootSpa({ hash: `#/candidates/${cand.id}`, backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="target_role_id"]');
+    assert.equal(select.value, w.role.id, 'the current track is still the selected value');
+    assert.equal(select.selectedOptions[0].textContent, 'POV Track (inactive)');
+    type(modal.querySelector('input[name="phone"]'), '+91 2');
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    const saved = await w.store.get('candidates', cand.id);
+    assert.equal(saved.phone, '+91 2', 'the edit saved');
+    assert.equal(saved.target_role_id, w.role.id, 'the mapping was neither refused nor cleared');
+
+    // The Add form never offers an inactive track.
+    await admin.candidatesView(spa.view);
+    spa.view.querySelector('#add-cand').click();
+    await flush(60);
+    const addSelect = spa.document.querySelector('#modal-root select[name="target_role_id"]');
+    assert.ok(![...addSelect.options].some((o) => o.value === w.role.id), 'inactive tracks are not offered for new candidates');
+  } finally { spa.teardown(); }
+});

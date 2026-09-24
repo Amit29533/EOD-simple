@@ -70,13 +70,6 @@ export async function bulkInsert(store, table, rows = []) {
 }
 
 /**
- * Batch update over the storage contract, mirroring bulkInsert: `patches` is an
- * ordered list of { id, patch } and the result keeps that order, with null where
- * the id does not exist. Adapters that hold the whole table in one file/blob
- * rewrite it once instead of once per row; others fall back to the loop, so a
- * repair pass over hundreds of rows never becomes hundreds of full writes.
- */
-/**
  * Canonical JSON for a stored field, with object keys sorted at every level.
  *
  * The exam's write paths compare an incoming answer against the row already on
@@ -95,6 +88,13 @@ export function stableJson(value) {
   return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
 }
 
+/**
+ * Batch update over the storage contract, mirroring bulkInsert: `patches` is an
+ * ordered list of { id, patch } and the result keeps that order, with null where
+ * the id does not exist. Adapters that hold the whole table in one file/blob
+ * rewrite it once instead of once per row; others fall back to the loop, so a
+ * repair pass over hundreds of rows never becomes hundreds of full writes.
+ */
 export async function bulkUpdate(store, table, patches = []) {
   if (!patches.length) return [];
   if (typeof store.updateMany === 'function') return store.updateMany(table, patches);

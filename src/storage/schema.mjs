@@ -64,7 +64,6 @@ export function overflowColumns(table) {
   }
   return out;
 }
-export const TABLE_NAMES = Object.keys(TABLES);
 
 /**
  * Storage adapter contract (implemented by json-file, airtable, netlify-blobs):

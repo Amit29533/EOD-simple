@@ -183,12 +183,26 @@ export async function resolveAutoRole(store, candidate, roleId = null) {
 }
 
 /**
+ * The id of the active assessor-role user `assessorId` names, or null when it
+ * is blank, unknown, not an assessor, or deactivated — an allocation must
+ * never point at a login that cannot score it.
+ */
+export async function resolveAssessorId(store, assessorId = null) {
+  if (!assessorId) return null;
+  const assessor = await store.get('users', assessorId);
+  return assessor && assessor.role === 'assessor' && assessor.active !== false ? assessor.id : null;
+}
+
+/**
  * Allocate the default assessment for a freshly provisioned candidate user.
  *
  * Every user created with the candidate role gets a 50-question assessment
  * (or the track's full bank when it holds fewer than 50) without an admin
- * having to open the Allocate dialog per candidate. The assessor is left
- * unassigned so the admin can distribute scoring later via Reassign.
+ * having to open the Allocate dialog per candidate. The assessor is the one
+ * passed in (`assessorId`), else the candidate record's default
+ * `assessor_id` (set on the Add/Edit candidate form or by the spreadsheet's
+ * Assessor column); only when neither names an active assessor is the paper
+ * left unassigned for the admin to distribute later via Reassign.
  *
  * Best-effort by design: it returns `{ allocated: false, reason }` instead of
  * throwing, so user provisioning can never fail because allocation did.
@@ -205,11 +219,7 @@ export async function autoAllocateAssessment(store, candidate, {
   const { role, reason } = await resolveAutoRole(store, candidate, roleId);
   if (!role) return fail(reason);
 
-  let assessor_id = null;
-  if (assessorId) {
-    const assessor = await store.get('users', assessorId);
-    if (assessor && assessor.role === 'assessor' && assessor.active !== false) assessor_id = assessor.id;
-  }
+  const assessor_id = await resolveAssessorId(store, assessorId || candidate.assessor_id || null);
 
   return withLock(allocationLockKey(candidate.id, role.id), async () => {
     const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))

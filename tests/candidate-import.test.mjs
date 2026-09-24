@@ -49,7 +49,7 @@ test('the import template is downloadable by admins only', async () => {
   assert.equal(res.body.filename, 'ecod-candidates-import-template.csv');
   assert.equal(res.body.content_type, 'text/csv');
   const keys = res.body.columns.map((c) => c.key);
-  for (const k of ['Name', 'Email', 'Target role', 'Pipeline stage', 'Username', 'Password', 'Notes']) {
+  for (const k of ['Name', 'Email', 'Target role', 'Pipeline stage', 'Assessor', 'Username', 'Password', 'Notes']) {
     assert.ok(keys.includes(k), `${k} advertised`);
   }
   assert.match(res.body.csv, /^Name,Email,Phone,Current title,Years of experience/);
@@ -100,7 +100,7 @@ test('a dry run validates every row and writes nothing', async () => {
   assert.equal(preview.length, 2);
   assert.deepEqual(preview[0], {
     line: 2, name: 'Asha Sharma', target_role: 'Resident Solutions Architect (RSA)',
-    stage: 'intake', username: 'asha.sharma',
+    stage: 'intake', assessor: '', username: 'asha.sharma',
   });
   // Username was blank -> derived from the email local part.
   assert.equal(preview[1].username, 'bilal', 'derived from the email local part');

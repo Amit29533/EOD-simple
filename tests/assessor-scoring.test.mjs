@@ -8,6 +8,7 @@ import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
 import { sortedQuestions } from '../src/api/quiz-session.mjs';
+import { makeWorld as makePovWorld } from './helpers/world.mjs';
 
 /**
  * The assessor's manual score is the one number on the paper that a human
@@ -107,4 +108,33 @@ test('numeric strings from a form and half marks are accepted; blank clears', as
   assert.equal(await w.stored(), null, 'an explicit blank clears the score');
   assert.equal((await w.score('')).status, 200);
   assert.equal(await w.stored(), null);
+});
+
+test('scores: the same unanswered question named twice in one sheet stores one row, last value wins', async (t) => {
+  const w = await makePovWorld({ t, mcq: 1, open: 1 });
+  const { token: ctok, assessmentId } = await w.candidateUser('twice.scored');
+  // walk + submit while leaving the open question blank on the paper
+  let v = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token: ctok })).body;
+  while (!v.exam.complete) {
+    if (v.current_question.type === 'text' && v.exam.phase === 'review') await w.call('POST', `/candidate/assessments/${assessmentId}/phase`, { token: ctok, body: { phase: 'answer' } });
+    await w.call('POST', `/candidate/assessments/${assessmentId}/next`, { token: ctok, body: { question_id: v.current_question.id, answer: v.current_question.type === 'text' ? null : v.current_question.options[0].id } });
+    v = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token: ctok })).body;
+  }
+  assert.equal((await w.call('POST', `/candidate/assessments/${assessmentId}/submit`, { token: ctok, body: { answers: {} } })).status, 200);
+  const { user: asr, token: atok } = await w.assessorUser('twice.assessor');
+  await w.assign(assessmentId, asr.id);
+  const det = (await w.call('GET', `/assessor/assessments/${assessmentId}`, { token: atok })).body;
+  const open = det.questions.find((q) => q.type === 'text');
+  // A paper from before the exam hall locked every question has no row for
+  // an unanswered one: drop the blank the walk left so the score must insert.
+  for (const r of await w.store.list('responses', { assessment_id: assessmentId, question_id: open.id })) await w.store.remove('responses', r.id);
+  const res = await w.call('PUT', `/assessor/assessments/${assessmentId}/scores`, { token: atok, body: { scores: [
+    { question_id: open.id, score: 1, comment: 'first' }, { question_id: open.id, score: 2, comment: 'second' },
+  ] } });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const after = (await w.call('GET', `/assessor/assessments/${assessmentId}`, { token: atok })).body;
+  const rows = after.responses.filter((r) => r.question_id === open.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].assessor_score, 2);
+  assert.equal(rows[0].assessor_comment, 'second');
 });

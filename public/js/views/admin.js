@@ -75,7 +75,7 @@ export async function dashboardView(view) {
 }
 
 /* ================================ Candidates ================================ */
-const candidateFields = (roles) => [
+const candidateFields = (roles, assessors = [], current = {}) => [
   { name: 'name', label: 'Full name', required: true },
   { name: 'email', label: 'Email', type: 'email' },
   { name: 'phone', label: 'Phone' },
@@ -83,14 +83,42 @@ const candidateFields = (roles) => [
   { name: 'years_experience', label: 'Years of experience', type: 'number', min: 0, max: 50 },
   { name: 'location', label: 'Location' },
   { name: 'source', label: 'Source', placeholder: 'Referral, partner, inbound…' },
-  { name: 'target_role_id', label: 'Target role (assessment track)', type: 'select', options: roles.map((r) => ({ value: r.id, label: r.name })) },
+  {
+    name: 'target_role_id', label: 'Target role (assessment track)', type: 'select',
+    // Active tracks are offered; a candidate's own track that has since been
+    // deactivated stays selectable (labelled) so opening and saving the form
+    // is a no-op unless the admin deliberately picks another.
+    options: roles
+      .filter((r) => r.active !== false || r.id === current.target_role_id)
+      .map((r) => ({ value: r.id, label: r.active === false ? `${r.name} (inactive)` : r.name })),
+  },
+  {
+    name: 'assessor_id', label: 'Assessor', type: 'select',
+    // A candidate whose assessor has since been deactivated keeps that
+    // assessor selectable: otherwise the select would open blank and saving
+    // an unrelated field would silently unassign every paper.
+    options: [
+      ...assessors.map((u) => ({ value: u.id, label: u.name })),
+      ...(current.assessor_id && !assessors.some((u) => u.id === current.assessor_id)
+        ? [{ value: current.assessor_id, label: `${current.assessor_name || 'Current assessor'} (deactivated)` }] : []),
+    ],
+    help: assessors.length
+      ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves their open (not yet scored) assessments too — finalized reports keep the assessor who scored them.'
+      : 'No active assessor users yet — create one under Users & Access.',
+  },
   { name: 'stage', label: 'Pipeline stage', type: 'select', options: M().pipelineStages.map((s) => ({ value: s.key, label: s.label })), allowEmpty: false },
   { name: 'notes', label: 'Internal notes', type: 'textarea', rows: 3, help: 'Visible to admins only — never to assessors or the candidate.' },
 ];
 
+/** Active assessor-role users, for every "Assessor" selector on the admin screens. */
+async function loadAssessors() {
+  const users = await apiAll('/admin/users', 'users');
+  return users.filter((u) => u.role === 'assessor' && u.active !== false);
+}
+
 export async function candidatesView(view) {
   view.innerHTML = loading();
-  const [candidates, { roles }] = await Promise.all([apiAll('/admin/candidates', 'candidates'), api('/admin/roles')]);
+  const [candidates, { roles }, assessors] = await Promise.all([apiAll('/admin/candidates', 'candidates'), api('/admin/roles'), loadAssessors()]);
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Talent directory</div><h1>Candidates</h1><p>Search, filter and open a candidate record.</p></div>
@@ -115,6 +143,7 @@ export async function candidatesView(view) {
     el.innerHTML = dataTable([
       { label: 'Candidate', render: (c) => `<a href="#/candidates/${c.id}"><b>${esc(c.name)}</b></a><div class="small muted">${esc(c.current_title || '')}${c.years_experience != null ? ` · ${c.years_experience} yrs` : ''}</div>` },
       { label: 'Target role', render: (c) => c.role_name ? esc(c.role_name) : '<span class="muted">—</span>' },
+      { label: 'Assessor', render: (c) => c.assessor_name ? esc(c.assessor_name) : '<span class="muted">unassigned</span>' },
       { label: 'Stage', render: (c) => stageBadge(M().pipelineStages, c.stage) },
       { label: 'Source', render: (c) => esc(c.source || '—') },
       { label: 'Added', render: (c) => `<span class="small muted">${esc(fmtDate(c.created_at))}</span>` },
@@ -123,7 +152,7 @@ export async function candidatesView(view) {
         <button class="btn ghost sm" data-act="alloc" data-id="${c.id}">Allocate</button>
         <button class="btn ghost sm" style="color:var(--red)" data-act="del" data-id="${c.id}">Delete</button>` },
     ], rows);
-    el.querySelectorAll('button[data-act]').forEach((b) => (b.onclick = () => candidateAction(b.dataset.act, rows.find((r) => r.id === b.dataset.id), roles)));
+    el.querySelectorAll('button[data-act]').forEach((b) => (b.onclick = () => candidateAction(b.dataset.act, rows.find((r) => r.id === b.dataset.id), roles, assessors)));
   };
   renderList(candidates);
 
@@ -144,7 +173,7 @@ export async function candidatesView(view) {
   view.querySelector('#import-cands').onclick = () => importCandidatesModal(() => candidatesView(view));
   view.querySelector('#add-cand').onclick = async () => {
     const saved = await formModal({
-      title: 'Add candidate', fields: candidateFields(roles), values: { stage: 'intake' },
+      title: 'Add candidate', fields: candidateFields(roles, assessors), values: { stage: 'intake' },
       onSubmit: (vals) => api('/admin/candidates', { method: 'POST', body: vals }),
     });
     if (!saved) return;
@@ -153,15 +182,18 @@ export async function candidatesView(view) {
   };
 }
 
-async function candidateAction(act, c, roles) {
+async function candidateAction(act, c, roles, assessors = null) {
   if (!c) return;
   if (act === 'edit') {
+    const list = assessors || await loadAssessors();
     const saved = await formModal({
-      title: `Edit ${c.name}`, fields: candidateFields(roles), values: c,
+      title: `Edit ${c.name}`, fields: candidateFields(roles, list, c), values: c,
       onSubmit: (vals) => api(`/admin/candidates/${c.id}`, { method: 'PATCH', body: vals }),
     });
     if (!saved) return;
-    toast('Candidate updated', 'success');
+    toast(saved.reassigned_assessments
+      ? `Candidate updated · ${saved.reassigned_assessments} open assessment${saved.reassigned_assessments === 1 ? '' : 's'} moved to the new assessor`
+      : 'Candidate updated', 'success');
     refresh();
   } else if (act === 'alloc') {
     await allocateAssessorModal(c);
@@ -222,7 +254,8 @@ export async function allocateAssessorModal(c, presetRoleId) {
     let settled = false;
     const settle = (value) => { if (!settled) { settled = true; resolve(value); } };
     let roleId = initialRole.id;
-    let assessorId = assessors[0].id;
+    // The candidate's own assessor (Edit form / import column) is the default.
+    let assessorId = (c.assessor_id && assessors.find((u) => u.id === c.assessor_id)) ? c.assessor_id : assessors[0].id;
     let mode = 'all';              // 'all' | 'limit'
     let count = '';
     let plan = null;
@@ -236,7 +269,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
           <label class="f"><span class="lbl">Role / track <span class="req">*</span></span>
             <select id="al-role">${activeRoles.map((r) => `<option value="${esc(r.id)}" ${r.id === roleId ? 'selected' : ''}>${esc(r.name)} · ${esc(r.question_count)} questions</option>`).join('')}</select></label>
           <label class="f"><span class="lbl">Assessor <span class="req">*</span></span>
-            <select id="al-assessor">${assessors.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}</select></label>
+            <select id="al-assessor">${assessors.map((u) => `<option value="${esc(u.id)}" ${u.id === assessorId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>
         </div>
 
         <fieldset class="alloc-scope">
@@ -437,6 +470,7 @@ export async function candidateDetailView(view, { id }) {
             <div><span class="muted">Location:</span> ${esc(c.location || '—')}</div>
             <div><span class="muted">Source:</span> ${esc(c.source || '—')}</div>
             <div><span class="muted">Target role:</span> ${esc(d.role_name || '—')}</div>
+            <div><span class="muted">Assessor:</span> ${d.assessor_name ? esc(d.assessor_name) : '<span class="muted">unassigned — press Edit to choose one</span>'}</div>
             <div><span class="muted">Portal login:</span> ${d.linked_user ? `<code>${esc(d.linked_user.username)}</code>` : '<span class="muted">not provisioned — create under Users & Access</span>'}</div>
           </div>
           ${c.notes ? `<hr class="hr"/><div class="small"><span class="muted">Internal notes:</span><br/>${esc(c.notes)}</div>` : ''}
@@ -445,7 +479,7 @@ export async function candidateDetailView(view, { id }) {
           <h3>Assessments</h3>
           ${d.assessments.length ? dataTable([
             { label: 'Role', render: (a) => esc(a.role_name) },
-            { label: 'Assessor', render: (a) => esc(a.assessor_name || '—') },
+            { label: 'Assessor', render: (a) => a.assessor_name ? esc(a.assessor_name) : '<span class="muted">unassigned</span>' },
             { label: 'Questions', render: (a) => questionScope(a) },
             { label: 'Status', render: (a) => assessmentStatusBadge(M().assessmentStatuses, a.status) },
             { label: 'Score', render: (a) => a.overall_pct != null ? `<b>${a.overall_pct}%</b> ${readinessBadge(a.readiness_key, a.readiness_label)}` : '—' },
@@ -466,8 +500,8 @@ export async function candidateDetailView(view, { id }) {
         </div>
       </div>
     </div>`;
-  const { roles } = await api('/admin/roles');
-  view.querySelector('#edit').onclick = () => candidateAction('edit', c, roles);
+  const [{ roles }, assessors] = await Promise.all([api('/admin/roles'), loadAssessors()]);
+  view.querySelector('#edit').onclick = () => candidateAction('edit', { ...c, assessor_name: d.assessor_name }, roles, assessors);
   view.querySelector('#alloc').onclick = () => allocateAssessorModal(c, c.target_role_id);
   view.querySelector('#del').onclick = () => deleteCandidateFlow(c, { goBack: true });
 }
@@ -1048,6 +1082,7 @@ export async function usersView(view) {
   view.innerHTML = loading();
   const [users, candidates] = await Promise.all([apiAll('/admin/users', 'users'), apiAll('/admin/candidates', 'candidates')]);
   const roleTone = { admin: 'red', assessor: 'blue', candidate: 'green', validator: 'amber', trainer: 'amber' };
+  const assessors = users.filter((u) => u.role === 'assessor' && u.active !== false);
   view.innerHTML = `
     <div class="page-heading">
       <div><div class="eyebrow">Workspace access</div><h1>Users & access</h1><p>Provision accounts and assign roles.</p></div>
@@ -1092,6 +1127,10 @@ export async function usersView(view) {
     ...(!values ? [{
       name: 'auto_allocate', label: 'Auto-allocate a 50-question assessment', type: 'checkbox', value: true,
       help: 'Candidate users get their assessment automatically — no manual Allocate step. Ignored for other roles.',
+    }, {
+      name: 'assessor_id', label: 'Assessor for the auto-allocated assessment', type: 'select',
+      options: assessors.map((u) => ({ value: u.id, label: u.name })),
+      help: 'Who scores the automatic assessment. Leave blank to use the assessor set on the candidate record (or leave it unassigned). Ignored for other roles.',
     }] : []),
   ];
 
@@ -1106,7 +1145,8 @@ export async function usersView(view) {
           throw Object.assign(new Error('Choose the linked candidate before creating a candidate portal user.'), { field: 'candidate_id' });
         }
         const body = { ...vals };
-        if (body.role !== 'candidate') delete body.candidate_id;
+        if (body.role !== 'candidate') { delete body.candidate_id; delete body.assessor_id; }
+        if (!body.assessor_id) delete body.assessor_id;
         return api('/admin/users', { method: 'POST', body });
       },
     });
@@ -1149,7 +1189,10 @@ export async function usersView(view) {
     if (saved) toast('Password reset', 'success');
   }));
   const toggle = async (id, active) => {
-    await attempt(() => api(`/admin/users/${id}`, { method: 'PATCH', body: { active } }), { okMessage: active ? 'User reactivated' : 'User deactivated' });
+    const out = await attempt(() => api(`/admin/users/${id}`, { method: 'PATCH', body: { active } }), { okMessage: active ? 'User reactivated' : 'User deactivated' });
+    if (out?.open_assessments) {
+      toast(`${out.open_assessments} open assessment${out.open_assessments === 1 ? ' is' : 's are'} still assigned to this assessor — reassign them under Assessments or from each candidate's Edit form.`, 'error', 8000);
+    }
     usersView(view);
   };
   view.querySelectorAll('[data-off]').forEach((b) => (b.onclick = () => toggle(b.dataset.off, false)));
@@ -2040,6 +2083,7 @@ function importCandidatesModal(onDone) {
   let lastFile = null;     // re-checked when the user toggle changes
   let rootEl = null;       // the open dialog, set in onOpen
   let committed = false;   // a successful import happened; close -> refresh
+  let assessorOptions = []; // active assessors, for the default and the post-import selectors
   const IMPORT_PAGE_ROWS = 100; // ≈ 2–3 s of server work per page
   const part = (sel) => rootEl?.querySelector(sel);
 
@@ -2065,9 +2109,17 @@ function importCandidatesModal(onDone) {
       <span><b>Auto-allocate a 50-question assessment</b>
         <small>Each new portal user gets their assessment automatically — no manual Allocate step per candidate.</small></span>
     </label>
+    <label class="f" id="ic-assessor-row" style="margin:10px 0 0">
+      <span class="lbl">Assessor for imported candidates</span>
+      <select id="ic-assessor" aria-label="Default assessor for imported candidates">
+        <option value="">— unassigned (assign later) —</option>
+      </select>
+      <div class="help">Scores the auto-allocated assessments. A row's own <span class="mono">Assessor</span> column
+        (name, username or email of an assessor user) overrides this default.</div>
+    </label>
     <p class="small muted" style="margin:11px 0 0">
       Columns: <b>Name</b> · Email · Current title · Years of experience · Target role · Pipeline stage ·
-      Username · Password · Notes (plus Phone, Location, Source).
+      Assessor · Username · Password · Notes (plus Phone, Location, Source).
       Not sure? <a href="#" id="ic-template">Download the template</a>.
     </p>
     <div id="ic-report"></div>`;
@@ -2096,11 +2148,12 @@ function importCandidatesModal(onDone) {
       ${r.preview.length ? `
         <div class="preview-scroll" style="max-height:26vh;margin-top:12px">
           <table class="data"><thead><tr>
-            <th>Row</th><th>Name</th><th>Target role</th><th>Stage</th><th>Username</th>
+            <th>Row</th><th>Name</th><th>Target role</th><th>Stage</th><th>Assessor</th><th>Username</th>
           </tr></thead><tbody>${r.preview.map((p) => `
             <tr><td class="muted">${p.line}</td><td><b>${esc(p.name)}</b></td>
               <td class="small">${esc(p.target_role || '—')}</td>
               <td class="small">${esc(p.stage || '—')}</td>
+              <td class="small">${p.assessor ? esc(p.assessor) : '<span class="muted">unassigned</span>'}</td>
               <td class="small mono">${esc(p.username || '')}</td></tr>`).join('')}
           </tbody></table>
         </div>
@@ -2145,6 +2198,7 @@ function importCandidatesModal(onDone) {
     const report = part('#ic-report');
     const creds = out.credentials || [];
     const skipped = (out.auto_allocations || []).filter((a) => !a.allocated).length;
+    const unassigned = (out.auto_allocations || []).filter((a) => a.allocated && !a.assessor_id).length;
     report.innerHTML = `
       <div class="import-summary">
         ${badge(`${out.imported} imported`, 'green')}
@@ -2155,6 +2209,21 @@ function importCandidatesModal(onDone) {
       ${out.stopped ? `<p class="small" style="margin:8px 0 0;color:var(--red);font-weight:700">The import stopped after row ${out.stopped_at} of ${out.total}: ${esc(out.stopped)}.
         Everything above is in the directory. Upload the same file again to import the rest — rows already imported are skipped as duplicates.</p>` : ''}
       ${skipped ? `<p class="small muted" style="margin:8px 0 0">${skipped} row${skipped === 1 ? '' : 's'} imported without an assessment (no track or empty bank) — allocate manually from the candidate record.</p>` : ''}
+      ${(out.candidate_ids || []).length ? `
+        <div class="card flat" id="ic-bulk-assessor" style="margin-top:12px;padding:12px 14px">
+          <b>Assessor for ${out.candidate_ids.length === 1 ? 'the imported candidate' : `all ${out.candidate_ids.length} imported candidates`}</b>
+          <div class="small muted" style="margin:2px 0 8px">${unassigned
+            ? `${unassigned} assessment${unassigned === 1 ? ' was' : 's were'} allocated without an assessor. `
+            : ''}Pick one assessor to set on every candidate from this import at once — their assessments move with it. You can still change any candidate individually from Edit.</div>
+          <div class="row" style="gap:8px;align-items:center">
+            <select id="ic-apply-assessor" aria-label="Assessor for all imported candidates">
+              <option value="">— choose an assessor —</option>
+              ${assessorOptions.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}
+            </select>
+            <button type="button" class="btn secondary sm" id="ic-apply-btn">Apply to all</button>
+            <span class="small" id="ic-apply-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>` : ''}
       ${creds.length ? `
         <div class="preview-scroll" style="max-height:32vh;margin-top:12px">
           <table class="data"><thead><tr><th>Name</th><th>Username</th><th>Password</th></tr></thead><tbody>
@@ -2166,6 +2235,22 @@ function importCandidatesModal(onDone) {
           <button type="button" class="btn secondary sm" id="ic-dl-creds" style="margin-left:6px">Download credentials (.csv)</button>
         </p>` : ''}
       <p class="small muted" style="margin-top:10px">${out.imported} candidate${out.imported === 1 ? '' : 's'} added to the directory.</p>`;
+    const applyBtn = part('#ic-apply-btn');
+    if (applyBtn) applyBtn.onclick = async () => {
+      const sel = part('#ic-apply-assessor');
+      const status = part('#ic-apply-status');
+      if (!sel.value) { toast('Choose an assessor first.', 'error'); sel.focus(); return; }
+      applyBtn.disabled = true;
+      status.textContent = 'Applying…';
+      const res = await attempt(() => api('/admin/candidates/assessor', {
+        method: 'POST', body: { candidate_ids: out.candidate_ids, assessor_id: sel.value },
+      }));
+      applyBtn.disabled = false;
+      if (!res) { status.textContent = ''; return; }
+      status.textContent = `${res.assessor_name} set on ${res.updated} candidate${res.updated === 1 ? '' : 's'}`
+        + (res.reassigned_assessments ? ` · ${res.reassigned_assessments} assessment${res.reassigned_assessments === 1 ? '' : 's'} moved` : '');
+      toast(`Assessor set to ${res.assessor_name} for ${res.updated} candidate${res.updated === 1 ? '' : 's'}`, 'success');
+    };
     const dl = part('#ic-dl-creds');
     if (dl) dl.onclick = () => downloadText(
       'ecod-imported-credentials.csv',
@@ -2190,8 +2275,9 @@ function importCandidatesModal(onDone) {
           btn.disabled = true;
           const createUsers = part('#ic-users')?.checked !== false;
           const autoAllocate = part('#ic-alloc')?.checked !== false;
+          const assessorId = part('#ic-assessor')?.value || '';
           const total = checked.total || 0;
-          const sum = { imported: 0, users_created: 0, auto_allocated: 0, credentials: [], auto_allocations: [], total, stopped: '', stopped_at: 0 };
+          const sum = { imported: 0, users_created: 0, auto_allocated: 0, credentials: [], auto_allocations: [], candidate_ids: [], total, stopped: '', stopped_at: 0 };
           let offset = 0;
           for (;;) {
             renderProgress(offset, total);
@@ -2199,7 +2285,7 @@ function importCandidatesModal(onDone) {
             try {
               page = await api('/admin/candidates/import', {
                 method: 'POST',
-                body: { ...payload, dry_run: false, create_users: createUsers, auto_allocate: autoAllocate, offset, limit: IMPORT_PAGE_ROWS },
+                body: { ...payload, dry_run: false, create_users: createUsers, auto_allocate: autoAllocate, assessor_id: assessorId || undefined, offset, limit: IMPORT_PAGE_ROWS },
               });
             } catch (err) {
               sum.stopped = err.message || 'the request failed';
@@ -2211,6 +2297,7 @@ function importCandidatesModal(onDone) {
             sum.auto_allocated += page.auto_allocated || 0;
             sum.credentials.push(...(page.credentials || []));
             sum.auto_allocations.push(...(page.auto_allocations || []));
+            sum.candidate_ids.push(...(page.imported_candidate_ids || []));
             if (sum.imported || sum.users_created) committed = true;
             const next = page.page?.next_offset;
             if (next == null || next <= offset) break;
@@ -2240,9 +2327,23 @@ function importCandidatesModal(onDone) {
       const name = root.querySelector('#ic-name');
       const usersToggle = root.querySelector('#ic-users');
       const allocToggle = root.querySelector('#ic-alloc');
+      const assessorSel = root.querySelector('#ic-assessor');
       const report = root.querySelector('#ic-report');
       const importBtn = [...root.querySelectorAll('.m-foot .btn')].pop();
       importBtn.disabled = true;
+
+      // The assessor list loads in the background; the dialog is usable
+      // (file, toggles) before it arrives and the selector fills in when it does.
+      loadAssessors().then((assessors) => {
+        assessorOptions = assessors;
+        if (!assessorSel?.isConnected) return;
+        for (const u of assessors) {
+          const opt = document.createElement('option');
+          opt.value = u.id;
+          opt.textContent = u.name;
+          assessorSel.appendChild(opt);
+        }
+      }).catch(() => { /* the selector just stays at "unassigned" */ });
 
       const check = async (f) => {
         checked = null;
@@ -2264,10 +2365,11 @@ function importCandidatesModal(onDone) {
 
         const createUsers = usersToggle.checked !== false;
         const autoAllocate = allocToggle.checked !== false;
+        const assessorId = assessorSel?.value || '';
         try {
           const out = await api('/admin/candidates/import', {
             method: 'POST',
-            body: { ...payload, dry_run: true, create_users: createUsers, auto_allocate: autoAllocate },
+            body: { ...payload, dry_run: true, create_users: createUsers, auto_allocate: autoAllocate, assessor_id: assessorId || undefined },
           });
           checked = out;
           renderReport(out);
@@ -2283,6 +2385,7 @@ function importCandidatesModal(onDone) {
       file.onchange = () => { if (file.files[0]) check(file.files[0]); };
       usersToggle.onchange = () => { if (lastFile) check(lastFile); };
       allocToggle.onchange = () => { if (lastFile) check(lastFile); };
+      if (assessorSel) assessorSel.onchange = () => { if (lastFile) check(lastFile); };
       drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('over'));
       drop.addEventListener('drop', (e) => {

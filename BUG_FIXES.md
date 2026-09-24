@@ -280,7 +280,48 @@ Current verification (Node 22.22): **666 Node tests: 664 pass, 0 fail, 2 skipped
 workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
 **216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
 
-## 🧭 Whole-project deep audit: four point-of-view passes over every layer (latest)
+## 🏁 Final-stage pass: assessor ownership, exam-lock latency and a line-by-line sweep (latest)
+
+**Feature-by-feature live probe (91 checks across all 65 API routes) — two small findings, both fixed:**
+
+- **Question-bank authoring accepted lowercase option ids only.** `POST /admin/question-bank/questions` with `options: [{id:'A',…},{id:'B',…}]` and `correct: 'B'` was refused with "A correct answer is required" because option ids were stored verbatim while the answer key is compared lowercased. The admin form and the CSV importer already lowercase, so only raw API clients hit it. `sanitizeOptions` now normalises ids to lowercase.
+- **`GET /admin/audit` only filtered by `entity`.** Added server-side `action`, `actor_id` and `entity_id` filters (`total` reflects the filtered set); documented in docs/API.md and covered by a new test in tests/pov-admin.test.mjs.
+
+The assessor-ownership work (candidate default assessor, per-row spreadsheet `Assessor`
+column, Edit-candidate reassignment of open papers only, batch `POST /admin/candidates/assessor`,
+deactivation warnings) was followed by three verification campaigns against a live server —
+every persona end to end (123 checks), adversarial edges (38: races, triple-click provisioning,
+a 250-row paged import, cross-tenant access, timers, bad input), a real-time timer / locking /
+submission run (54: 30 s MCQ and 60 s → 120 s open budgets, soft vs hard expiry, draft-in-time
+wins, 5-way `/next` storm, triple parallel submit) and all three published tracks (RSA, AI/BI &
+Genie, SAMA) walked from bank integrity to finalized report (68). Then a line-by-line audit of
+every source file. Findings, all pinned by tests:
+
+- **Exam autosave accepted an array as the answers draft.** `PUT …/answers` with
+  `answers: []` passed the `typeof === 'object'` check and was silently taken as an empty draft
+  while the message promised "an object keyed by question id". Refused with 400 like every other
+  array body.
+- **"Lock & continue" cost 14 sequential storage round trips.** The browser fired a safety-net
+  draft PUT alongside the lock, then refetched the next question — all queued behind the same
+  per-assessment lock (auth alone is two store calls per request). Instant on the JSON store,
+  **2.4–4.2 s per click on a remote (Airtable) backend** at 150–350 ms per call, out of a 30 s
+  window. `/next` and `/phase` now carry the next `screen` (same payload as the GET); the hall
+  paints from it and refetches only for a duplicate or an older server. The safety-net draft is
+  sent only if the lock is still in flight after 1.5 s (or at once when it fails). Six store
+  calls per click; the same replay measures 0.6 / 1.2 / 2.1 s.
+- **Two score entries for one unanswered question 409'd.** The assessor's `PUT …/scores`
+  turned each entry with no response row into an insert; two for the same question collided on
+  the shard's natural key and surfaced as "created by another request". Entries now merge per
+  question (last value wins) — only reachable on papers older than the always-lock exam hall,
+  but a 409 there was wrong.
+- Hygiene: unused exports (`nextThemePref`, `applyOralContract`, `candidateForAdmin`,
+  `TABLE_NAMES`) and dead test constants removed; a misplaced JSDoc in `helpers.mjs` re-homed;
+  the users listing sorts defensively on missing names; the development server's gzip runs off
+  the event loop (a multi-megabyte bank export used to stall every other request for its
+  duration). An XSS sweep of every `innerHTML` interpolation, a nested-mutation sweep of the
+  JSON store's shallow copies, and a transport-parity read of the Netlify function found nothing.
+
+## 🧭 Whole-project deep audit: four point-of-view passes over every layer (previous)
 
 The whole project was re-read one part at a time — `src/core`, `src/storage`, `src/api` and the
 server transports, then every SPA screen and shared module — and each part was probed with

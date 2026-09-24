@@ -120,7 +120,7 @@ function fakeRecorder(window) {
  * draft route answers like the real one (`accepted_question_ids`) unless
  * `draftReply` overrides it; `nextError` fails the lock until cleared.
  */
-function setup({ pages = [payload()], nextError = null, draftReply = null, mic = false } = {}) {
+function setup({ pages = [payload()], nextError = null, draftReply = null, mic = false, screenRides = false } = {}) {
   const dom = new JSDOM(`<!doctype html><html><body>
     <aside id="sidebar"></aside><header id="topbar"></header><div id="nav-scrim"></div>
     <main id="view"></main><div id="modal-root"></div><div id="toast-root"></div>
@@ -166,6 +166,8 @@ function setup({ pages = [payload()], nextError = null, draftReply = null, mic =
           ? 'That record was created by another request at the same time. Please refresh and try again.'
           : 'lock failed' }, error);
         page += 1;
+        // A current server carries the next screen with the advance.
+        if (screenRides) return json({ complete: false, index: page, total: pages.length, screen: current() });
         return json(current());
       }
       if (method === 'PUT' && path.includes('/answers')) {
@@ -579,4 +581,23 @@ test('a new clip replaces the kept one; a draft without clip or keep drops it (t
   await w.put({ [open.id]: { text: 'typed instead', transcript: '', source: 'typed' } });
   assert.equal((await w.recordings(open.id)).length, 0, 'no clip and no keep: the recording is dropped');
   assert.equal((await w.row(open.id)).answer.audio_missing, true);
+});
+
+test('a lock that lands promptly costs one request: no draft races it and the next question is painted from its reply', { skip: SKIP }, async () => {
+  const h = setup({ pages: [payload({ remaining: 20_000 }), payload({ index: 2, remaining: 24_000 })], screenRides: true });
+  try {
+    const view = await paint(h);
+    const before = h.calls.length;
+    view.querySelector('.opt input').click();
+    view.querySelector('#exam-next').click(); // before the 400 ms choice debounce fired
+    await flush(300);
+    assert.match(textOf(view), /Question\s*3\s*of\s*3/, 'the next question is on screen');
+    const since = h.calls.slice(before);
+    assert.equal(since.filter((c) => c.method === 'POST' && c.path.includes('/next')).length, 1);
+    assert.equal(since.filter((c) => c.method === 'PUT').length, 0, 'no draft raced the lock');
+    assert.equal(since.filter((c) => c.method === 'GET' && /assessments\/asm1$/.test(c.path)).length, 0, 'no refetch of the screen');
+    await flush(1600);
+    assert.equal(h.drafts().length, 0, 'the safety-net draft never fires for a lock that already landed');
+    h.unmount();
+  } finally { await h.teardown(); }
 });

@@ -409,6 +409,9 @@ async function runExamSession(view, id, payload) {
    * it, later drafts (and the lock) carry `audio_keep` instead of the clip.
    */
   const DRAFT_DELAY_MS = { choice: 400, text: 1500, now: 0 };
+  // How long a lock may be in flight before its answer also goes out as a
+  // draft (see advance()).
+  const DRAFT_NET_DELAY_MS = 1500;
   // `sentJson` is the last value the server has seen (taken or ignored — an
   // ignored draft is not re-sent on its own, only a changed one); `savedClip`
   // is the recording the server has taken for this question.
@@ -479,8 +482,14 @@ async function runExamSession(view, id, payload) {
     if (ticking) { clearInterval(ticking); ticking = null; }
     // Whatever the lock carries also goes out as an in-time draft if the
     // server has not acknowledged one yet: should the lock itself be lost,
-    // the late retry locks this draft rather than a blank.
-    flushDraft();
+    // the late retry locks this draft rather than a blank. It used to be
+    // fired together with the lock — and the server serialises both behind
+    // the same per-assessment lock, so on a remote store the draft's own
+    // storage round trips ran *ahead* of the lock and made every "Lock &
+    // continue" a second slower. A lock that answers promptly needs no net;
+    // one that is still out after this delay (cold function, flaky link) is
+    // exactly the case the net exists for, and the draft is still in time.
+    const net = setTimeout(flushDraft, DRAFT_NET_DELAY_MS);
     const btn = view.querySelector('#exam-next');
     // Show what the click is doing (the button used to look inert while the
     // lock was in flight) but keep the question on screen: if the lock fails,
@@ -509,8 +518,12 @@ async function runExamSession(view, id, payload) {
         throw err;
       }
     });
+    clearTimeout(net);
     if (unmounted) return; // the view was swapped while the lock was in flight
     if (!out) {
+      // The lock failed (fast or slow): the answer goes out as a draft now so
+      // the eventual retry — possibly after the window — locks it, not a blank.
+      flushDraft();
       // Offline, timed out or 5xx: re-arm the button and let them send it
       // again (a lock that actually committed self-heals — the retry /next
       // returns complete again via the idempotency guard, and a stale
@@ -530,7 +543,9 @@ async function runExamSession(view, id, payload) {
       return;
     }
     try {
-      d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+      // A successful advance carries the next screen; only an older server
+      // (or a no-op duplicate) makes the browser fetch it separately.
+      d = out.screen || await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
     } catch {
       if (unmounted) return;
       // The advance landed but the next question did not load. Keep the
@@ -690,11 +705,13 @@ async function runExamSession(view, id, payload) {
         // 409s on the second transition; that is benign — the server state
         // wins via the refetch — so only a failed refetch is worth a toast.
         nextBtn.disabled = true;
-        await api(`/candidate/assessments/${id}/phase`, {
+        const switched = await api(`/candidate/assessments/${id}/phase`, {
           method: 'POST', body: { phase: 'answer' }, timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
         }).catch(() => null);
         try {
-          d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+          // The transition carries the answer screen; a refetch is only for
+          // the benign 409 / an older server.
+          d = switched?.screen || await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
           currentAnswer = d.current_answer;
         } catch {
           toast('Could not reach the server — your place is saved; try again.', 'error');
@@ -982,9 +999,10 @@ async function runExamSession(view, id, payload) {
             // way the refetch repaints whatever the server says is current.
             api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
               .catch(() => null)
-              .then(async () => {
+              .then(async (switched) => {
+                if (unmounted) return;
                 try {
-                  d = await api(`/candidate/assessments/${id}`);
+                  d = switched?.screen || await api(`/candidate/assessments/${id}`);
                   currentAnswer = d.current_answer;
                   paint();
                 } catch {

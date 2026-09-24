@@ -57,3 +57,59 @@ test('a flood of nameless beacons cannot push admin actions out of the audit log
   assert.equal(rows.filter((e) => String(e.action).startsWith('integrity_')).length, 0);
   assert.equal(rows.filter((e) => !String(e.action).startsWith('integrity_')).length, adminRows, 'admin history intact');
 });
+
+test('autosave: an array is not "an object keyed by question id" — 400, like every other array body', async (t) => {
+  const w = await makeWorld({ t });
+  const { token, assessmentId } = await w.candidateUser('array.draft');
+  await w.call('GET', `/candidate/assessments/${assessmentId}`, { token });
+  const res = await w.call('PUT', `/candidate/assessments/${assessmentId}/answers`, { token, body: { answers: [] } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /object keyed by question id/);
+});
+
+test('lock latency: a successful /next carries the next screen (same shape as GET); a duplicate does not', async (t) => {
+  const w = await makeWorld({ t, mcq: 3, open: 1 });
+  const { token, assessmentId } = await w.candidateUser('screen.rider');
+  const first = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token })).body;
+  const q = first.current_question;
+  if (q.type === 'text') await w.call('POST', `/candidate/assessments/${assessmentId}/phase`, { token, body: { phase: 'answer' } });
+  const answer = q.type === 'mcq_single' ? q.options[0].id : q.type === 'mcq_multi' ? [q.options[0].id] : { text: 'x', transcript: 'x' };
+  const res = await w.call('POST', `/candidate/assessments/${assessmentId}/next`, { token, body: { question_id: q.id, answer } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.index, 1);
+  const screen = res.body.screen;
+  assert.ok(screen, 'screen rides along with the advance');
+  const fetched = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token })).body;
+  assert.deepEqual(Object.keys(screen).sort(), Object.keys(fetched).sort());
+  assert.deepEqual(screen.current_question, fetched.current_question);
+  assert.equal(screen.exam.index, 1);
+  assert.equal(screen.exam.phase, fetched.exam.phase);
+  assert.ok(screen.exam.remaining_ms >= fetched.exam.remaining_ms, 'the ridden-along clock is not behind the refetch');
+  assert.ok(!('correct' in (screen.current_question.options?.[0] || {})), 'no answer key leaks via the screen');
+  // duplicate advance: no-op, and no screen (the caller already has it)
+  const dup = await w.call('POST', `/candidate/assessments/${assessmentId}/next`, { token, body: { question_id: q.id, answer } });
+  assert.equal(dup.body.duplicate, true);
+  assert.equal(dup.body.screen, undefined);
+});
+
+test('lock latency: the review→answer transition carries the answer screen', async (t) => {
+  const w = await makeWorld({ t, mcq: 0, open: 2 });
+  const { token, assessmentId } = await w.candidateUser('phase.rider');
+  const first = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token })).body;
+  assert.equal(first.exam.phase, 'review');
+  const res = await w.call('POST', `/candidate/assessments/${assessmentId}/phase`, { token, body: { phase: 'answer' } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.screen?.exam?.phase, 'answer');
+  assert.equal(res.body.screen.current_question.id, first.current_question.id);
+  assert.ok(res.body.screen.exam.remaining_ms > 119000 && res.body.screen.exam.remaining_ms <= 120000);
+});
+
+test('lock latency: the last lock reports complete without a screen', async (t) => {
+  const w = await makeWorld({ t, mcq: 1, open: 0 });
+  const { token, assessmentId } = await w.candidateUser('last.lock');
+  const first = (await w.call('GET', `/candidate/assessments/${assessmentId}`, { token })).body;
+  const q = first.current_question;
+  const res = await w.call('POST', `/candidate/assessments/${assessmentId}/next`, { token, body: { question_id: q.id, answer: q.options[0].id } });
+  assert.equal(res.body.complete, true);
+  assert.equal(res.body.screen, undefined);
+});
