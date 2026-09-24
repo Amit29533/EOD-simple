@@ -239,7 +239,7 @@ test('report: the admin copy of a finalized report names the assessor and shows 
 /* "unassigned" with no way to fix that from the candidate itself.           */
 /* ------------------------------------------------------------------------- */
 
-test('candidate record: Edit offers an Assessor select and saving it moves the auto-allocated paper', { skip: SKIP }, async (t) => {
+test('candidate record: Edit offers an Assessor select and saving it moves the paper — also after the test is scored', { skip: SKIP }, async (t) => {
   const w = await makeWorld({ t });
   const { cand, assessmentId } = await w.candidateUser('edit.assessor', { name: 'Edit Assessor' });
   const { user: assessor } = await w.assessorUser('kim.assessor');
@@ -266,6 +266,48 @@ test('candidate record: Edit offers an Assessor select and saving it moves the a
     assert.match(spa.text(), /Assessor: Assessor kim\.assessor/);
     const row = spa.view.querySelector('table.data tbody tr');
     assert.equal(row.cells[1].textContent.trim(), 'Assessor kim.assessor', 'the paper row names the assessor');
+
+    // After the test is finished and scored, Edit can still hand it to someone else.
+    await w.store.update('assessments', assessmentId, { status: 'scored', overall_pct: 70 });
+    const { user: second } = await w.assessorUser('raj.assessor');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    type(modal.querySelector('select[name="assessor_id"]'), second.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, second.id, 'a scored paper follows the edit too');
+  } finally { spa.teardown(); }
+});
+
+test('users & access: creating a candidate user (auto-allocation) offers an Assessor select and the paper gets it', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('uma.assessor');
+  const { cand } = await w.candidateUser('no.user.yet', { name: 'Needs Login', allocate: false });
+  // Remove that helper's login so the candidate can be provisioned from the screen.
+  for (const u of await w.store.list('users', { candidate_id: cand.id })) await w.store.remove('users', u.id);
+  const spa = await bootSpa({ hash: '#/users', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.usersView(spa.view);
+    spa.view.querySelector('#add-user').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.ok(select, 'the Create user form offers an assessor for the auto-allocated paper');
+    assert.ok(modal.querySelector('input[name="auto_allocate"]').checked, 'auto-allocation is on');
+    assert.ok([...select.options].some((o) => o.value === assessor.id));
+    type(modal.querySelector('input[name="username"]'), 'needs.login');
+    type(modal.querySelector('input[name="name"]'), 'Needs Login');
+    type(modal.querySelector('select[name="role"]'), 'candidate');
+    type(modal.querySelector('input[name="password"]'), 'Login-pass-123');
+    type(modal.querySelector('select[name="candidate_id"]'), cand.id);
+    type(select, assessor.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(400);
+    const papers = await w.store.list('assessments', { candidate_id: cand.id });
+    assert.equal(papers.length, 1, 'the paper was auto-allocated');
+    assert.equal(papers[0].assessor_id, assessor.id, 'to the chosen assessor, not "unassigned"');
   } finally { spa.teardown(); }
 });
 
@@ -334,5 +376,24 @@ test('candidates: the import dialog has a default Assessor select and previews t
     for (const p of papers) byName[(await w.store.get('candidates', p.candidate_id)).name] = p.assessor_id;
     assert.equal(byName['Row Rita'], assessor.id);
     assert.equal(byName['Row Ron'], other.id);
+
+    // After the import: one assessor for everyone just imported, in one click.
+    const { user: third } = await w.assessorUser('zed.assessor');
+    const apply = dialog.querySelector('#ic-apply-assessor');
+    assert.ok(apply, 'the result panel offers an assessor for all imported candidates');
+    assert.ok([...apply.options].some((o) => o.value === assessor.id), 'it lists the assessors');
+    const opt = spa.document.createElement('option'); opt.value = third.id; opt.textContent = 'Assessor zed.assessor';
+    apply.appendChild(opt); // this one was created after the dialog loaded its list
+    type(apply, third.id);
+    dialog.querySelector('#ic-apply-btn').click();
+    await flush(400);
+    assert.match(dialog.querySelector('#ic-apply-status').textContent, /set on 2 candidates · 2 assessments moved/);
+    for (const p of await w.store.list('assessments')) {
+      const c = await w.store.get('candidates', p.candidate_id);
+      if (/^Row /.test(c.name)) {
+        assert.equal(p.assessor_id, third.id, `${c.name}'s paper moved`);
+        assert.equal(c.assessor_id, third.id, `${c.name} remembers the assessor`);
+      }
+    }
   } finally { spa.teardown(); }
 });

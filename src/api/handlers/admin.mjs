@@ -61,6 +61,43 @@ const CANDIDATE_TEXT_FIELDS = {
 };
 
 /**
+ * Point a candidate at `assessorId` (null = unassigned) and move every one of
+ * their assessments — open or finished — to it, each under its own assessment
+ * lock so the move cannot interleave with an exam write. An admin editing
+ * "Assessor" on a candidate means *this candidate's assessor*, before, during
+ * and after a test; the audit trail records each move. Returns the updated
+ * candidate and the papers that changed.
+ */
+async function setCandidateAssessor(store, actor, candidate, assessorId, extraPatch = {}) {
+  const nextAssessor = assessorId || null;
+  const changed = (candidate.assessor_id || null) !== nextAssessor;
+  const updated = await store.update('candidates', candidate.id, { ...extraPatch, assessor_id: nextAssessor });
+  const moved = [];
+  if (changed) {
+    const papers = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
+      .filter((a) => (a.assessor_id || null) !== nextAssessor);
+    for (const a of papers) {
+      const row = await withLock(`assessment:${a.id}`, async () => {
+        const fresh = await store.get('assessments', a.id);
+        if (!fresh || (fresh.assessor_id || null) === nextAssessor) return null;
+        return store.update('assessments', a.id, { assessor_id: nextAssessor });
+      });
+      if (row) moved.push(row);
+    }
+    if (moved.length) {
+      try {
+        await bulkInsert(store, 'audit_log', moved.map((a) => ({
+          actor_id: actor.id, actor_name: actor.name || 'admin',
+          action: 'assessment_reassigned', entity: 'assessments', entity_id: a.id,
+          message: nextAssessor ? 'Assessor allocation updated from the candidate record' : 'Assessor unassigned from the candidate record',
+        })));
+      } catch { /* audit must never break the request */ }
+    }
+  }
+  return { updated, moved, changed };
+}
+
+/**
  * A candidate's default assessor (`candidates.assessor_id`): the assessor who
  * scores the papers auto-allocated for them (user provisioning, bulk import)
  * and the one the Edit form changes. Returns `{ error }` when the body names
@@ -610,7 +647,10 @@ export function adminHandlers(route) {
         + (usersCreated ? ` (${usersCreated} portal user(s) created)` : '')
         + (auto_allocated ? ` (${auto_allocated} assessment(s) auto-allocated)` : ''));
     }
-    return ok({ ...pageSummary, imported, users_created: usersCreated, credentials, auto_allocated, auto_allocations, page });
+    return ok({
+      ...pageSummary, imported, users_created: usersCreated, credentials, auto_allocated, auto_allocations, page,
+      imported_candidate_ids: importedRecords.map((r) => r.id),
+    });
     });
   });
 
@@ -691,47 +731,46 @@ export function adminHandlers(route) {
     // Stage was validated above but never written — the admin Edit form sends it
     // on every save, so changing a candidate's pipeline stage silently no-op'd.
     if (body.stage !== undefined) patch.stage = body.stage;
-    // The assessor is editable from the candidate record. Changing it moves
-    // the candidate's open papers (not yet scored) to the new assessor too —
-    // that is what an admin editing "Assessor" on a candidate means — while
-    // finalized reports keep the assessor who actually scored them.
-    let assessorChanged = false;
+    // The assessor is editable from the candidate record, at any point of the
+    // journey: changing it moves every paper of the candidate (allocated, in
+    // progress, submitted or already scored) to the new assessor.
+    let updated;
     let reassigned = [];
     if (body.assessor_id !== undefined) {
       const assessorField = await candidateAssessorField(store, body.assessor_id);
       if (assessorField.error) return bad(assessorField.error);
-      patch.assessor_id = assessorField.id;
-      assessorChanged = (c.assessor_id || null) !== assessorField.id;
-    }
-    const updated = await store.update('candidates', params.id, patch);
-    if (assessorChanged) {
-      const nextAssessor = updated.assessor_id || null;
-      const open = (await store.list('assessments', { candidate_id: c.id }, { detached: false }))
-        .filter((a) => ['assigned', 'in_progress', 'submitted'].includes(a.status) && (a.assessor_id || null) !== nextAssessor);
-      // Same lock as PATCH /admin/assessments/:id so the move cannot
-      // interleave with an exam write; status is re-read under it because a
-      // paper may have been finalized between the listing and the move.
-      for (const a of open) {
-        const moved = await withLock(`assessment:${a.id}`, async () => {
-          const fresh = await store.get('assessments', a.id);
-          if (!fresh || ['scored', 'validated'].includes(fresh.status)) return null;
-          return store.update('assessments', a.id, { assessor_id: nextAssessor });
-        });
-        if (moved) reassigned.push(moved);
-      }
-      if (reassigned.length) {
-        try {
-          await bulkInsert(store, 'audit_log', reassigned.map((a) => ({
-            actor_id: auth.user.id, actor_name: auth.user.name || 'admin',
-            action: 'assessment_reassigned', entity: 'assessments', entity_id: a.id,
-            message: nextAssessor ? 'Assessor allocation updated from the candidate record' : 'Assessor unassigned from the candidate record',
-          })));
-        } catch { /* audit must never break the request */ }
-      }
+      ({ updated, moved: reassigned } = await setCandidateAssessor(store, auth.user, c, assessorField.id, patch));
+    } else {
+      updated = await store.update('candidates', params.id, patch);
     }
     await audit(store, auth.user, 'candidate_updated', 'candidates', params.id, `Candidate "${updated.name}" updated`
-      + (reassigned.length ? ` (${reassigned.length} open assessment${reassigned.length === 1 ? '' : 's'} moved to the new assessor)` : ''));
+      + (reassigned.length ? ` (${reassigned.length} assessment${reassigned.length === 1 ? '' : 's'} moved to the new assessor)` : ''));
     return ok({ ...updated, reassigned_assessments: reassigned.length });
+  });
+
+  // One assessor for many candidates at once — the "apply to everyone I just
+  // imported" step of the import dialog. Same rules and same paper moves as
+  // editing each candidate; unknown ids are reported, not fatal.
+  route('POST', '/admin/candidates/assessor', A, async ({ store, body, auth }) => {
+    const ids = Array.isArray(body.candidate_ids) ? body.candidate_ids.filter((v) => typeof v === 'string' && v).slice(0, MAX_IMPORT_ROWS) : [];
+    if (!ids.length) return bad('candidate_ids must list at least one candidate.');
+    const assessorField = await candidateAssessorField(store, body.assessor_id);
+    if (assessorField.error) return bad(assessorField.error);
+    const assessorName = assessorField.id ? (await store.get('users', assessorField.id))?.name || '' : '';
+    let updated = 0;
+    let reassigned = 0;
+    const missing = [];
+    for (const id of ids) {
+      const c = await store.get('candidates', id);
+      if (!c) { missing.push(id); continue; }
+      const out = await setCandidateAssessor(store, auth.user, c, assessorField.id);
+      updated += 1;
+      reassigned += out.moved.length;
+    }
+    await audit(store, auth.user, 'candidates_assessor_set', 'candidates', '',
+      `Assessor ${assessorName ? `"${assessorName}"` : 'cleared'} for ${updated} candidate(s)`
+      + (reassigned ? ` (${reassigned} assessment(s) moved)` : ''));
+    return ok({ updated, reassigned_assessments: reassigned, missing, assessor_id: assessorField.id, assessor_name: assessorName });
   });
 
   // Password-gated destructive delete. The signed-in admin must re-enter

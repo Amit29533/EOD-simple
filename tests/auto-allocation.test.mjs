@@ -334,7 +334,7 @@ test('a rejected assessor on the candidate form is a 400, not a silent unassign'
   assert.equal(nope.status, 400);
 });
 
-test('editing the assessor on a candidate moves their open papers and leaves scored ones alone', async () => {
+test('editing the assessor on a candidate moves every paper — open and already scored', async () => {
   const other = await store.insert('users', {
     username: 'assessor.two', name: 'Assessor Two', role: 'assessor', email: '', active: true,
     password_hash: hashPassword('assessor-pass-123'),
@@ -347,7 +347,7 @@ test('editing the assessor on a candidate moves their open papers and leaves sco
   assert.equal(user.status, 201, JSON.stringify(user.body));
   const openId = user.body.auto_allocation.assessment_id;
   assert.equal((await store.get('assessments', openId)).assessor_id, null, 'no default assessor -> unassigned');
-  // A finalized paper on another track must keep the assessor who scored it.
+  // A finished paper on another track: the admin's edit applies after the test too.
   const scored = await store.insert('assessments', {
     candidate_id: cand.id, role_id: alphaId, assessor_id: assessorId, status: 'scored',
     snapshot_json: { questions: [] }, report_json: null, overall_pct: 80,
@@ -358,9 +358,9 @@ test('editing the assessor on a candidate moves their open papers and leaves sco
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   assert.equal(edit.body.assessor_id, other.id, JSON.stringify(edit.body));
-  assert.equal(edit.body.reassigned_assessments, 1);
+  assert.equal(edit.body.reassigned_assessments, 2);
   assert.equal((await store.get('assessments', openId)).assessor_id, other.id, 'the open paper follows the edit');
-  assert.equal((await store.get('assessments', scored.id)).assessor_id, assessorId, 'the scored paper does not');
+  assert.equal((await store.get('assessments', scored.id)).assessor_id, other.id, 'so does the scored one — the assessor is changeable after a test');
   const trail = (await store.list('audit_log', { entity: 'assessments', entity_id: openId }))
     .filter((e) => e.action === 'assessment_reassigned');
   assert.equal(trail.length, 1, 'the move is audited against the paper');
@@ -378,6 +378,7 @@ test('editing the assessor on a candidate moves their open papers and leaves sco
   assert.equal(clear.status, 200);
   assert.equal(clear.body.assessor_id, null);
   assert.equal((await store.get('assessments', openId)).assessor_id, null);
+  assert.equal((await store.get('assessments', scored.id)).assessor_id, null);
 
   // An inactive assessor is refused on edit too.
   await store.update('users', other.id, { active: false });
@@ -438,4 +439,43 @@ test('an unknown dialog default is ignored, not fatal; an active assessor is sti
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.default_assessor_id, null);
   assert.equal(res.body.preview[0].assessor, '');
+});
+
+test('one assessor for many candidates at once (the post-import step) moves all their papers', async () => {
+  const two = (await store.list('users', { username: 'assessor.two' }))[0];
+  const a = await mkCandidate('Bulk Amy');
+  const b = await mkCandidate('Bulk Ben');
+  const ua = await call('POST', '/admin/users', { token: adminToken, body: { username: 'bulk.amy', name: 'Bulk Amy', role: 'candidate', candidate_id: a.id, password: 'amy-pass-1234' } });
+  const ub = await call('POST', '/admin/users', { token: adminToken, body: { username: 'bulk.ben', name: 'Bulk Ben', role: 'candidate', candidate_id: b.id, password: 'ben-pass-1234' } });
+  assert.equal((await store.get('assessments', ua.body.auto_allocation.assessment_id)).assessor_id, null);
+
+  const res = await call('POST', '/admin/candidates/assessor', {
+    token: adminToken, body: { candidate_ids: [a.id, b.id, 'ghost'], assessor_id: two.id },
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.updated, 2);
+  assert.equal(res.body.reassigned_assessments, 2);
+  assert.deepEqual(res.body.missing, ['ghost']);
+  assert.equal(res.body.assessor_name, 'Assessor Two');
+  assert.equal((await store.get('candidates', a.id)).assessor_id, two.id);
+  assert.equal((await store.get('assessments', ua.body.auto_allocation.assessment_id)).assessor_id, two.id);
+  assert.equal((await store.get('assessments', ub.body.auto_allocation.assessment_id)).assessor_id, two.id);
+
+  assert.equal((await call('POST', '/admin/candidates/assessor', { token: adminToken, body: { candidate_ids: [], assessor_id: two.id } })).status, 400);
+  assert.equal((await call('POST', '/admin/candidates/assessor', { token: adminToken, body: { candidate_ids: [a.id], assessor_id: 'nope' } })).status, 400);
+  const audit = (await store.list('audit_log')).find((e) => e.action === 'candidates_assessor_set');
+  assert.match(audit.message, /"Assessor Two" for 2 candidate/);
+});
+
+test('the import commit returns the ids of the candidates it wrote', async () => {
+  const commit = await call('POST', '/admin/candidates/import', {
+    token: adminToken,
+    body: {
+      dry_run: false, create_users: true, filename: 'ids.csv',
+      csv: csv([['Name', 'Email', 'Target role'], ['Id Ira', 'ira@example.com', 'Zulu Track']]),
+    },
+  });
+  assert.equal(commit.status, 200, JSON.stringify(commit.body));
+  assert.equal(commit.body.imported_candidate_ids.length, 1);
+  assert.equal((await store.get('candidates', commit.body.imported_candidate_ids[0])).name, 'Id Ira');
 });

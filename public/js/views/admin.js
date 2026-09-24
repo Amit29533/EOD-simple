@@ -88,7 +88,7 @@ const candidateFields = (roles, assessors = []) => [
     name: 'assessor_id', label: 'Assessor', type: 'select',
     options: assessors.map((u) => ({ value: u.id, label: u.name })),
     help: assessors.length
-      ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves their open (not yet scored) assessments too.'
+      ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves all of this candidate\'s assessments — before, during or after the test.'
       : 'No active assessor users yet — create one under Users & Access.',
   },
   { name: 'stage', label: 'Pipeline stage', type: 'select', options: M().pipelineStages.map((s) => ({ value: s.key, label: s.label })), allowEmpty: false },
@@ -177,7 +177,7 @@ async function candidateAction(act, c, roles, assessors = null) {
     });
     if (!saved) return;
     toast(saved.reassigned_assessments
-      ? `Candidate updated · ${saved.reassigned_assessments} open assessment${saved.reassigned_assessments === 1 ? '' : 's'} moved to the new assessor`
+      ? `Candidate updated · ${saved.reassigned_assessments} assessment${saved.reassigned_assessments === 1 ? '' : 's'} moved to the new assessor`
       : 'Candidate updated', 'success');
     refresh();
   } else if (act === 'alloc') {
@@ -2065,6 +2065,7 @@ function importCandidatesModal(onDone) {
   let lastFile = null;     // re-checked when the user toggle changes
   let rootEl = null;       // the open dialog, set in onOpen
   let committed = false;   // a successful import happened; close -> refresh
+  let assessorOptions = []; // active assessors, for the default and the post-import selectors
   const IMPORT_PAGE_ROWS = 100; // ≈ 2–3 s of server work per page
   const part = (sel) => rootEl?.querySelector(sel);
 
@@ -2190,7 +2191,21 @@ function importCandidatesModal(onDone) {
       ${out.stopped ? `<p class="small" style="margin:8px 0 0;color:var(--red);font-weight:700">The import stopped after row ${out.stopped_at} of ${out.total}: ${esc(out.stopped)}.
         Everything above is in the directory. Upload the same file again to import the rest — rows already imported are skipped as duplicates.</p>` : ''}
       ${skipped ? `<p class="small muted" style="margin:8px 0 0">${skipped} row${skipped === 1 ? '' : 's'} imported without an assessment (no track or empty bank) — allocate manually from the candidate record.</p>` : ''}
-      ${unassigned ? `<p class="small muted" style="margin:8px 0 0">${unassigned} assessment${unassigned === 1 ? '' : 's'} allocated without an assessor — choose one from the candidate's Edit form or Reassign under Assessments.</p>` : ''}
+      ${(out.candidate_ids || []).length ? `
+        <div class="card flat" id="ic-bulk-assessor" style="margin-top:12px;padding:12px 14px">
+          <b>Assessor for ${out.candidate_ids.length === 1 ? 'the imported candidate' : `all ${out.candidate_ids.length} imported candidates`}</b>
+          <div class="small muted" style="margin:2px 0 8px">${unassigned
+            ? `${unassigned} assessment${unassigned === 1 ? ' was' : 's were'} allocated without an assessor. `
+            : ''}Pick one assessor to set on every candidate from this import at once — their assessments move with it. You can still change any candidate individually from Edit.</div>
+          <div class="row" style="gap:8px;align-items:center">
+            <select id="ic-apply-assessor" aria-label="Assessor for all imported candidates">
+              <option value="">— choose an assessor —</option>
+              ${assessorOptions.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}
+            </select>
+            <button type="button" class="btn secondary sm" id="ic-apply-btn">Apply to all</button>
+            <span class="small" id="ic-apply-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>` : ''}
       ${creds.length ? `
         <div class="preview-scroll" style="max-height:32vh;margin-top:12px">
           <table class="data"><thead><tr><th>Name</th><th>Username</th><th>Password</th></tr></thead><tbody>
@@ -2202,6 +2217,22 @@ function importCandidatesModal(onDone) {
           <button type="button" class="btn secondary sm" id="ic-dl-creds" style="margin-left:6px">Download credentials (.csv)</button>
         </p>` : ''}
       <p class="small muted" style="margin-top:10px">${out.imported} candidate${out.imported === 1 ? '' : 's'} added to the directory.</p>`;
+    const applyBtn = part('#ic-apply-btn');
+    if (applyBtn) applyBtn.onclick = async () => {
+      const sel = part('#ic-apply-assessor');
+      const status = part('#ic-apply-status');
+      if (!sel.value) { toast('Choose an assessor first.', 'error'); sel.focus(); return; }
+      applyBtn.disabled = true;
+      status.textContent = 'Applying…';
+      const res = await attempt(() => api('/admin/candidates/assessor', {
+        method: 'POST', body: { candidate_ids: out.candidate_ids, assessor_id: sel.value },
+      }));
+      applyBtn.disabled = false;
+      if (!res) { status.textContent = ''; return; }
+      status.textContent = `${res.assessor_name} set on ${res.updated} candidate${res.updated === 1 ? '' : 's'}`
+        + (res.reassigned_assessments ? ` · ${res.reassigned_assessments} assessment${res.reassigned_assessments === 1 ? '' : 's'} moved` : '');
+      toast(`Assessor set to ${res.assessor_name} for ${res.updated} candidate${res.updated === 1 ? '' : 's'}`, 'success');
+    };
     const dl = part('#ic-dl-creds');
     if (dl) dl.onclick = () => downloadText(
       'ecod-imported-credentials.csv',
@@ -2228,7 +2259,7 @@ function importCandidatesModal(onDone) {
           const autoAllocate = part('#ic-alloc')?.checked !== false;
           const assessorId = part('#ic-assessor')?.value || '';
           const total = checked.total || 0;
-          const sum = { imported: 0, users_created: 0, auto_allocated: 0, credentials: [], auto_allocations: [], total, stopped: '', stopped_at: 0 };
+          const sum = { imported: 0, users_created: 0, auto_allocated: 0, credentials: [], auto_allocations: [], candidate_ids: [], total, stopped: '', stopped_at: 0 };
           let offset = 0;
           for (;;) {
             renderProgress(offset, total);
@@ -2248,6 +2279,7 @@ function importCandidatesModal(onDone) {
             sum.auto_allocated += page.auto_allocated || 0;
             sum.credentials.push(...(page.credentials || []));
             sum.auto_allocations.push(...(page.auto_allocations || []));
+            sum.candidate_ids.push(...(page.imported_candidate_ids || []));
             if (sum.imported || sum.users_created) committed = true;
             const next = page.page?.next_offset;
             if (next == null || next <= offset) break;
@@ -2285,6 +2317,7 @@ function importCandidatesModal(onDone) {
       // The assessor list loads in the background; the dialog is usable
       // (file, toggles) before it arrives and the selector fills in when it does.
       loadAssessors().then((assessors) => {
+        assessorOptions = assessors;
         if (!assessorSel?.isConnected) return;
         for (const u of assessors) {
           const opt = document.createElement('option');
