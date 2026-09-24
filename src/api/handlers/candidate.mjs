@@ -343,7 +343,7 @@ export function candidateHandlers(route) {
     if (!['assigned', 'in_progress'].includes(a.status))
       return conflict('This assessment has already been submitted.');
     const answers = body.answers;
-    if (!answers || typeof answers !== 'object') return bad('answers must be an object keyed by question id.');
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return bad('answers must be an object keyed by question id.');
     // Validate against the SERVED paper (de-duplicated, spoken-contract
     // healed), exactly as /next and /submit do — the raw snapshot can still
     // hold a legacy twin or a flag-less open row, and a draft checked against

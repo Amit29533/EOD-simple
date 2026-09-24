@@ -57,3 +57,12 @@ test('a flood of nameless beacons cannot push admin actions out of the audit log
   assert.equal(rows.filter((e) => String(e.action).startsWith('integrity_')).length, 0);
   assert.equal(rows.filter((e) => !String(e.action).startsWith('integrity_')).length, adminRows, 'admin history intact');
 });
+
+test('autosave: an array is not "an object keyed by question id" — 400, like every other array body', async (t) => {
+  const w = await makeWorld({ t });
+  const { token, assessmentId } = await w.candidateUser('array.draft');
+  await w.call('GET', `/candidate/assessments/${assessmentId}`, { token });
+  const res = await w.call('PUT', `/candidate/assessments/${assessmentId}/answers`, { token, body: { answers: [] } });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /object keyed by question id/);
+});
