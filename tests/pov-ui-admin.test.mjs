@@ -233,3 +233,106 @@ test('report: the admin copy of a finalized report names the assessor and shows 
     assert.deepEqual([...spa.view.querySelectorAll('.report-legend li b')].map((b) => b.textContent.trim()), ['60%', '40%']);
   } finally { spa.teardown(); }
 });
+
+/* ------------------------------------------------------------------------- */
+/* The assessor on the candidate record. Auto-allocated papers used to show   */
+/* "unassigned" with no way to fix that from the candidate itself.           */
+/* ------------------------------------------------------------------------- */
+
+test('candidate record: Edit offers an Assessor select and saving it moves the auto-allocated paper', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { cand, assessmentId } = await w.candidateUser('edit.assessor', { name: 'Edit Assessor' });
+  const { user: assessor } = await w.assessorUser('kim.assessor');
+  assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, null, 'starts unassigned');
+  const spa = await bootSpa({ hash: `#/candidates/${cand.id}`, backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    assert.match(spa.text(), /Assessor: unassigned/, 'the record says so');
+    spa.view.querySelector('#edit').click();
+    await flush(60);
+    const modal = spa.document.getElementById('modal-root');
+    const select = modal.querySelector('select[name="assessor_id"]');
+    assert.ok(select, 'the Edit form has an Assessor field');
+    assert.ok([...select.options].some((o) => o.value === assessor.id && /kim\.assessor/.test(o.textContent)), 'active assessors are offered');
+    type(select, assessor.id);
+    modal.querySelector('.m-foot .btn:last-child').click();
+    await flush(200);
+    assert.equal((await w.store.get('candidates', cand.id)).assessor_id, assessor.id, 'the candidate remembers the assessor');
+    assert.equal((await w.store.get('assessments', assessmentId)).assessor_id, assessor.id, 'the open paper follows');
+    assert.equal(spa.callsTo(`/admin/candidates/${cand.id}`, 'PATCH').length, 1);
+
+    await admin.candidateDetailView(spa.view, { id: cand.id });
+    assert.match(spa.text(), /Assessor: Assessor kim\.assessor/);
+    const row = spa.view.querySelector('table.data tbody tr');
+    assert.equal(row.cells[1].textContent.trim(), 'Assessor kim.assessor', 'the paper row names the assessor');
+  } finally { spa.teardown(); }
+});
+
+test('candidates list: shows each candidate\'s assessor; the Add form offers the same select', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('lee.assessor');
+  await w.candidateUser('with.assessor', { name: 'With Assessor' });
+  await w.call('PATCH', `/admin/candidates/${(await w.store.list('candidates'))[0].id}`, { token: w.tok, body: { assessor_id: assessor.id } });
+  await w.candidateUser('sans.assessor', { name: 'Sans Assessor' });
+  const spa = await bootSpa({ hash: '#/candidates', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidatesView(spa.view);
+    const heads = [...spa.view.querySelectorAll('#cand-list thead th')].map((th) => th.textContent.trim());
+    assert.ok(heads.includes('Assessor'), 'the directory has an Assessor column');
+    const col = heads.indexOf('Assessor');
+    const cells = Object.fromEntries([...spa.view.querySelectorAll('#cand-list tbody tr')]
+      .map((r) => [r.querySelector('b').textContent, r.cells[col].textContent.trim()]));
+    assert.equal(cells['With Assessor'], 'Assessor lee.assessor');
+    assert.equal(cells['Sans Assessor'], 'unassigned');
+
+    spa.view.querySelector('#add-cand').click();
+    await flush(60);
+    const select = spa.document.querySelector('#modal-root select[name="assessor_id"]');
+    assert.ok(select, 'Add candidate offers the Assessor field too');
+    assert.ok([...select.options].some((o) => o.value === assessor.id));
+  } finally { spa.teardown(); }
+});
+
+test('candidates: the import dialog has a default Assessor select and previews the assessor per row', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const { user: assessor } = await w.assessorUser('mia.assessor');
+  const { user: other } = await w.assessorUser('noa.assessor');
+  const spa = await bootSpa({ hash: '#/candidates', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.candidatesView(spa.view);
+    spa.view.querySelector('#import-cands').click();
+    await flush(120);
+    const dialog = spa.document.querySelector('#modal-root .modal');
+    const select = dialog.querySelector('#ic-assessor');
+    assert.ok(select, 'the dialog has an assessor selector');
+    assert.ok([...select.options].some((o) => o.value === assessor.id), 'assessors are listed');
+    assert.match(dialog.textContent, /Assessor · Username/, 'the column list advertises the Assessor column');
+    type(select, other.id);
+
+    const csv = 'Name,Email,Target role,Assessor\nRow Rita,rita@example.com,POV Track,mia.assessor\nRow Ron,ron@example.com,POV Track,\n';
+    const input = dialog.querySelector('#ic-file');
+    const file = new spa.window.File([csv], 'people.csv', { type: 'text/csv' });
+    Object.defineProperty(input, 'files', { value: [file] });
+    input.dispatchEvent(new spa.window.Event('change'));
+    await flush(300);
+
+    const heads = [...dialog.querySelectorAll('#ic-report thead th')].map((th) => th.textContent.trim());
+    assert.ok(heads.includes('Assessor'), 'the preview has an Assessor column');
+    const col = heads.indexOf('Assessor');
+    const rows = Object.fromEntries([...dialog.querySelectorAll('#ic-report tbody tr')]
+      .map((r) => [r.querySelector('b')?.textContent, r.cells[col]?.textContent.trim()]));
+    assert.equal(rows['Row Rita'], 'Assessor mia.assessor', 'the row column wins');
+    assert.equal(rows['Row Ron'], 'Assessor noa.assessor', 'a blank cell takes the dialog default');
+
+    [...dialog.querySelectorAll('.m-foot .btn')].at(-1).click();
+    await flush(400);
+    const papers = await w.store.list('assessments');
+    const byName = {};
+    for (const p of papers) byName[(await w.store.get('candidates', p.candidate_id)).name] = p.assessor_id;
+    assert.equal(byName['Row Rita'], assessor.id);
+    assert.equal(byName['Row Ron'], other.id);
+  } finally { spa.teardown(); }
+});

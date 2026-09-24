@@ -39,7 +39,7 @@ const num = N, txt = { type: T }, long = { type: L }, chk = { type: C, options: 
 export const SCHEMA = {
   users:        ['username', 'name', 'email', 'role', 'password_hash', 'candidate_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }]),
   sessions:     ['token', 'user_id', 'expires_at', 'created_at'].map((f) => ({ name: f, ...txt })),
-  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }]),
   roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'active', ...chk }]),

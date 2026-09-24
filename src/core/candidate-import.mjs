@@ -45,6 +45,7 @@ export const CANDIDATE_IMPORT_COLUMNS = [
   { key: 'Source', required: false, note: 'Referral, partner, inbound…' },
   { key: 'Target role', required: false, note: 'Name, key or id of an assessment track' },
   { key: 'Pipeline stage', required: false, note: 'e.g. Intake, Role Mapping, Assessment' },
+  { key: 'Assessor', required: false, note: 'Name, username, email or id of an assessor user; scores the auto-allocated assessment' },
   { key: 'Username', required: false, note: 'Portal login; generated when blank' },
   { key: 'Password', required: false, note: 'Portal login; generated when blank' },
   { key: 'Notes', required: false, note: 'Internal, admin-only' },
@@ -61,6 +62,7 @@ const FIELD_ALIASES = {
   source: ['source', 'referral_source', 'origin'],
   target_role: ['target_role', 'role', 'role_name', 'track', 'assessment_track', 'target_role_name'],
   stage: ['stage', 'pipeline_stage', 'pipeline_stage_key'],
+  assessor: ['assessor', 'assessor_name', 'assessor_username', 'assessor_id', 'assessor_email', 'assigned_assessor', 'evaluator'],
   username: ['username', 'user_name', 'login', 'user_id'],
   password: ['password', 'portal_password', 'initial_password'],
   notes: ['notes', 'internal_notes', 'note', 'comments'],
@@ -120,10 +122,24 @@ export function generatePassword() {
 }
 
 /**
+ * Find the active assessor a spreadsheet cell refers to. `assessors` is the
+ * list of user records; the cell may hold the id, username, email or display
+ * name (case-insensitive). Only active assessor-role users are eligible, the
+ * same rule the allocation endpoints enforce.
+ */
+export function findAssessor(assessors = [], value = '') {
+  const needle = String(value ?? '').trim().toLowerCase();
+  if (!needle) return null;
+  const eligible = (assessors || []).filter((u) => u && u.role === 'assessor' && u.active !== false);
+  const matchOn = (pick) => eligible.find((u) => String(pick(u) ?? '').trim().toLowerCase() === needle);
+  return matchOn((u) => u.id) || matchOn((u) => u.username) || matchOn((u) => u.email) || matchOn((u) => u.name) || null;
+}
+
+/**
  * Validate one spreadsheet row.
  *
  * `ctx` carries the taxonomies and collision sets:
- *   roles, stages, createUsers, existingCandidates, existingUsernames,
+ *   roles, stages, assessors, createUsers, existingCandidates, existingUsernames,
  *   usedUsernames, seenEmails, seenNames
  *
  * Returns { ok, duplicate, errors, candidate }. `candidate` is the normalized
@@ -176,6 +192,18 @@ export function validateCandidateRow(raw = {}, ctx = {}) {
       s.key.toLowerCase() === stageRaw.toLowerCase() || s.label.toLowerCase() === stageRaw.toLowerCase());
     if (!hit) errors.push(`Unknown pipeline stage "${stageRaw}".`);
     else candidate.stage = hit.key;
+  }
+
+  // The assessor who will score the auto-allocated paper. Matched the same
+  // forgiving way as the track: by id, username, email or display name.
+  const assessorRaw = String(row.assessor ?? '').trim();
+  if (assessorRaw) {
+    const hit = findAssessor(ctx.assessors, assessorRaw);
+    if (!hit) errors.push(`Unknown assessor "${assessorRaw}" (use an active assessor's name, username or email).`);
+    else {
+      candidate.assessor_id = hit.id;
+      candidate.assessor = hit.name || hit.username; // display name for the preview
+    }
   }
 
   let username = null;
@@ -287,9 +315,9 @@ export function candidateImportTemplateCsv() {
   const examples = [
     ['Asha Sharma', 'asha.sharma@example.com', '+91 90000 00000', 'Data Engineer', '8',
       'Bengaluru', 'Referral', 'Resident Solutions Architect (RSA)', 'Candidate Intake',
-      'asha.sharma', 'Onboard-2026!', 'Strong Delta Lake background'],
+      'priya.nair', 'asha.sharma', 'Onboard-2026!', 'Strong Delta Lake background'],
     ['Bilal Khan', 'bilal.khan@example.com', '', 'Solutions Architect', '12',
-      'Dubai', 'Inbound', '', 'Role Mapping', '', '', ''],
+      'Dubai', 'Inbound', '', 'Role Mapping', '', '', '', ''],
   ];
   return [header, ...examples].map((r) => r.map(esc).join(',')).join('\n');
 }

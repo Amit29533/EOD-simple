@@ -13,7 +13,7 @@ import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 import {
   buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
-  allocationLockKey,
+  allocationLockKey, resolveAssessorId,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import {
@@ -59,6 +59,21 @@ const MAX_IMPORT_COMMIT_ROWS = 200;
 const CANDIDATE_TEXT_FIELDS = {
   name: 120, email: 200, phone: 60, current_title: 120, location: 120, source: 120, notes: 4000,
 };
+
+/**
+ * A candidate's default assessor (`candidates.assessor_id`): the assessor who
+ * scores the papers auto-allocated for them (user provisioning, bulk import)
+ * and the one the Edit form changes. Returns `{ error }` when the body names
+ * a login that cannot score — not an assessor, or deactivated — otherwise
+ * `{ id }` (null when the field is blank / cleared).
+ */
+async function candidateAssessorField(store, value) {
+  if (value === undefined || value === null || value === '') return { id: null };
+  if (typeof value !== 'string') return { error: 'Assessor must be an active assessor user.' };
+  const id = await resolveAssessorId(store, value);
+  if (!id) return { error: 'Assessor must be an active assessor user.' };
+  return { id };
+}
 
 /**
  * Competency text fields, shared by POST and PATCH for the same reason: PATCH
@@ -294,12 +309,17 @@ export function adminHandlers(route) {
       const q = String(query.q).toLowerCase();
       rows = rows.filter((c) => `${c.name} ${c.email || ''}`.toLowerCase().includes(q));
     }
-    const roles = await store.list('roles');
+    const [roles, users] = await Promise.all([store.list('roles'), store.list('users')]);
     const roleName = Object.fromEntries(roles.map((r) => [r.id, r.name]));
+    const userName = Object.fromEntries(users.map((u) => [u.id, u.name]));
     const sorted = rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const page = paginate(sorted, query, null);
     return ok({
-      candidates: page.rows.map((c) => ({ ...c, role_name: roleName[c.target_role_id] || '' })),
+      candidates: page.rows.map((c) => ({
+        ...c,
+        role_name: roleName[c.target_role_id] || '',
+        assessor_name: (c.assessor_id && userName[c.assessor_id]) || '',
+      })),
       total: page.total,
       limit: page.limit,
       offset: page.offset,
@@ -322,11 +342,14 @@ export function adminHandlers(route) {
     }
     const yearsProblem = yearsError(body.years_experience);
     if (yearsProblem) return bad(yearsProblem);
+    const assessorField = await candidateAssessorField(store, body.assessor_id);
+    if (assessorField.error) return bad(assessorField.error);
     const rec = await store.insert('candidates', {
       name: str(body.name, 120), email: str(body.email, 200), phone: str(body.phone, 60),
       current_title: str(body.current_title, 120), years_experience: yearsExperience(body.years_experience),
       location: str(body.location, 120), source: str(body.source, 120), notes: str(body.notes, 4000),
       target_role_id: body.target_role_id || null,
+      assessor_id: assessorField.id,
       stage: body.stage || (body.target_role_id ? 'role_mapped' : 'intake'),
       created_by: auth.user.id,
     });
@@ -378,6 +401,7 @@ export function adminHandlers(route) {
     const report = validateCandidateBatch(parsed.rows, {
       roles,
       stages: PIPELINE_STAGES,
+      assessors: existingUsers,
       createUsers,
       existingCandidates,
       existingUsernames: existingUsers.map((u) => u.username),
@@ -423,10 +447,18 @@ export function adminHandlers(route) {
       : [];
     const plannedCount = plans.filter((p) => p.ok).length;
 
+    // The dialog-wide default assessor (`assessor_id`) scores every planned
+    // paper whose row left the Assessor column blank; an unknown or inactive
+    // default is ignored rather than failing the whole file.
+    const defaultAssessorId = await resolveAssessorId(store, body.assessor_id || null);
+    const defaultAssessorName = defaultAssessorId ? (existingUsers.find((u) => u.id === defaultAssessorId)?.name || '') : '';
+
     const summary = {
       headers: parsed.headers,
       create_users: createUsers,
       auto_allocate: autoAllocate,
+      default_assessor_id: defaultAssessorId,
+      default_assessor_name: defaultAssessorName,
       would_auto_allocate: plannedCount,
       auto_skipped: plans.length - plannedCount,
       total: parsed.rows.length,
@@ -441,6 +473,7 @@ export function adminHandlers(route) {
         name: a.candidate.name,
         target_role: a.candidate.target_role || '',
         stage: a.candidate.stage || '',
+        assessor: a.candidate.assessor || defaultAssessorName || '',
         username: a.candidate.username || '',
       })),
     };
@@ -485,6 +518,7 @@ export function adminHandlers(route) {
         source: candidate.source,
         notes: candidate.notes,
         target_role_id,
+        assessor_id: candidate.assessor_id || defaultAssessorId || null,
         stage,
         created_by: auth.user.id,
       };
@@ -519,11 +553,6 @@ export function adminHandlers(route) {
     let auto_allocated = 0;
     let auto_allocations = [];
     if (autoAllocate && importedRecords.length && usersCreated) {
-      let bulkAssessorId = null;
-      if (body.assessor_id) {
-        const assessor = await store.get('users', body.assessor_id);
-        if (assessor && assessor.role === 'assessor' && assessor.active !== false) bulkAssessorId = assessor.id;
-      }
       const assessmentBatch = [];
       const allocatedIdx = [];
       auto_allocations = importedRecords.map((rec, i) => {
@@ -535,8 +564,10 @@ export function adminHandlers(route) {
         const scope = plan.snapshot.question_limit
           ? `${plan.question_count} of ${plan.snapshot.bank_total} questions`
           : `all ${plan.question_count} questions`;
+        // The row's own Assessor column wins; the dialog default fills blanks.
+        const assessorId = rec.assessor_id || null;
         assessmentBatch.push({
-          candidate_id: rec.id, role_id: plan.role.id, assessor_id: bulkAssessorId,
+          candidate_id: rec.id, role_id: plan.role.id, assessor_id: assessorId,
           status: 'assigned', snapshot_json: plan.snapshot, report_json: null,
           // The same listing facts every other allocation path stamps. Without
           // them the file and blob adapters (which store the paper apart from
@@ -551,6 +582,8 @@ export function adminHandlers(route) {
           username, name: rec.name, allocated: true,
           role_id: plan.role.id, role_name: plan.role.name,
           question_count: plan.question_count,
+          assessor_id: assessorId,
+          assessor_name: assessorId ? (existingUsers.find((u) => u.id === assessorId)?.name || '') : '',
           detail: `${scope} · ${plan.role.name}`,
         };
       });
@@ -564,7 +597,7 @@ export function adminHandlers(route) {
             return {
               actor_id: auth.user.id, actor_name: auth.user.name || 'admin',
               action: 'assessment_allocated', entity: 'assessments', entity_id: a.id,
-              message: `Assessment auto-allocated to “${row.name}” (${row.detail})${bulkAssessorId ? '' : ' — assessor to be assigned'}`,
+              message: `Assessment auto-allocated to “${row.name}” (${row.detail})${row.assessor_id ? '' : ' — assessor to be assigned'}`,
             };
           }));
         } catch { /* audit must never break the request */ }
@@ -609,6 +642,7 @@ export function adminHandlers(route) {
     return ok({
       candidate: c,
       role_name: roleName[c.target_role_id] || '',
+      assessor_name: (c.assessor_id && assessorName[c.assessor_id]) || '',
       assessments: assessments.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, submitted_at: a.submitted_at,
         scored_at: a.scored_at, overall_pct: a.overall_pct, readiness_label: a.readiness_label,
@@ -657,9 +691,47 @@ export function adminHandlers(route) {
     // Stage was validated above but never written — the admin Edit form sends it
     // on every save, so changing a candidate's pipeline stage silently no-op'd.
     if (body.stage !== undefined) patch.stage = body.stage;
+    // The assessor is editable from the candidate record. Changing it moves
+    // the candidate's open papers (not yet scored) to the new assessor too —
+    // that is what an admin editing "Assessor" on a candidate means — while
+    // finalized reports keep the assessor who actually scored them.
+    let assessorChanged = false;
+    let reassigned = [];
+    if (body.assessor_id !== undefined) {
+      const assessorField = await candidateAssessorField(store, body.assessor_id);
+      if (assessorField.error) return bad(assessorField.error);
+      patch.assessor_id = assessorField.id;
+      assessorChanged = (c.assessor_id || null) !== assessorField.id;
+    }
     const updated = await store.update('candidates', params.id, patch);
-    await audit(store, auth.user, 'candidate_updated', 'candidates', params.id, `Candidate "${updated.name}" updated`);
-    return ok(updated);
+    if (assessorChanged) {
+      const nextAssessor = updated.assessor_id || null;
+      const open = (await store.list('assessments', { candidate_id: c.id }, { detached: false }))
+        .filter((a) => ['assigned', 'in_progress', 'submitted'].includes(a.status) && (a.assessor_id || null) !== nextAssessor);
+      // Same lock as PATCH /admin/assessments/:id so the move cannot
+      // interleave with an exam write; status is re-read under it because a
+      // paper may have been finalized between the listing and the move.
+      for (const a of open) {
+        const moved = await withLock(`assessment:${a.id}`, async () => {
+          const fresh = await store.get('assessments', a.id);
+          if (!fresh || ['scored', 'validated'].includes(fresh.status)) return null;
+          return store.update('assessments', a.id, { assessor_id: nextAssessor });
+        });
+        if (moved) reassigned.push(moved);
+      }
+      if (reassigned.length) {
+        try {
+          await bulkInsert(store, 'audit_log', reassigned.map((a) => ({
+            actor_id: auth.user.id, actor_name: auth.user.name || 'admin',
+            action: 'assessment_reassigned', entity: 'assessments', entity_id: a.id,
+            message: nextAssessor ? 'Assessor allocation updated from the candidate record' : 'Assessor unassigned from the candidate record',
+          })));
+        } catch { /* audit must never break the request */ }
+      }
+    }
+    await audit(store, auth.user, 'candidate_updated', 'candidates', params.id, `Candidate "${updated.name}" updated`
+      + (reassigned.length ? ` (${reassigned.length} open assessment${reassigned.length === 1 ? '' : 's'} moved to the new assessor)` : ''));
+    return ok({ ...updated, reassigned_assessments: reassigned.length });
   });
 
   // Password-gated destructive delete. The signed-in admin must re-enter
