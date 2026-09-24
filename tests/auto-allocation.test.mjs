@@ -334,7 +334,7 @@ test('a rejected assessor on the candidate form is a 400, not a silent unassign'
   assert.equal(nope.status, 400);
 });
 
-test('editing the assessor on a candidate moves every paper — open and already scored', async () => {
+test('editing the assessor on a candidate moves the open papers; scored reports keep their scorer', async () => {
   const other = await store.insert('users', {
     username: 'assessor.two', name: 'Assessor Two', role: 'assessor', email: '', active: true,
     password_hash: hashPassword('assessor-pass-123'),
@@ -347,7 +347,7 @@ test('editing the assessor on a candidate moves every paper — open and already
   assert.equal(user.status, 201, JSON.stringify(user.body));
   const openId = user.body.auto_allocation.assessment_id;
   assert.equal((await store.get('assessments', openId)).assessor_id, null, 'no default assessor -> unassigned');
-  // A finished paper on another track: the admin's edit applies after the test too.
+  // A finalized paper on another track keeps the assessor who scored it.
   const scored = await store.insert('assessments', {
     candidate_id: cand.id, role_id: alphaId, assessor_id: assessorId, status: 'scored',
     snapshot_json: { questions: [] }, report_json: null, overall_pct: 80,
@@ -358,9 +358,10 @@ test('editing the assessor on a candidate moves every paper — open and already
   });
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   assert.equal(edit.body.assessor_id, other.id, JSON.stringify(edit.body));
-  assert.equal(edit.body.reassigned_assessments, 2);
+  assert.equal(edit.body.reassigned_assessments, 1);
   assert.equal((await store.get('assessments', openId)).assessor_id, other.id, 'the open paper follows the edit');
-  assert.equal((await store.get('assessments', scored.id)).assessor_id, other.id, 'so does the scored one — the assessor is changeable after a test');
+  assert.equal((await store.get('assessments', scored.id)).assessor_id, assessorId, 'the scored one does not');
+  assert.equal((await store.get('candidates', cand.id)).assessor_id, other.id, 'the default for future papers is updated regardless');
   const trail = (await store.list('audit_log', { entity: 'assessments', entity_id: openId }))
     .filter((e) => e.action === 'assessment_reassigned');
   assert.equal(trail.length, 1, 'the move is audited against the paper');
@@ -378,7 +379,7 @@ test('editing the assessor on a candidate moves every paper — open and already
   assert.equal(clear.status, 200);
   assert.equal(clear.body.assessor_id, null);
   assert.equal((await store.get('assessments', openId)).assessor_id, null);
-  assert.equal((await store.get('assessments', scored.id)).assessor_id, null);
+  assert.equal((await store.get('assessments', scored.id)).assessor_id, assessorId);
 
   // An inactive assessor is refused on edit too.
   await store.update('users', other.id, { active: false });
@@ -582,4 +583,35 @@ test('deactivating an assessor reports the open papers still assigned to them', 
   assert.equal(on.body.open_assessments, undefined, 'only reported when switching off');
   const staffOff = await call('PATCH', `/admin/users/${(await store.list('users', { username: 'not.assessor' }))[0].id}`, { token: adminToken, body: { active: false } });
   assert.equal(staffOff.body.open_assessments, undefined, 'and only for assessors');
+});
+
+test('the batch assessor endpoint also leaves scored reports with their scorer', async () => {
+  const two = (await store.list('users', { username: 'assessor.two' }))[0];
+  const cand = await mkCandidate('Scored Sara');
+  const scored = await store.insert('assessments', {
+    candidate_id: cand.id, role_id: alphaId, assessor_id: assessorId, status: 'scored',
+    snapshot_json: { questions: [] }, report_json: null, overall_pct: 90,
+  });
+  const res = await call('POST', '/admin/candidates/assessor', { token: adminToken, body: { candidate_ids: [cand.id], assessor_id: two.id } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.updated, 1);
+  assert.equal(res.body.reassigned_assessments, 0);
+  assert.equal((await store.get('assessments', scored.id)).assessor_id, assessorId);
+  assert.equal((await store.get('candidates', cand.id)).assessor_id, two.id);
+});
+
+test('a target track deactivated after mapping neither blocks nor clears on an unrelated edit', async () => {
+  const dead = await store.insert('roles', { key: 'dead-track', name: 'Dead Track', technology: 'General', active: true });
+  const cand = await mkCandidate('Mapped Mo', dead.id);
+  await store.update('roles', dead.id, { active: false });
+  // The form sends the current (now inactive) track back with the phone fix.
+  const res = await call('PATCH', `/admin/candidates/${cand.id}`, { token: adminToken, body: { phone: '999', target_role_id: dead.id } });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.phone, '999');
+  assert.equal(res.body.target_role_id, dead.id, 'the mapping is kept');
+  // Deliberately choosing an inactive track is still refused.
+  const other = await mkCandidate('Other Olu');
+  const pick = await call('PATCH', `/admin/candidates/${other.id}`, { token: adminToken, body: { target_role_id: dead.id } });
+  assert.equal(pick.status, 400);
+  assert.match(pick.body.error, /inactive/);
 });

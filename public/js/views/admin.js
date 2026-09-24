@@ -83,7 +83,15 @@ const candidateFields = (roles, assessors = [], current = {}) => [
   { name: 'years_experience', label: 'Years of experience', type: 'number', min: 0, max: 50 },
   { name: 'location', label: 'Location' },
   { name: 'source', label: 'Source', placeholder: 'Referral, partner, inbound…' },
-  { name: 'target_role_id', label: 'Target role (assessment track)', type: 'select', options: roles.map((r) => ({ value: r.id, label: r.name })) },
+  {
+    name: 'target_role_id', label: 'Target role (assessment track)', type: 'select',
+    // Active tracks are offered; a candidate's own track that has since been
+    // deactivated stays selectable (labelled) so opening and saving the form
+    // is a no-op unless the admin deliberately picks another.
+    options: roles
+      .filter((r) => r.active !== false || r.id === current.target_role_id)
+      .map((r) => ({ value: r.id, label: r.active === false ? `${r.name} (inactive)` : r.name })),
+  },
   {
     name: 'assessor_id', label: 'Assessor', type: 'select',
     // A candidate whose assessor has since been deactivated keeps that
@@ -95,7 +103,7 @@ const candidateFields = (roles, assessors = [], current = {}) => [
         ? [{ value: current.assessor_id, label: `${current.assessor_name || 'Current assessor'} (deactivated)` }] : []),
     ],
     help: assessors.length
-      ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves all of this candidate\'s assessments — before, during or after the test.'
+      ? 'Scores this candidate\'s assessments. Auto-allocated papers go to this assessor; changing it moves their open (not yet scored) assessments too — finalized reports keep the assessor who scored them.'
       : 'No active assessor users yet — create one under Users & Access.',
   },
   { name: 'stage', label: 'Pipeline stage', type: 'select', options: M().pipelineStages.map((s) => ({ value: s.key, label: s.label })), allowEmpty: false },
@@ -184,7 +192,7 @@ async function candidateAction(act, c, roles, assessors = null) {
     });
     if (!saved) return;
     toast(saved.reassigned_assessments
-      ? `Candidate updated · ${saved.reassigned_assessments} assessment${saved.reassigned_assessments === 1 ? '' : 's'} moved to the new assessor`
+      ? `Candidate updated · ${saved.reassigned_assessments} open assessment${saved.reassigned_assessments === 1 ? '' : 's'} moved to the new assessor`
       : 'Candidate updated', 'success');
     refresh();
   } else if (act === 'alloc') {

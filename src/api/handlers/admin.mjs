@@ -61,25 +61,28 @@ const CANDIDATE_TEXT_FIELDS = {
 };
 
 /**
- * Point a candidate at `assessorId` (null = unassigned) and move every one of
- * their assessments — open or finished — to it, each under its own assessment
- * lock so the move cannot interleave with an exam write. An admin editing
- * "Assessor" on a candidate means *this candidate's assessor*, before, during
- * and after a test; the audit trail records each move. Returns the updated
- * candidate and the papers that changed.
+ * Point a candidate at `assessorId` (null = unassigned) — the default for
+ * their future papers — and move their *open* assessments (allocated, in
+ * progress, submitted) to it, each under its own assessment lock so the move
+ * cannot interleave with an exam write. Scored / validated reports keep the
+ * assessor who actually scored them, the same rule the Assessments page's
+ * Reassign enforces. Returns the updated candidate and the papers that moved.
  */
 async function setCandidateAssessor(store, actor, candidate, assessorId, extraPatch = {}) {
+  const OPEN = ['assigned', 'in_progress', 'submitted'];
   const nextAssessor = assessorId || null;
   const changed = (candidate.assessor_id || null) !== nextAssessor;
   const updated = await store.update('candidates', candidate.id, { ...extraPatch, assessor_id: nextAssessor });
   const moved = [];
   if (changed) {
     const papers = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
-      .filter((a) => (a.assessor_id || null) !== nextAssessor);
+      .filter((a) => OPEN.includes(a.status) && (a.assessor_id || null) !== nextAssessor);
     for (const a of papers) {
       const row = await withLock(`assessment:${a.id}`, async () => {
         const fresh = await store.get('assessments', a.id);
-        if (!fresh || (fresh.assessor_id || null) === nextAssessor) return null;
+        // Re-read under the lock: a paper finalized since the listing stays
+        // with the assessor who scored it, like PATCH /admin/assessments/:id.
+        if (!fresh || !OPEN.includes(fresh.status) || (fresh.assessor_id || null) === nextAssessor) return null;
         return store.update('assessments', a.id, { assessor_id: nextAssessor });
       });
       if (row) moved.push(row);
@@ -715,7 +718,11 @@ export function adminHandlers(route) {
     if (emailProblem) return bad(emailProblem);
     if (body.stage !== undefined && (!body.stage || !STAGE_KEYS.includes(body.stage)))
       return bad('Unknown pipeline stage.');
-    if (body.target_role_id) {
+    // An unchanged target role is not re-validated: the Edit form sends the
+    // current value back on every save, and a track deactivated since must
+    // not block correcting the candidate's phone number (nor be silently
+    // cleared — the form keeps it selectable, labelled inactive).
+    if (body.target_role_id && body.target_role_id !== c.target_role_id) {
       const role = await store.get('roles', body.target_role_id);
       if (!role) return bad('Unknown target role.');
       if (role.active === false) return bad('Target role is inactive.');
@@ -780,7 +787,8 @@ export function adminHandlers(route) {
       .filter((c) => (c.assessor_id || null) !== nextAssessor)
       .map((c) => ({ id: c.id, patch: { assessor_id: nextAssessor } }));
     const paperPatches = allPapers
-      .filter((a) => foundIds.has(a.candidate_id) && (a.assessor_id || null) !== nextAssessor)
+      .filter((a) => foundIds.has(a.candidate_id) && ['assigned', 'in_progress', 'submitted'].includes(a.status)
+        && (a.assessor_id || null) !== nextAssessor)
       .map((a) => ({ id: a.id, patch: { assessor_id: nextAssessor } }));
     await bulkUpdate(store, 'candidates', candidatePatches);
     const moved = await bulkUpdate(store, 'assessments', paperPatches);
