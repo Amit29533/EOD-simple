@@ -1146,13 +1146,18 @@ export function adminHandlers(route) {
     const problem = validateQuestion(merged);
     if (problem) return bad(problem);
     // Renaming one question onto another's prompt would put the same question
-    // in the bank twice — refused for the same reason as the create path.
-    if (await duplicatePromptInRole(store, merged.role_id, merged.prompt, params.id)) {
-      return conflict('Another question for this role already uses this prompt.');
-    }
-    const rec = await store.update('questions', params.id, normalizeQuestion(merged, q));
-    await audit(store, auth.user, 'question_updated', 'questions', params.id, 'Question updated');
-    return ok(rec);
+    // in the bank twice — refused for the same reason as the create path. The
+    // check-then-write runs under the same per-role lock the create path uses:
+    // two concurrent renames onto one prompt (or a rename racing a create)
+    // both used to pass the check before either wrote, and both landed.
+    return withLock(`questions:${merged.role_id}`, async () => {
+      if (await duplicatePromptInRole(store, merged.role_id, merged.prompt, params.id)) {
+        return conflict('Another question for this role already uses this prompt.');
+      }
+      const rec = await store.update('questions', params.id, normalizeQuestion(merged, q));
+      await audit(store, auth.user, 'question_updated', 'questions', params.id, 'Question updated');
+      return ok(rec);
+    });
   });
 
   route('DELETE', '/admin/questions/:id', A, async ({ store, params, auth }) => {
@@ -1451,48 +1456,55 @@ export function adminHandlers(route) {
     const roleKey = roleKeyOf(query);
     const bank = requireBank(roleKey);
     if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
-    const existing = (await store.list('bank_questions'))
-      .find((q) => q.id === params.id && (q.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === roleKey);
-    if (!existing) {
-      // Published questions are read-only except for visibility: an admin can
-      // remove one from circulation ({ active: false }) and restore it later
-      // ({ active: true }). Anything else is rejected, not silently ignored.
-      const published = bank.questions.find((q) => q.id === params.id);
-      if (!published) return notFound('Question not found.');
-      if (body.active === undefined) {
-        return bad('Published questions are read-only; only visibility (active) can be changed. Remove it to hide it from tests, or restore it.');
+    // One step per bank, same lock as the create and import routes: the
+    // authored-row edit below is a read-then-check-then-write (duplicate
+    // prompt, in-place update), and the published-row branch's override is a
+    // check-then-insert. Unlocked, two concurrent renames onto one prompt —
+    // or a rename racing a create — both passed the check and both landed.
+    return withLock(`bank:${roleKey}`, async () => {
+      const existing = (await store.list('bank_questions'))
+        .find((q) => q.id === params.id && (q.role_key || DEFAULT_MODULE_BANK_ROLE_KEY) === roleKey);
+      if (!existing) {
+        // Published questions are read-only except for visibility: an admin can
+        // remove one from circulation ({ active: false }) and restore it later
+        // ({ active: true }). Anything else is rejected, not silently ignored.
+        const published = bank.questions.find((q) => q.id === params.id);
+        if (!published) return notFound('Question not found.');
+        if (body.active === undefined) {
+          return bad('Published questions are read-only; only visibility (active) can be changed. Remove it to hide it from tests, or restore it.');
+        }
+        const extra = Object.keys(body || {}).filter((k) => k !== 'active');
+        if (extra.length) return bad(`Published questions are read-only; cannot change: ${extra.join(', ')}.`);
+        const restore = bool(body.active);
+        await setPublishedVisibility(store, params.id, restore, auth.user.id, roleKey);
+        await audit(store, auth.user, restore ? 'bank_question_restored' : 'bank_question_removed',
+          'bank_questions', params.id,
+          restore
+            ? `Published question restored to ${published.module}`
+            : `Published question removed from ${published.module} (can be restored)`);
+        const updated = (await effectiveBank(store, roleKey)).find((q) => q.id === params.id);
+        return ok({ question: updated });
       }
-      const extra = Object.keys(body || {}).filter((k) => k !== 'active');
-      if (extra.length) return bad(`Published questions are read-only; cannot change: ${extra.join(', ')}.`);
-      const restore = bool(body.active);
-      await setPublishedVisibility(store, params.id, restore, auth.user.id, roleKey);
-      await audit(store, auth.user, restore ? 'bank_question_restored' : 'bank_question_removed',
-        'bank_questions', params.id,
-        restore
-          ? `Published question restored to ${published.module}`
-          : `Published question removed from ${published.module} (can be restored)`);
-      const updated = (await effectiveBank(store, roleKey)).find((q) => q.id === params.id);
-      return ok({ question: updated });
-    }
-    const { questions, families } = await bankContext(store, roleKey);
-    const merged = mergeForPatch(hydrate(existing), body);
-    const result = validateBankQuestion(merged, { modules: bank.modules, families });
-    if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
+      const { questions, families } = await bankContext(store, roleKey);
+      const merged = mergeForPatch(hydrate(existing), body);
+      const result = validateBankQuestion(merged, { modules: bank.modules, families });
+      if (!result.ok) return unprocessable('This question is not valid.', { errors: result.errors });
 
-    const key = promptKey(result.question.prompt);
-    if (questions.some((q) => q.id !== params.id && promptKey(q.prompt) === key)) {
-      return conflict('Another question already uses this prompt.');
-    }
-    const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by, roleKey });
-    // `toStoredRecord` describes a freshly authored row (active, randomizable);
-    // an edit must keep the row's own flags unless the request changes them —
-    // fixing a typo on a deactivated question used to put it back into
-    // circulation.
-    patch.active = body.active !== undefined ? bool(body.active) : existing.active !== false;
-    patch.randomizable = body.randomizable !== undefined ? bool(body.randomizable) : existing.randomizable !== false;
-    const rec = await store.update('bank_questions', params.id, patch);
-    await audit(store, auth.user, 'bank_question_updated', 'bank_questions', params.id, 'Question updated');
-    return ok({ question: hydrate(rec) });
+      const key = promptKey(result.question.prompt);
+      if (questions.some((q) => q.id !== params.id && promptKey(q.prompt) === key)) {
+        return conflict('Another question already uses this prompt.');
+      }
+      const patch = toStoredRecord(result.question, { id: params.id, actorId: existing.created_by, roleKey });
+      // `toStoredRecord` describes a freshly authored row (active, randomizable);
+      // an edit must keep the row's own flags unless the request changes them —
+      // fixing a typo on a deactivated question used to put it back into
+      // circulation.
+      patch.active = body.active !== undefined ? bool(body.active) : existing.active !== false;
+      patch.randomizable = body.randomizable !== undefined ? bool(body.randomizable) : existing.randomizable !== false;
+      const rec = await store.update('bank_questions', params.id, patch);
+      await audit(store, auth.user, 'bank_question_updated', 'bank_questions', params.id, 'Question updated');
+      return ok({ question: hydrate(rec) });
+    });
   });
 
   route('DELETE', '/admin/question-bank/questions/:id', A, async ({ store, params, query, auth }) => {
