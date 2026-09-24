@@ -293,7 +293,8 @@ test('the exam hall serves a SAMA paper with the timers and controls the candida
     if (first.type === 'text') {
       assert.ok(seconds <= EXAM_OPEN_REVIEW_SECONDS && seconds >= EXAM_OPEN_REVIEW_SECONDS - 5, `review window on the clock, got ${shown}`);
       assert.ok(/review|read/i.test(text), 'the review phase is explained');
-      assert.ok(view.querySelector('[data-record], .exam-record, button[id*="rec"], [class*="record"]'), 'the record control is present for a spoken answer');
+      assert.ok(view.querySelector('#mic-check'), 'the review phase offers a microphone pre-check');
+      assert.match(text, /Start answering/, 'the candidate can enter the spoken-answer phase');
     } else {
       assert.ok(seconds <= EXAM_MCQ_SECONDS && seconds >= EXAM_MCQ_SECONDS - 5, `MCQ window on the clock, got ${shown}`);
       const opts = [...view.querySelectorAll('input[type="radio"]')];
@@ -302,7 +303,7 @@ test('the exam hall serves a SAMA paper with the timers and controls the candida
       assert.ok(!text.includes('Correct answer'), 'the key is not on screen');
     }
     assert.match(text, /Question 1 of 10/, 'the progress reads Question 1 of 10');
-    assert.match(text, /Lock & continue/, 'the lock control is offered');
+    if (first.type !== 'text') assert.match(text, /Lock & continue/, 'the lock control is offered in the answer phase');
     assert.match(text, /Answers lock when time expires/, 'the timer rule is stated');
     assert.ok(!/rubric/i.test(view.innerHTML) || !/Expected evidence:/.test(text), 'no rubric on the candidate screen');
   } finally { b.teardown(); }

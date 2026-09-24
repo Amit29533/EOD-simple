@@ -8,7 +8,7 @@
  * catalogue-sync admin endpoints), and scripts/seed.mjs reuses it for CLI
  * seeding. It is the track-level twin of the module Question Bank in
  * src/content/sama-question-bank.mjs (generated from the same source
- * workbook, "SAMA Question bank 1.1.xlsx"): the questions below are *derived*
+ * workbook, "SAMA Question bank 1.2.xlsx"): the questions below are *derived*
  * from that bank here, so the served bank and the module bank can never drift
  * apart. Same construction as src/content/ai-bi-genie-catalogue.mjs.
  */

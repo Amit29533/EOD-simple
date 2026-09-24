@@ -44,7 +44,7 @@ test('the SAMA module bank is published: 10 modules, 100 questions, one family p
   assert.ok(bank, 'registered in MODULE_BANKS');
   assert.equal(bank.role_name, 'Technology Risk Consultant - SAMA');
   assert.equal(bank.version, SAMA_VERSION);
-  assert.equal(bank.version, '1.1');
+  assert.equal(bank.version, '1.2');
   assert.equal(bank.authoredPrefix, 'TRC');
   assert.equal(authoredIdPrefix(SAMA_KEY), 'TRC');
   assert.equal(bank.optional, null, 'no retired catalogue');

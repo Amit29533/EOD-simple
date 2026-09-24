@@ -25,9 +25,9 @@ Pipeline (AI/BI & Genie bank):
 
 Pipeline (Technology Risk Consultant - SAMA bank):
     node scripts/extract-sama-bank-from-xlsx.mjs \\
-        "SAMA Question bank 1.1.xlsx"  data/sama-bank.json
+        "SAMA Question bank 1.2.xlsx"  data/sama-bank.json
     python3 scripts/build-question-bank.py data/sama-bank.json \\
-        src/content/sama-question-bank.mjs 1.1 scripts/sama-bank-config.json
+        src/content/sama-question-bank.mjs 1.2 scripts/sama-bank-config.json
 
 The emitted module is organised MODULE -> FAMILY -> QUESTION, which is also
 the order questions appear in the file, so the catalogue reads the same way
