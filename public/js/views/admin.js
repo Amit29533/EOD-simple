@@ -1210,9 +1210,22 @@ export async function modulesView(view) {
   // restated, so changing the paper shape updates this copy with it.
   const perTechnicalObjective = Math.round(bp.technical_objective / (bank.technical_modules || 10));
   const perTechnicalOpen = Math.round(bp.technical_open / (bank.technical_modules || 10));
-  const quota = (m) => (m.technical
-    ? `${perTechnicalObjective} objective + ${perTechnicalOpen} open`
-    : '1 open');
+  const quota = (m) => {
+    if (m.quota && (m.quota.objective !== undefined || m.quota.open !== undefined)) {
+      const parts = [];
+      if (m.quota.objective) parts.push(`${m.quota.objective} objective`);
+      if (m.quota.open) parts.push(`${m.quota.open} open`);
+      return parts.join(' + ') || 'none';
+    }
+    const r = planFor.get(m.key);
+    if (r && (r.required_objective !== undefined || r.required_open !== undefined)) {
+      const parts = [];
+      if (r.required_objective) parts.push(`${r.required_objective} objective`);
+      if (r.required_open) parts.push(`${r.required_open} open`);
+      return parts.join(' + ') || 'none';
+    }
+    return m.technical ? `${perTechnicalObjective} objective + ${perTechnicalOpen} open` : '1 open';
+  };
   const roleChip = (role) => role === 'objective'
     ? '<span class="chip">Objective</span>'
     : role === 'mixed'
@@ -1248,7 +1261,7 @@ export async function modulesView(view) {
       <span class="info-strip-icon">≡</span>
       <span class="catalogue-strip-copy">
         <b>Every generated test contains ${bp.total} questions.</b>
-        <small>${bp.technical_objective} technical objective ·
+        <small>${bp.technical_objective} technical objective${bp.non_technical_objective ? ` · ${bp.non_technical_objective} consulting objective` : ''} ·
           ${bp.technical_open} technical open · ${bp.non_technical_open} non-technical open.
           Questions are drawn at random from each module's families while this structure is held exactly.</small>
       </span>
@@ -1563,7 +1576,7 @@ function previewModal(result) {
     wide: true,
     bodyHtml: `
       <p class="small muted">${c.total} questions — ${c.technical_objective} technical objective,
-        ${c.technical_open} technical open,
+        ${c.non_technical_objective ? `${c.non_technical_objective} consulting objective, ` : ''}${c.technical_open} technical open,
         ${c.non_technical_open} non-technical open${c.from_optional
           ? `, ${c.from_optional} drawn from the optional pool` : ''}.</p>
       ${result.warnings.length

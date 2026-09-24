@@ -159,8 +159,8 @@ column (legacy rows without it belong to the default RSA bank), so the banks
 can never bleed into each other. The per-track paper shape is derived from the
 bank's own module list (`blueprintFor()` in `core/test-generation.mjs`) — RSA
 computes 50 questions as before, AI/BI & Genie 31 (21 technical objective +
-7 technical open + 3 consulting open), SAMA 34 (24 risk & control objective +
-8 risk & control open + 2 reporting & client open).
+7 technical open + 3 consulting open), SAMA 30 (20 risk & control objective +
+4 risk & control open + 5 reporting objective + 1 reporting open: 25 objective + 5 open).
 
 The finalized RSA bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
 the published `Question bank 1.4.xlsx` workbook) is organised **MODULE → FAMILY →
