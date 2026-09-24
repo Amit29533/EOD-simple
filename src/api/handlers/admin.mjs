@@ -1929,6 +1929,9 @@ export function adminHandlers(route) {
   route('GET', '/admin/audit', A, async ({ store, query }) => {
     let rows = await store.list('audit_log');
     if (query.entity) rows = rows.filter((r) => r.entity === query.entity);
+    if (query.action) rows = rows.filter((r) => r.action === query.action);
+    if (query.actor_id) rows = rows.filter((r) => r.actor_id === query.actor_id);
+    if (query.entity_id) rows = rows.filter((r) => r.entity_id === query.entity_id);
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     // Hard cap 200 for audit to prevent unbounded growth in response
     const limit = Math.min(200, Math.max(1, Number(query.limit) || 200));

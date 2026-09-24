@@ -105,3 +105,28 @@ test('a candidate created by a spreadsheet import has a timeline, not "No events
   assert.equal(alloc.entity_id, row.assessment_id);
   assert.match(alloc.message, /Sheet Person/);
 });
+
+test('the audit trail can be narrowed server-side by action, entity and entity_id', async (t) => {
+  const w = await makeWorld({ t });
+  const csv = 'Name,Email,Target role\nAudit Person,audit@example.com,POV Track\n';
+  const imp = w.expectOk(await w.call('POST', '/admin/candidates/import', {
+    token: w.tok, body: { csv, filename: 'a.csv', create_users: true },
+  }), 'import');
+  const [row] = imp.auto_allocations;
+
+  const all = w.expectOk(await w.call('GET', '/admin/audit', { token: w.tok }), 'all');
+  assert.ok(new Set(all.events.map((e) => e.action)).size > 1, 'unfiltered trail mixes actions');
+
+  const byAction = w.expectOk(await w.call('GET', '/admin/audit', { token: w.tok, query: { action: 'assessment_allocated' } }), 'action');
+  assert.ok(byAction.events.length >= 1);
+  assert.ok(byAction.events.every((e) => e.action === 'assessment_allocated'));
+  assert.equal(byAction.total, byAction.events.length, 'total reflects the filtered set');
+
+  const byEntity = w.expectOk(await w.call('GET', '/admin/audit', { token: w.tok, query: { entity: 'assessments', entity_id: row.assessment_id } }), 'entity');
+  assert.ok(byEntity.events.length >= 1);
+  assert.ok(byEntity.events.every((e) => e.entity === 'assessments' && e.entity_id === row.assessment_id));
+
+  const none = w.expectOk(await w.call('GET', '/admin/audit', { token: w.tok, query: { action: 'no_such_action' } }), 'none');
+  assert.deepEqual(none.events, []);
+  assert.equal(none.total, 0);
+});

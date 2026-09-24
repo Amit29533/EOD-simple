@@ -45,7 +45,7 @@ Base: `/api` · Auth: `Authorization: Bearer <token>` (from `POST /api/auth/logi
 | POST   | /admin/content/tracks        | install a published track that the workspace does not have (body `role_key`, required): creates the role, its default scoring framework, competencies and published questions → 201 + `track_installed` audit event; an installed track is topped up instead (200, same counters as `/sync`); a deactivated track is refused with 409 (reactivate it, never a second role); unknown key → 400. This is what **Roles & frameworks → Published tracks → Add to workspace** and the `npm run seed` migration path call |
 | PATCH/DELETE | /admin/assessments/:id    | reassign assessor (unscored; the candidate record's `assessor_id` follows); delete (pre-submit) |
 | GET    | /admin/reports/:id            | full report incl. assessor + comments             |
-| GET    | /admin/audit                  | audit trail                                       |
+| GET    | /admin/audit                  | audit trail (`?entity=&action=&actor_id=&entity_id=&limit=&offset=`) |
 
 ## Assessor (own assignments only — everything else is 404)
 | Method | Path                              | Notes                                    |

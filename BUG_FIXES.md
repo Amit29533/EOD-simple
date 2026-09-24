@@ -280,6 +280,11 @@ workbook suite, whose source workbook is not in the repository), plus **39/39 sm
 
 ## 🏁 Final-stage pass: assessor ownership, exam-lock latency and a line-by-line sweep (latest)
 
+**Feature-by-feature live probe (91 checks across all 65 API routes) — two small findings, both fixed:**
+
+- **Question-bank authoring accepted lowercase option ids only.** `POST /admin/question-bank/questions` with `options: [{id:'A',…},{id:'B',…}]` and `correct: 'B'` was refused with "A correct answer is required" because option ids were stored verbatim while the answer key is compared lowercased. The admin form and the CSV importer already lowercase, so only raw API clients hit it. `sanitizeOptions` now normalises ids to lowercase.
+- **`GET /admin/audit` only filtered by `entity`.** Added server-side `action`, `actor_id` and `entity_id` filters (`total` reflects the filtered set); documented in docs/API.md and covered by a new test in tests/pov-admin.test.mjs.
+
 The assessor-ownership work (candidate default assessor, per-row spreadsheet `Assessor`
 column, Edit-candidate reassignment of open papers only, batch `POST /admin/candidates/assessor`,
 deactivation warnings) was followed by three verification campaigns against a live server —

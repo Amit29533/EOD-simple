@@ -172,7 +172,10 @@ export function sanitizeOptions(raw) {
     if (!isScalar(o.id) || !isScalar(o.label)) continue;
     const label = String(o.label ?? '').trim();
     if (!label) continue;
-    out.push({ id: String(o.id ?? '').trim(), label });
+    // Ids are compared case-insensitively everywhere else (parseCorrect,
+    // the served paper, the form), so a client posting `A/B/C` with
+    // `correct: "B"` must not be rejected as "no correct answer".
+    out.push({ id: String(o.id ?? '').trim().toLowerCase(), label });
   }
   return out;
 }
