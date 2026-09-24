@@ -238,8 +238,8 @@ it writes, and hashes before it inserts so a killed request leaves nothing behin
 20 pages, slowest **3.0 s**, all 2000 candidates, logins and papers. The published question
 catalogues and the SPA's remaining trust boundaries were re-read for this pass and found clean.
 
-The newest pass re-read the project one part at a time and tested it from each role's point of
-view, running the real screens in jsdom against the real in-process API. It adds a route × role
+A point-of-view pass then re-read the project one part at a time and tested it from each role's
+point of view, running the real screens in jsdom against the real in-process API. It adds a route × role
 guard matrix read from the live router. Nine defects were reproduced, fixed and pinned:
 
 - A nameless integrity beacon wrote an audit row per request outside the flood cap.
@@ -253,11 +253,142 @@ guard matrix read from the live router. Nine defects were reproduced, fixed and 
   allocated ~599 MB.
 - An uploaded workbook could inject a regular expression that blocked the server for hours.
 
-Current verification (Node 22.22): **632 Node tests: 630 pass, 0 fail, 2 skipped** (the SAMA
+The newest pass fixed the five issues that pass had noted and left alone, plus one it found on
+the way:
+
+- One unreadable date took a whole screen down.
+- Two dialogs never answered when dismissed.
+- A catalogue competency's key could be blanked, and the next sync duplicated the competency.
+- Creating a candidate's login while allocating by hand could give two open papers for one track.
+- A refused save threw away everything the admin had typed.
+- Every form drew an empty error badge under each field.
+
+Current verification (Node 22.22): **655 Node tests: 653 pass, 0 fail, 2 skipped** (the SAMA
 workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
 **216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
 
-## 🎭 Point-of-view pass: what each role actually sees, through the real API (latest)
+## 🩹 Follow-up pass: the five issues the point-of-view pass left open (latest)
+
+The point-of-view pass noted five issues without changing them. Each was fixed in its own pass,
+in order: dates, dialogs, competency keys, the allocation lock, then form saves. Each fix is
+pinned by a test that was run against the unfixed code and fails there. Where an obvious fix
+would itself be wrong, that variant was built as well, and fails too. Checking the form fix in a
+real browser (headless Chromium 153) turned up a sixth defect, which jsdom cannot see because it
+does no layout.
+
+`npm test`: **655 tests, 653 pass, 0 fail, 2 skipped** (was 632). Smoke 39/39, features 216/216,
+gauntlet 76/76.
+
+### Screens
+
+- **BUG AX — one unreadable date took a whole screen down.** `fmtDate` and `fmtDateTime` passed
+  `new Date(value)` straight to `Intl.DateTimeFormat`, which throws `RangeError: Invalid time
+  value` on an unreadable date. One such row replaced a whole list with the error page. The app
+  never writes such dates itself, since the server sets every timestamp, but a hand-edited
+  Airtable base or a migrated JSON store can. An unreadable date now reads "—", like a missing
+  one. Pinned by `tests/ui-dates.test.mjs`: two of its three tests fail without the fix, with
+  "Invalid time value".
+- **BUG AY — two dialogs never answered when dismissed.** "Allocate assessment" and the question
+  editor wrap `modal()` in their own promise, but only their Cancel button settled it. Esc, a
+  click on the backdrop and ✕ closed the dialog and left the promise pending for good, unlike
+  `formModal` and `confirmModal`, which report "cancelled". Nothing visible broke, because the
+  callers simply never continued, but the contract was wrong. Both dialogs also closed *before*
+  settling their result. So the obvious fix, resolving `null` on close, would have turned every
+  Allocate and Save into a silent no-op. Both now settle exactly once, with the value first, then
+  close. Pinned by `tests/ui-dialogs.test.mjs`: the old code fails two of its four tests, and the
+  naive fix fails three.
+
+### Server
+
+- **BUG AZ — a catalogue competency's key could be blanked, and the next sync duplicated it.**
+  `PATCH /admin/competencies/:id` accepted any `key`, blank included. The key is what ties a
+  catalogue competency to its published catalogue: the sync matches on it. The sync runs from
+  `POST /admin/content/sync`, a track install, and `npm run seed`. After a key was blanked on the
+  RSA track, the next sync added the competency again. The track went from 7 competencies to 8,
+  one of them an empty twin, and its weights summed to 118 instead of 100. `POST` had two quieter
+  versions of the same gap: a name with no Latin letters derived a blank key, and two
+  competencies with the same name derived the same key.
+  - A blank key is now refused (400).
+  - A catalogue competency's key cannot change (409, naming the catalogue).
+  - A key already used by another competency in the track is refused (409).
+  - Key changes and creates run under a per-track lock.
+  - Derived keys fall back to `competency` and take `-2`, `-3` suffixes, so they are never blank
+    and never collide.
+  - The sync adopts a same-named competency whose key was blanked before this fix, and reports
+    it as `competencies_repaired`.
+
+  The UI has no key field, so this was reachable only through the API. Pinned by
+  `tests/competency-keys.test.mjs` (six tests). With the route rules reverted, four fail; without
+  the repair, the repair test fails.
+- **BUG BA — creating a candidate's login while allocating by hand could give two open papers
+  for one track.** Creating a candidate's portal login runs an automatic allocation. It checked
+  for an open paper and then inserted one, without any lock. The manual "Allocate assessment"
+  route holds `alloc:<candidate>:<track>`, so the two never excluded each other. With 30 ms of
+  simulated storage latency (`.probe/alloc-race.mjs`), 17 of 31 timings left the candidate with
+  two open papers for the same track, and both requests answered 201. Both paths now take the
+  same lock, named by `allocationLockKey()`, and the probe finds 0 of 31. The lock order is
+  `users:create`, then `alloc:*`; the manual route takes only `alloc:*`, so they cannot deadlock.
+  Pinned by `tests/allocation-lock.test.mjs`. It parks one request inside its critical section
+  while the other arrives, so the race is deterministic. Without the shared lock, both ordering
+  tests fail. A third test checks that another candidate's allocation is not held up. Like every
+  lock here, it is per process: two function instances of a serverless deployment can still
+  race. That is the accepted limit recorded since the concurrency pass.
+
+### Forms
+
+- **BUG BB — a refused save threw away everything the admin had typed.** `formModal` resolved and
+  closed before its caller called the API. So when a save was refused (a taken username, a
+  candidate who already has a login, a wrong delete password, a server rule), a toast appeared
+  over a form that was already gone, and the admin had to type it all again. Only the
+  create-user form reopened, and only for its one client-side check.
+
+  `formModal` now takes an opt-in `onSubmit`:
+  - While it saves, the dialog stays open, both buttons are disabled, and the submit button reads
+    "Saving…".
+  - A refusal keeps every value. The message goes against the field it names: the field in
+    `err.field`, or else the field whose name or label the message mentions first, as a whole
+    word ("Username already exists." goes on Username). A message that names no field appears
+    in a banner above the form.
+  - The dialog closes only once the save succeeds.
+  - Closed mid-save, it still reports the outcome. A save that lands is not reported as
+    cancelled, and a failure becomes a toast.
+  - A 401 closes the dialog, because the app has gone back to the sign-in page.
+
+  All ten admin forms use it: add and edit candidate, the delete confirmation, reassign assessor,
+  new track, add and edit competency, edit role, create and edit user, and reset password. Pinned
+  by `tests/form-save.test.mjs` (seven tests; two drive the Users and Candidates screens against
+  the real API).
+  - With the old dialog, five of them fail.
+  - With the new dialog but the old callers, the two screen tests fail.
+  - A naive version that reports "cancelled" when closed mid-save fails its own test, and so does
+    one that stays clickable while saving.
+
+  `tests/users-view.test.mjs` now expects the linked-candidate message on its field in the
+  still-open dialog, not in a toast over a reopened form.
+- **BUG BC — hidden elements were drawn anyway.** `.field-err` sets `display: flex`. In a
+  browser, any `display` rule in the page's stylesheet beats the `hidden` attribute, because the
+  browser's own `[hidden] { display: none }` has the lowest precedence. So every form dialog drew
+  an empty red "!" badge under each field: 10 in "Add candidate" and 5 in "Add question". The
+  allocation dialog also drew its question-count row in full-bank mode. A global `[hidden] {
+  display: none !important; }` fixes the whole class. Audited in headless Chromium across the
+  sign-in page and four dialogs, 16 hidden elements were drawn before the fix and none after.
+  jsdom does not model stylesheet origins, so the last test in `tests/form-save.test.mjs` pins
+  the rule itself and also checks the real stylesheet over a real dialog. Without the rule, both
+  checks fail.
+
+### Noted, not changed
+
+- The exam gate's rules text hardcodes the timings (30 s, 60 s and 2 min) instead of reading
+  the configured budgets.
+- The assessor's finalize toast reads `report.band.label`. `computeReport` returns
+  `band: null` when no readiness band matches, and the toast would then throw after a
+  successful finalize.
+- `PATCH /admin/questions/:id` checks for a duplicate prompt without a lock, so two saves of the
+  same prompt at the same moment could both pass. This is the gap AZ closed for competency keys.
+- `formModal`'s `pattern` option is tested unanchored, unlike HTML's `pattern` attribute. No
+  form uses it today.
+
+## 🎭 Point-of-view pass: what each role actually sees, through the real API (previous)
 
 **Method.** The whole project was re-read one part at a time: the API handlers, the scoring and
 selection core, quiz sessions, the spreadsheet parser, candidate import, storage, and every SPA

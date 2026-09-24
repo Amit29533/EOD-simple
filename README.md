@@ -35,7 +35,7 @@ Requires Node.js ≥ 20. No `npm install` needed for local development.
 ```bash
 npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 632 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # 655 tests: scoring engine, question apportionment, API/RBAC journey,
                     #           a route x role guard matrix read from the live router,
                     #           candidate / assessor / admin point-of-view suites (API, and
                     #           the real screens in jsdom against the real in-process API:
@@ -47,7 +47,11 @@ npm test            # 632 tests: scoring engine, question apportionment, API/RBA
                     #           auto-submit), admin validation, question-bank authoring
                     #           (add/edit/import), bulk candidate + portal-user import (API +
                     #           jsdom dialog), Airtable adapter contract, sign-in view, app
-                    #           shell, the allocation dialog, the published-catalogue sync,
+                    #           shell, the allocation dialog and the allocation lock it
+                    #           shares with automatic allocation, form dialogs that keep
+                    #           their input when a save is refused, dialog dismissal,
+                    #           unreadable dates, competency key rules, the
+                    #           published-catalogue sync,
                     #           the storage batch contract (insertMany/updateMany/removeMany,
                     #           audit-log rotation, multi-writer guard), server-side exam
                     #           enforcement, the exam hall's draft autosave + lost-lock
@@ -546,7 +550,7 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
 4. Deploy, then run the seed once (locally, pointing at the same backend):
    `STORAGE=airtable … npm run seed` or via Netlify CLI.
 
-Verify before you ship: `npm test` (558 Node tests), then with a local server up
+Verify before you ship: `npm test` (655 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
 `seed:fresh` + restart, both suites consume the seed data — `npm run test:features`
 (216 black-box checks). `npm run test:gauntlet` adds 76 self-contained hardening checks

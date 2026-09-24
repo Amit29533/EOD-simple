@@ -195,6 +195,11 @@
 }
 }
 * { box-sizing: border-box; }
+/* The hidden attribute must always win. Without this, any class that sets
+   `display` overrides it and the element renders anyway: every form dialog
+   showed an empty "!" error badge under each field (.field-err is flex), and
+   the allocation dialog showed its question-count row in full-bank mode. */
+[hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 body {
@@ -429,6 +434,10 @@ label.f .field-err, .field-err { font-size: 10.5px; font-weight: 700; color: var
 input.invalid, select.invalid, textarea.invalid { border-color: var(--red); background: var(--red-bg); }
 input.invalid:focus, select.invalid:focus, textarea.invalid:focus { border-color: var(--red); box-shadow: 0 0 0 4px rgba(181, 58, 53, .13); }
 .modal-intro { margin: 0 0 16px; font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+/* A save the server refused, when the message names no single field. */
+.form-err { display: flex; align-items: flex-start; gap: 9px; background: var(--red-bg); color: var(--red); border: 1px solid var(--red-line); border-radius: 12px; padding: 11px 13px; margin: 0 0 16px; font-size: 11.5px; font-weight: 600; line-height: 1.5; }
+.form-err::before { content: "!"; flex: none; width: 15px; height: 15px; margin-top: 1px; display: grid; place-items: center; border: 1.5px solid currentColor; border-radius: 50%; font-size: 9.5px; font-weight: 900; }
+.form-err:focus { outline: none; box-shadow: 0 0 0 4px rgba(181, 58, 53, .13); }
 .confirm-copy { margin: 0; font-size: 13px; line-height: 1.65; color: var(--ink-2); }
 body.modal-open { overflow: hidden; }
 .f-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

@@ -5,8 +5,20 @@ export const pct = (v) => (v === null || v === undefined || v === '') ? '—' : 
 
 const SHORT_DATE = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 const SHORT_DT = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-export const fmtDate = (iso) => iso ? SHORT_DATE.format(new Date(iso)) : '—';
-export const fmtDateTime = (iso) => iso ? SHORT_DT.format(new Date(iso)) : '—';
+/**
+ * An unreadable date reads like a missing one. `Intl.DateTimeFormat#format`
+ * throws a RangeError on an Invalid Date, so one row with a date the app did
+ * not write itself (a hand-edited Airtable base, a migrated or hand-edited
+ * store) used to take a whole screen (the assessments list, the audit log,
+ * a candidate record) down to the error page.
+ */
+const safeFormat = (formatter, iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : formatter.format(d);
+};
+export const fmtDate = (iso) => safeFormat(SHORT_DATE, iso);
+export const fmtDateTime = (iso) => safeFormat(SHORT_DT, iso);
 
 export const initials = (name = '') => name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 
@@ -183,17 +195,34 @@ export function confirmModal(title, message, confirmLabel = 'Confirm', danger = 
  * fields: [{ name, label, type: text|email|password|number|textarea|select|checkbox|static,
  *            options: [{value,label}] | fn(values), required, help, value, min, max, step,
  *            placeholder, rows, pattern, patternMessage, autocomplete }]
- * Resolves with collected values, or null when cancelled.
+ *
+ * Without `onSubmit`: resolves with the collected values, or null when
+ * cancelled, and the caller saves them after the dialog has closed.
+ *
+ * With `onSubmit(values)`: the dialog does the save itself and closes only once
+ * it succeeds. While it runs, both buttons are disabled and the submit button
+ * reads `busyLabel`. If it throws, the dialog stays open with everything the
+ * user typed. The message appears against the field it names: the field in
+ * `err.field`, else the field whose name or label the message mentions first.
+ * If it names no field, the message appears in a banner above the form.
+ * Resolves with onSubmit's result (`true` if it returns nothing), or null when
+ * cancelled. A dialog dismissed mid-save still resolves with the outcome, so a
+ * save that lands is never reported as cancelled.
  *
  * Errors are shown inline against the offending field (and announced), rather
  * than only as a toast that disappears before the user reaches the input.
  */
-export function formModal({ title, fields, values = {}, submitLabel = 'Save', wide = false, intro = '' }) {
+export function formModal({
+  title, fields, values = {}, submitLabel = 'Save', wide = false, intro = '',
+  onSubmit = null, busyLabel = 'Saving…',
+}) {
   return new Promise((resolve) => {
     // The dialog can be dismissed in several ways (Escape, backdrop, ✕, Cancel);
     // settle() guarantees the caller sees exactly one outcome, whichever wins.
     let settled = false;
     const settle = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let saving = false;           // an onSubmit call is in flight
+    let dismissed = false;        // the dialog was closed while it was
     const id = (n) => `fm-${n}`;
     const errId = (n) => `fm-err-${n}`;
     const control = (f) => {
@@ -226,74 +255,161 @@ export function formModal({ title, fields, values = {}, submitLabel = 'Save', wi
 
     const html = fields.filter((f) => f.type !== 'static').map(control).join('');
     let submit;
+    let cancel;
+
+    const formEl = () => m.el.querySelector('#fm-form');
+    const banner = () => m.el.querySelector('.form-err');
+    const showBanner = (message) => {
+      const box = banner();
+      if (!box) return;
+      box.textContent = message;
+      box.hidden = !message;
+    };
+    // Marks one field (message '' clears it). Returns its input.
+    const setError = (field, message) => {
+      const box = m.el.querySelector(`#${errId(field.name)}`);
+      const input = formEl().elements[field.name];
+      if (box) { box.textContent = message; box.hidden = !message; }
+      if (input) {
+        input.classList.toggle('invalid', !!message);
+        input.setAttribute('aria-invalid', message ? 'true' : 'false');
+      }
+      return input;
+    };
+    const reveal = (el) => {
+      el.focus();
+      el.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    };
+
+    // Reads and checks every field; marks the bad ones. Returns the values, or
+    // null after focusing the first bad field.
+    const collect = () => {
+      const form = formEl();
+      const out = {};
+      let firstBad = null;
+      const fail = (f, message) => { const input = setError(f, message); if (!firstBad) firstBad = input; };
+      for (const f of fields) {
+        if (f.type === 'static') continue;
+        const input = form.elements[f.name];
+        if (!input) continue;
+        setError(f, '');
+        if (f.type === 'checkbox') { out[f.name] = input.checked; continue; }
+        const raw = typeof input.value === 'string' ? input.value.trim() : input.value;
+        if (f.type === 'number') out[f.name] = raw === '' ? null : Number(raw);
+        else out[f.name] = raw;
+
+        const val = out[f.name];
+        if (f.required && (val === '' || val === null || val === undefined)) {
+          fail(f, `${f.label} is required.`);
+          continue;
+        }
+        if (val === '' || val === null) continue;
+        if (f.type === 'number') {
+          if (!Number.isFinite(val)) { fail(f, 'Enter a valid number.'); continue; }
+          if (f.min !== undefined && val < Number(f.min)) { fail(f, `Must be ${f.min} or more.`); continue; }
+          if (f.max !== undefined && val > Number(f.max)) { fail(f, `Must be ${f.max} or less.`); continue; }
+        }
+        if (f.type === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(val))) {
+          fail(f, 'Enter a valid email address.'); continue;
+        }
+        if (f.pattern && !new RegExp(f.pattern).test(String(val))) {
+          fail(f, f.patternMessage || `${f.label} is not in the expected format.`); continue;
+        }
+      }
+      if (firstBad) { reveal(firstBad); return null; }
+      return out;
+    };
+
+    // The field a save error is about: the one it names explicitly, else the
+    // one whose name or label the message mentions first, as a whole word.
+    // "Username already exists." → username; "That candidate already has a
+    // portal user." → candidate_id. Messages naming no field get the banner.
+    const errorField = (err, message) => {
+      const form = formEl();
+      const present = fields.filter((f) => f.type !== 'static' && form.elements[f.name]);
+      const named = present.find((f) => f.name === err?.field);
+      if (named) return named;
+      const text = message.toLowerCase();
+      let best = null;
+      let bestAt = Infinity;
+      for (const f of present) {
+        const words = [f.name, f.name.replace(/_id$/, '').replace(/_/g, ' '), String(f.label || '').split('(')[0].trim()];
+        for (const word of new Set(words.map((w) => w.toLowerCase()).filter(Boolean))) {
+          const hit = new RegExp(`(^|[^a-z0-9_])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9_])`).exec(text);
+          const at = hit ? hit.index + hit[1].length : Infinity;
+          if (at < bestAt) { best = f; bestAt = at; }
+        }
+      }
+      return best;
+    };
+
+    const setBusy = (busy) => {
+      saving = busy;
+      submit.disabled = busy;
+      if (cancel) cancel.disabled = busy;
+      submit.textContent = busy ? busyLabel : submitLabel;
+      if (busy) formEl().setAttribute('aria-busy', 'true');
+      else formEl().removeAttribute('aria-busy');
+    };
+
+    const save = async (out, close) => {
+      showBanner('');
+      setBusy(true);
+      let result;
+      try {
+        result = await onSubmit(out);
+      } catch (err) {
+        const message = err?.message || 'Something went wrong';
+        if (dismissed || err?.status === 401) {
+          // Nothing left to correct here: the dialog was closed mid-save, or
+          // the session ended and the app has gone back to the sign-in page.
+          saving = false;
+          toast(message, 'error');
+          settle(null);
+          close();
+          return;
+        }
+        setBusy(false);
+        const field = errorField(err, message);
+        if (field) reveal(setError(field, message));
+        else { showBanner(message); reveal(banner()); }
+        return;
+      }
+      saving = false;
+      settle(result ?? true);
+      close();
+    };
 
     const m = modal({
       title,
       wide,
-      bodyHtml: `${intro ? `<p class="modal-intro">${esc(intro)}</p>` : ''}<form id="fm-form" novalidate>${html}</form>`,
+      bodyHtml: `${intro ? `<p class="modal-intro">${esc(intro)}</p>` : ''}`
+        + '<div class="form-err" role="alert" tabindex="-1" hidden></div>'
+        + `<form id="fm-form" novalidate>${html}</form>`,
       actions: [
         { label: 'Cancel', kind: 'secondary', onClick: (close) => { settle(null); close(); } },
         {
           label: submitLabel,
           onClick: async (close, btn) => {
-            const form = m.el.querySelector('#fm-form');
-            const out = {};
-            let firstBad = null;
-
-            const setError = (field, message) => {
-              const box = m.el.querySelector(`#${errId(field.name)}`);
-              const input = form.elements[field.name];
-              if (box) { box.textContent = message; box.hidden = !message; }
-              if (input) {
-                input.classList.toggle('invalid', !!message);
-                input.setAttribute('aria-invalid', message ? 'true' : 'false');
-              }
-              if (message && !firstBad) firstBad = input;
-            };
-
-            for (const f of fields) {
-              if (f.type === 'static') continue;
-              const input = form.elements[f.name];
-              if (!input) continue;
-              setError(f, '');
-              if (f.type === 'checkbox') { out[f.name] = input.checked; continue; }
-              const raw = typeof input.value === 'string' ? input.value.trim() : input.value;
-              if (f.type === 'number') out[f.name] = raw === '' ? null : Number(raw);
-              else out[f.name] = raw;
-
-              const val = out[f.name];
-              if (f.required && (val === '' || val === null || val === undefined)) {
-                setError(f, `${f.label} is required.`);
-                continue;
-              }
-              if (val === '' || val === null) continue;
-              if (f.type === 'number') {
-                if (!Number.isFinite(val)) { setError(f, 'Enter a valid number.'); continue; }
-                if (f.min !== undefined && val < Number(f.min)) { setError(f, `Must be ${f.min} or more.`); continue; }
-                if (f.max !== undefined && val > Number(f.max)) { setError(f, `Must be ${f.max} or less.`); continue; }
-              }
-              if (f.type === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(val))) {
-                setError(f, 'Enter a valid email address.'); continue;
-              }
-              if (f.pattern && !new RegExp(f.pattern).test(String(val))) {
-                setError(f, f.patternMessage || `${f.label} is not in the expected format.`); continue;
-              }
-            }
-
-            if (firstBad) {
-              firstBad.focus();
-              firstBad.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            if (saving) return;
+            const out = collect();
+            if (!out) return;
+            if (!onSubmit) {
+              btn.disabled = true;
+              settle(out);
+              close();
               return;
             }
-            btn.disabled = true;
-            settle(out);
-            close();
+            await save(out, close);
           },
         },
       ],
-      onClose: () => settle(null),   // Escape / backdrop / ✕ all resolve as cancelled
+      // Escape / backdrop / ✕ resolve as cancelled, except mid-save: then the
+      // save's outcome decides, so a save that lands is not reported as cancelled.
+      onClose: () => { if (saving) dismissed = true; else settle(null); },
       onOpen: (el) => {
         submit = el.querySelector('.m-foot .btn:last-child');
+        cancel = el.querySelector('.m-foot .btn:first-child');
         // Enter submits from any single-line input, matching a normal form.
         el.querySelector('#fm-form').addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); submit?.click(); }
