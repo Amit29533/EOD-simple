@@ -143,9 +143,12 @@ export async function candidatesView(view) {
   view.querySelector('#cand-stage').onchange = refilter;
   view.querySelector('#import-cands').onclick = () => importCandidatesModal(() => candidatesView(view));
   view.querySelector('#add-cand').onclick = async () => {
-    const vals = await formModal({ title: 'Add candidate', fields: candidateFields(roles), values: { stage: 'intake' } });
-    if (!vals) return;
-    await attempt(() => api('/admin/candidates', { method: 'POST', body: vals }), { okMessage: 'Candidate added' });
+    const saved = await formModal({
+      title: 'Add candidate', fields: candidateFields(roles), values: { stage: 'intake' },
+      onSubmit: (vals) => api('/admin/candidates', { method: 'POST', body: vals }),
+    });
+    if (!saved) return;
+    toast('Candidate added', 'success');
     candidatesView(view);
   };
 }
@@ -153,9 +156,12 @@ export async function candidatesView(view) {
 async function candidateAction(act, c, roles) {
   if (!c) return;
   if (act === 'edit') {
-    const vals = await formModal({ title: `Edit ${c.name}`, fields: candidateFields(roles), values: c });
-    if (!vals) return;
-    await attempt(() => api(`/admin/candidates/${c.id}`, { method: 'PATCH', body: vals }), { okMessage: 'Candidate updated' });
+    const saved = await formModal({
+      title: `Edit ${c.name}`, fields: candidateFields(roles), values: c,
+      onSubmit: (vals) => api(`/admin/candidates/${c.id}`, { method: 'PATCH', body: vals }),
+    });
+    if (!saved) return;
+    toast('Candidate updated', 'success');
     refresh();
   } else if (act === 'alloc') {
     await allocateAssessorModal(c);
@@ -176,19 +182,19 @@ async function deleteCandidateFlow(c, { goBack = false } = {}) {
     `Permanently delete "${c.name}"? This also removes their portal login and any open (not yet scored) assessments. Candidates with finalized reports cannot be deleted.`,
     'Continue', true);
   if (!yes) return;
-  const auth = await formModal({
+  // A wrong password keeps the dialog open to try again.
+  const deleted = await formModal({
     title: `Confirm deletion · ${c.name}`,
     submitLabel: 'Delete permanently',
+    busyLabel: 'Deleting…',
     fields: [{
       name: 'password', label: 'Admin password', type: 'password', required: true,
       help: 'This action is permanent and requires your admin password.',
     }],
+    onSubmit: (vals) => api(`/admin/candidates/${c.id}`, { method: 'DELETE', body: { password: vals.password } }),
   });
-  if (!auth) return;
-  const out = await attempt(
-    () => api(`/admin/candidates/${c.id}`, { method: 'DELETE', body: { password: auth.password } }),
-    { okMessage: `Candidate "${c.name}" deleted` });
-  if (!out) return;
+  if (!deleted) return;
+  toast(`Candidate "${c.name}" deleted`, 'success');
   if (goBack) location.hash = '#/candidates';
   else refresh();
 }
@@ -209,6 +215,12 @@ export async function allocateAssessorModal(c, presetRoleId) {
   const initialRole = activeRoles.find((r) => r.id === (presetRoleId || c.target_role_id)) || activeRoles[0];
   const maxQuestions = maxAssessmentQuestions();
   const vals = await new Promise((resolve) => {
+    // Answer exactly once. Esc, the backdrop and ✕ close the dialog through
+    // onClose, and used to leave this promise pending for good (only Cancel
+    // resolved it). The chosen values are settled BEFORE close(), because
+    // closing now reports "cancelled".
+    let settled = false;
+    const settle = (value) => { if (!settled) { settled = true; resolve(value); } };
     let roleId = initialRole.id;
     let assessorId = assessors[0].id;
     let mode = 'all';              // 'all' | 'limit'
@@ -249,7 +261,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
 
         <div class="alloc-preview" id="al-preview" aria-live="polite"></div>`,
       actions: [
-        { label: 'Cancel', kind: 'secondary', onClick: (close) => { close(); resolve(null); } },
+        { label: 'Cancel', kind: 'secondary', onClick: (close) => { settle(null); close(); } },
         {
           label: 'Allocate',
           onClick: async (close, btn) => {
@@ -260,15 +272,16 @@ export async function allocateAssessorModal(c, presetRoleId) {
               if (plan && n > plan.bank_total) { toast(`This track only has ${plan.bank_total} active question(s) — grow the bank to allocate more.`, 'error'); return; }
             }
             btn.disabled = true;
-            close();
-            resolve({
+            settle({
               role_id: roleId,
               assessor_id: assessorId,
               question_count: mode === 'limit' ? Number(count) : null,
             });
+            close();
           },
         },
       ],
+      onClose: () => settle(null),
       onOpen: (el) => {
         const preview = el.querySelector('#al-preview');
         const countRow = el.querySelector('#al-count-row');
@@ -504,13 +517,14 @@ export async function assessmentsView(view) {
   }));
   view.querySelectorAll('[data-re]').forEach((b) => (b.onclick = async () => {
     const a = all.find((x) => x.id === b.dataset.re);
-    const vals = await formModal({
+    const saved = await formModal({
       title: `Reassign assessor · ${a.candidate_name}`,
       fields: [{ name: 'assessor_id', label: 'Assessor', type: 'select', allowEmpty: false, options: assessors.map((u) => ({ value: u.id, label: u.name })) }],
       values: { assessor_id: a.assessor_id || '' },
+      onSubmit: (vals) => api(`/admin/assessments/${a.id}`, { method: 'PATCH', body: { assessor_id: vals.assessor_id || null } }),
     });
-    if (!vals) return;
-    await attempt(() => api(`/admin/assessments/${a.id}`, { method: 'PATCH', body: { assessor_id: vals.assessor_id || null } }), { okMessage: 'Assessor updated' });
+    if (!saved) return;
+    toast('Assessor updated', 'success');
     assessmentsView(view);
   }));
 }
@@ -533,6 +547,10 @@ const INTEGRITY_EVENT_TONE = {
   tab_switch: 'red', browser_close: 'red', exam_exit: 'red', exam_reopen: 'red',
   multi_window: 'red', devtools_key: 'red', devtools_resize: 'red',
   paste_attempt: 'amber', copy_attempt: 'amber', cut_attempt: 'amber',
+  // `copy` is copying exam content outside an answer field (the in-field
+  // attempt is `copy_attempt`); `paste` is the name older clients logged a
+  // blocked paste under. Both were grey, as if routine.
+  copy: 'amber', paste: 'amber',
   screenshot: 'red', fullscreen_exit: 'red', contextmenu: 'amber',
   // Logged by the API when an open question is locked without a recording.
   spoken_answer_missing: 'amber',
@@ -548,6 +566,29 @@ const integrityTone = (event) => (typeof event === 'string' && Object.hasOwn(INT
   ? INTEGRITY_EVENT_TONE[event]
   : 'grey');
 
+/**
+ * The integrity tiles, each the sum of the counters it names. Every counter the
+ * API keeps (INTEGRITY_EVENT_KEYS in src/api/quiz-session.mjs) belongs to
+ * exactly one tile, except the two routine ones (the exam starting, the
+ * candidate returning to the tab), which only the headline total includes.
+ * The grid used to leave out copy, paste, screenshot, right-click and every
+ * unrecognised event, so a trail could read "0" on every copy tile while the
+ * headline counted the copies. `blur` and `visibility` are the names older
+ * clients logged the window-blur and tab-switch signals under.
+ */
+const INTEGRITY_TILES = [
+  { label: 'Tab switches', keys: ['tab_switch', 'visibility'] },
+  { label: 'Window blur / browser close', keys: ['window_blur', 'blur', 'browser_close'] },
+  { label: 'Exit / reopen exam', keys: ['exam_exit', 'exam_reopen'] },
+  { label: 'Copy / paste / devtools', keys: ['copy', 'copy_attempt', 'cut_attempt', 'paste', 'paste_attempt', 'devtools_key', 'devtools_resize'] },
+  { label: 'Fullscreen exit', keys: ['fullscreen_exit'] },
+  { label: 'Multi-window', keys: ['multi_window'] },
+  { label: 'Open answers locked without a recording', keys: ['spoken_answer_missing'] },
+  { label: 'Questions timed out', keys: ['time_expired'] },
+  { label: 'Screenshot / right-click / other', keys: ['screenshot', 'contextmenu', 'other'] },
+];
+const counterSum = (counters, keys) => keys.reduce((sum, k) => sum + (Number(counters[k]) || 0), 0);
+
 export async function integrityView(view, { id }) {
   view.innerHTML = loading();
   const d = await api(`/admin/assessments/${id}/integrity`);
@@ -560,17 +601,10 @@ export async function integrityView(view, { id }) {
       <div class="row between">
         <div><div class="section-kicker">Proctoring / integrity trail</div><h2 style="margin:0">${esc(d.candidate?.name || 'Candidate')} · ${esc(d.assessment.id)}</h2>
           <div class="small muted" style="margin-top:5px">Status: ${esc(d.assessment.status)} · Started ${d.assessment.started_at ? esc(fmtDateTime(d.assessment.started_at)) : '—'}</div></div>
-        <div class="row">${badge(`${total} events`, total ? 'amber' : 'green')}${severeEvents ? badge(`${severeEvents} severe`, 'red') : badge('no severe events', 'green')}</div>
+        <div class="row">${badge(`${total} event${total === 1 ? '' : 's'}`, total ? 'amber' : 'green')}${severeEvents ? badge(`${severeEvents} severe`, 'red') : badge('no severe events', 'green')}</div>
       </div>
       <div class="grid cols-3 metric-grid" style="margin-top:16px">
-        <div class="stat"><div class="lbl">Tab switches</div><div class="num">${counters.tab_switch || 0}</div></div>
-        <div class="stat"><div class="lbl">Window blur / browser close</div><div class="num">${((counters.window_blur || 0) + (counters.browser_close || 0))}</div></div>
-        <div class="stat"><div class="lbl">Exit / reopen exam</div><div class="num">${((counters.exam_exit || 0) + (counters.exam_reopen || 0))}</div></div>
-        <div class="stat"><div class="lbl">Copy / paste / devtools</div><div class="num">${((counters.copy_attempt || 0) + (counters.paste_attempt || 0) + (counters.cut_attempt || 0) + (counters.devtools_key || 0) + (counters.devtools_resize || 0))}</div></div>
-        <div class="stat"><div class="lbl">Fullscreen exit</div><div class="num">${counters.fullscreen_exit || 0}</div></div>
-        <div class="stat"><div class="lbl">Multi-window</div><div class="num">${counters.multi_window || 0}</div></div>
-        <div class="stat"><div class="lbl">Open answers locked without a recording</div><div class="num">${counters.spoken_answer_missing || 0}</div></div>
-        <div class="stat"><div class="lbl">Questions timed out</div><div class="num">${counters.time_expired || 0}</div></div>
+        ${INTEGRITY_TILES.map((tile) => `<div class="stat"><div class="lbl">${esc(tile.label)}</div><div class="num">${counterSum(counters, tile.keys)}</div></div>`).join('')}
       </div>
     </div>
     <div class="card table-card">
@@ -671,7 +705,7 @@ export async function rolesView(view) {
     };
   }
   view.querySelector('#add-role').onclick = async () => {
-    const vals = await formModal({
+    const saved = await formModal({
       title: 'New assessment track',
       fields: [
         { name: 'name', label: 'Role name', required: true, placeholder: 'e.g. Resident Solutions Architect (RSA)' },
@@ -679,9 +713,10 @@ export async function rolesView(view) {
         { name: 'technology', label: 'Technology', required: true, placeholder: 'e.g. Databricks' },
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
       ],
+      onSubmit: (vals) => api('/admin/roles', { method: 'POST', body: vals }),
     });
-    if (!vals) return;
-    await attempt(() => api('/admin/roles', { method: 'POST', body: vals }), { okMessage: 'Role created with a default scoring framework' });
+    if (!saved) return;
+    toast('Role created with a default scoring framework', 'success');
     rolesView(view);
   };
 }
@@ -739,12 +774,15 @@ export async function roleDetailView(view, { id }) {
   ];
 
   const editComp = async (c) => {
-    const vals = await formModal({ title: c ? `Edit ${c.name}` : 'Add competency', fields: compFields, values: c || { target_level: 4, active: true, order: d.competencies.length + 1 }, wide: true });
-    if (!vals) return;
-    await attempt(() => c
-      ? api(`/admin/competencies/${c.id}`, { method: 'PATCH', body: vals })
-      : api('/admin/competencies', { method: 'POST', body: { ...vals, role_id: role.id } }),
-      { okMessage: c ? 'Competency updated' : 'Competency added' });
+    const saved = await formModal({
+      title: c ? `Edit ${c.name}` : 'Add competency', fields: compFields,
+      values: c || { target_level: 4, active: true, order: d.competencies.length + 1 }, wide: true,
+      onSubmit: (vals) => (c
+        ? api(`/admin/competencies/${c.id}`, { method: 'PATCH', body: vals })
+        : api('/admin/competencies', { method: 'POST', body: { ...vals, role_id: role.id } })),
+    });
+    if (!saved) return;
+    toast(c ? 'Competency updated' : 'Competency added', 'success');
     roleDetailView(view, { id });
   };
   view.querySelector('#add-comp').onclick = () => editComp(null);
@@ -757,7 +795,7 @@ export async function roleDetailView(view, { id }) {
     roleDetailView(view, { id });
   }));
   view.querySelector('#edit-role').onclick = async () => {
-    const vals = await formModal({
+    const saved = await formModal({
       title: 'Edit role', values: role,
       fields: [
         { name: 'name', label: 'Role name', required: true },
@@ -765,9 +803,10 @@ export async function roleDetailView(view, { id }) {
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
         { name: 'active', label: 'Active', type: 'checkbox' },
       ],
+      onSubmit: (vals) => api(`/admin/roles/${role.id}`, { method: 'PATCH', body: vals }),
     });
-    if (!vals) return;
-    await attempt(() => api(`/admin/roles/${role.id}`, { method: 'PATCH', body: vals }), { okMessage: 'Role updated' });
+    if (!saved) return;
+    toast('Role updated', 'success');
     roleDetailView(view, { id });
   };
   view.querySelector('#del-role').onclick = async () => {
@@ -832,9 +871,13 @@ function renderFramework(box, role, fw, done) {
  * now (see modulesView -> "Served question set"), so there is one place to
  * manage questions instead of two that duplicate each other.
  */
-/** Custom editor: dynamic options with correct-answer markers, type-conditional fields. */
-function questionEditorModal(existing, competencies) {
+/** Custom editor: dynamic options with correct-answer markers, type-conditional fields. Exported for its tests. */
+export function questionEditorModal(existing, competencies) {
   return new Promise((resolve) => {
+    // Answer exactly once: Esc, the backdrop and ✕ mean "cancelled" (they
+    // used to leave the promise pending), and Save settles before close().
+    let settled = false;
+    const settle = (value) => { if (!settled) { settled = true; resolve(value); } };
     const v = existing || { type: 'mcq_single', points: 4, difficulty: 'intermediate', active: true, options: [{ id: 'a', label: '' }, { id: 'b', label: '' }], correct_option_ids: [] };
     let options = (v.options || []).map((o) => ({ ...o }));
     const qtypes = state.meta.questionTypes;
@@ -880,7 +923,7 @@ function questionEditorModal(existing, competencies) {
         </div>
         <label class="check"><input type="checkbox" id="qe-active" ${v.active !== false ? 'checked' : ''}/> <span>Active (included in new assessments)</span></label>`,
       actions: [
-        { label: 'Cancel', kind: 'secondary', onClick: (close) => { close(); resolve(null); } },
+        { label: 'Cancel', kind: 'secondary', onClick: (close) => { settle(null); close(); } },
         {
           label: 'Save question',
           onClick: async (close, btn) => {
@@ -922,11 +965,12 @@ function questionEditorModal(existing, competencies) {
               order: Number(root.querySelector('#qe-order').value || 0),
               active: root.querySelector('#qe-active').checked,
             };
+            settle(out);
             close();
-            resolve(out);
           },
         },
       ],
+      onClose: () => settle(null),
       onOpen: (el) => {
         const zone = el.querySelector('#qe-options-zone');
         const rubricZone = el.querySelector('#qe-rubric-zone');
@@ -1053,49 +1097,56 @@ export async function usersView(view) {
 
   view.querySelector('#import-users').onclick = () => importCandidatesModal(() => usersView(view));
   view.querySelector('#add-user').onclick = async () => {
-    let values = { role: 'assessor' };
-    while (true) {
-      const vals = await formModal({ title: 'Create user', fields: userFields(null), values });
-      if (!vals) return;
-      values = vals;
-      if (vals.role === 'candidate' && !vals.candidate_id) {
-        toast('Choose the linked candidate before creating a candidate portal user.', 'error');
-        continue;
-      }
-      const body = { ...vals };
-      if (body.role !== 'candidate') delete body.candidate_id;
-      const out = await attempt(() => api('/admin/users', { method: 'POST', body }));
-      if (!out) return;
-      // The account is created either way — the toast then says whether its
-      // assessment was auto-allocated or why it was skipped.
-      const alloc = vals.role === 'candidate' ? out.auto_allocation : null;
-      if (alloc?.allocated) {
-        toast(`User "${vals.username}" created · ${alloc.question_count}-question assessment auto-allocated (${alloc.role_name})`, 'success');
-      } else if (alloc && !alloc.skipped) {
-        toast(`User "${vals.username}" created · assessment not auto-allocated: ${alloc.reason}`, 'success');
-      } else {
-        toast(`User "${vals.username}" created`, 'success');
-      }
-      usersView(view);
-      return;
+    // A refusal (username taken, candidate already linked, weak password)
+    // keeps the dialog open with everything typed, the message on its field.
+    const out = await formModal({
+      title: 'Create user', fields: userFields(null), values: { role: 'assessor' },
+      onSubmit: (vals) => {
+        if (vals.role === 'candidate' && !vals.candidate_id) {
+          throw Object.assign(new Error('Choose the linked candidate before creating a candidate portal user.'), { field: 'candidate_id' });
+        }
+        const body = { ...vals };
+        if (body.role !== 'candidate') delete body.candidate_id;
+        return api('/admin/users', { method: 'POST', body });
+      },
+    });
+    if (!out) return;
+    // The account is created either way — the toast then says whether its
+    // assessment was auto-allocated or why it was skipped.
+    const alloc = out.role === 'candidate' ? out.auto_allocation : null;
+    if (alloc?.allocated) {
+      toast(`User "${out.username}" created · ${alloc.question_count}-question assessment auto-allocated (${alloc.role_name})`, 'success');
+    } else if (alloc && !alloc.skipped) {
+      toast(`User "${out.username}" created · assessment not auto-allocated: ${alloc.reason}`, 'success');
+    } else {
+      toast(`User "${out.username}" created`, 'success');
     }
+    usersView(view);
   };
   view.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = async () => {
     const u = users.find((x) => x.id === b.dataset.edit);
     const editable = ['name', 'email', 'password', ...(u.role === 'candidate' ? ['candidate_id'] : [])];
-    const vals = await formModal({ title: `Edit @${u.username}`, values: u, fields: userFields(u).filter((f) => editable.includes(f.name)) });
-    if (!vals) return;
-    const body = { name: vals.name, email: vals.email };
-    if (u.role === 'candidate') body.candidate_id = vals.candidate_id;
-    if (vals.password) body.password = vals.password;
-    const out = await attempt(() => api(`/admin/users/${u.id}`, { method: 'PATCH', body }), { okMessage: 'User updated' });
-    if (out) usersView(view);
+    const saved = await formModal({
+      title: `Edit @${u.username}`, values: u, fields: userFields(u).filter((f) => editable.includes(f.name)),
+      onSubmit: (vals) => {
+        const body = { name: vals.name, email: vals.email };
+        if (u.role === 'candidate') body.candidate_id = vals.candidate_id;
+        if (vals.password) body.password = vals.password;
+        return api(`/admin/users/${u.id}`, { method: 'PATCH', body });
+      },
+    });
+    if (!saved) return;
+    toast('User updated', 'success');
+    usersView(view);
   }));
   view.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = async () => {
     const u = users.find((x) => x.id === b.dataset.pw);
-    const vals = await formModal({ title: `Reset password · @${u.username}`, fields: [{ name: 'password', label: 'New password', type: 'password', required: true, help: 'Minimum 8 characters.' }] });
-    if (!vals) return;
-    await attempt(() => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { password: vals.password } }), { okMessage: 'Password reset' });
+    const saved = await formModal({
+      title: `Reset password · @${u.username}`,
+      fields: [{ name: 'password', label: 'New password', type: 'password', required: true, help: 'Minimum 8 characters.' }],
+      onSubmit: (vals) => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { password: vals.password } }),
+    });
+    if (saved) toast('Password reset', 'success');
   }));
   const toggle = async (id, active) => {
     await attempt(() => api(`/admin/users/${id}`, { method: 'PATCH', body: { active } }), { okMessage: active ? 'User reactivated' : 'User deactivated' });

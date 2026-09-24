@@ -12,8 +12,17 @@ import { EXAM_OPEN_ANSWER_SECONDS } from '../src/core/constants.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const workbook = path.join(root, 'SAMA Question bank 1.2.xlsx');
+// The workbook is the maintainer's source document and is not tracked in the
+// repository, so a fresh checkout does not have it. These two tests verify the
+// published bank against it; without it they have nothing to compare, so they
+// report a skip naming the missing file instead of failing `npm test` with an
+// ENOENT. The published bank itself is covered without the workbook by the
+// catalogue, track and SAMA UI suites.
+const SKIP_NO_WORKBOOK = fs.existsSync(workbook)
+  ? false
+  : `source workbook "${path.basename(workbook)}" is not in the checkout`;
 
-test('SAMA v1.2 workbook is complete and its revised questions reach both catalogues', () => {
+test('SAMA v1.2 workbook is complete and its revised questions reach both catalogues', { skip: SKIP_NO_WORKBOOK }, () => {
   const { rows } = parseSheet(fs.readFileSync(workbook), { format: 'xlsx' });
   assert.equal(QUESTION_BANK_VERSION, '1.2');
   assert.equal(rows.length, 100);
@@ -55,7 +64,7 @@ test('SAMA v1.2 workbook is complete and its revised questions reach both catalo
   }
 });
 
-test('SAMA extraction and generation reproduce the published bank byte for byte', () => {
+test('SAMA extraction and generation reproduce the published bank byte for byte', { skip: SKIP_NO_WORKBOOK }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sama-workbook-'));
   try {
     const json = path.join(tmp, 'bank.json');

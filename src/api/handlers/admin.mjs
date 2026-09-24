@@ -13,11 +13,12 @@ import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 import {
   buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
+  allocationLockKey,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
 import {
   catalogueStatus, catalogueMissing, syncCatalogue, catalogueForRoleKey,
-  listCatalogues, installCatalogue,
+  listCatalogues, installCatalogue, isCatalogueCompetency,
 } from '../catalogue-service.mjs';
 import {
   moduleBankFor, DEFAULT_MODULE_BANK_ROLE_KEY,
@@ -67,6 +68,20 @@ const CANDIDATE_TEXT_FIELDS = {
 const COMPETENCY_TEXT_FIELDS = {
   name: 160, key: 60, category: 60, description: 1500, enrichment_hint: 1500,
 };
+
+/**
+ * A competency key derived from its name, unique in its track. The derivation
+ * keeps a-z and 0-9 only, so a name in another script used to derive a blank
+ * key, and two competencies with the same name shared one. The published
+ * catalogue sync matches competencies by key, so neither is harmless.
+ */
+function derivedCompetencyKey(name, taken) {
+  const max = COMPETENCY_TEXT_FIELDS.key;
+  const base = str(name, max).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'competency';
+  let key = base;
+  for (let n = 2; taken.has(key); n += 1) key = `${base.slice(0, max - String(n).length - 1)}-${n}`;
+  return key;
+}
 
 /** The columns the import understands, in the order the template lists them. */
 const IMPORT_COLUMNS = [
@@ -523,7 +538,12 @@ export function adminHandlers(route) {
         assessmentBatch.push({
           candidate_id: rec.id, role_id: plan.role.id, assessor_id: bulkAssessorId,
           status: 'assigned', snapshot_json: plan.snapshot, report_json: null,
-          question_count: plan.question_count,
+          // The same listing facts every other allocation path stamps. Without
+          // them the file and blob adapters (which store the paper apart from
+          // the row) made the first assessments listing after an import fetch
+          // each imported paper whole and rewrite its row, one after another:
+          // up to 2,000 sequential reads and writes for one import.
+          ...paperSummary(plan.snapshot),
           overall_pct: null, readiness_key: '', readiness_label: '', created_by: auth.user.id,
         });
         allocatedIdx.push(i);
@@ -571,8 +591,21 @@ export function adminHandlers(route) {
     const assessorName = Object.fromEntries(users.map((u) => [u.id, u.name]));
     assessments.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const facts = await paperFacts(store, assessments);
-    const events = (await store.list('audit_log', { entity: 'candidates', entity_id: c.id }))
-      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 30);
+    // The timeline is the candidate's journey. Their papers' milestones
+    // (allocated, reassigned, submitted, scored) are audited against the
+    // assessment, not the candidate, so a timeline built from candidate
+    // events alone never showed any of them, and a candidate created by a
+    // spreadsheet import (one audit row for the whole file) read "No events
+    // yet". Integrity beacons and exam notices stay out: they have their own
+    // screen, and up to 200 of them per paper would push the milestones out
+    // of the 30-event list.
+    const events = [...await store.list('audit_log', { entity: 'candidates', entity_id: c.id })];
+    for (const a of assessments) {
+      const rows = await store.list('audit_log', { entity: 'assessments', entity_id: a.id });
+      events.push(...rows.filter((e) => String(e.action || '').startsWith('assessment_')));
+    }
+    events.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    events.splice(30);
     return ok({
       candidate: c,
       role_name: roleName[c.target_role_id] || '',
@@ -934,19 +967,25 @@ export function adminHandlers(route) {
     if (structured) return bad(`Competency ${structured} must be plain text.`);
     const problem = validateCompetency(body);
     if (problem) return bad(problem);
-    const rec = await store.insert('competencies', {
-      role_id: body.role_id,
-      key: str(body.key, COMPETENCY_TEXT_FIELDS.key)
-        || str(body.name, COMPETENCY_TEXT_FIELDS.key).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-      name: str(body.name, COMPETENCY_TEXT_FIELDS.name),
-      category: str(body.category, COMPETENCY_TEXT_FIELDS.category) || 'technical',
-      description: str(body.description, COMPETENCY_TEXT_FIELDS.description),
-      enrichment_hint: str(body.enrichment_hint, COMPETENCY_TEXT_FIELDS.enrichment_hint),
-      weight: num(body.weight, 0), target_level: num(body.target_level, 4),
-      order: num(body.order, 0), active: body.active !== undefined ? bool(body.active) : true,
+    // Keys are unique per track (the catalogue sync matches by key); the lock
+    // keeps two simultaneous creates from both taking the same one.
+    return withLock(`competencies:${body.role_id}`, async () => {
+      const taken = new Set((await store.list('competencies', { role_id: body.role_id })).map((x) => x.key));
+      const explicitKey = str(body.key, COMPETENCY_TEXT_FIELDS.key);
+      if (explicitKey && taken.has(explicitKey)) return conflict('Another competency in this track already uses that key.');
+      const rec = await store.insert('competencies', {
+        role_id: body.role_id,
+        key: explicitKey || derivedCompetencyKey(body.name, taken),
+        name: str(body.name, COMPETENCY_TEXT_FIELDS.name),
+        category: str(body.category, COMPETENCY_TEXT_FIELDS.category) || 'technical',
+        description: str(body.description, COMPETENCY_TEXT_FIELDS.description),
+        enrichment_hint: str(body.enrichment_hint, COMPETENCY_TEXT_FIELDS.enrichment_hint),
+        weight: num(body.weight, 0), target_level: num(body.target_level, 4),
+        order: num(body.order, 0), active: body.active !== undefined ? bool(body.active) : true,
+      });
+      await audit(store, auth.user, 'competency_created', 'competencies', rec.id, `Competency "${rec.name}" created`);
+      return created(rec);
     });
-    await audit(store, auth.user, 'competency_created', 'competencies', rec.id, `Competency "${rec.name}" created`);
-    return created(rec);
   });
 
   route('PATCH', '/admin/competencies/:id', A, async ({ store, body, params, auth }) => {
@@ -962,9 +1001,30 @@ export function adminHandlers(route) {
       if (body[f] !== undefined) patch[f] = str(body[f], max);
     for (const f of ['weight', 'target_level', 'order']) if (body[f] !== undefined) patch[f] = num(body[f], c[f]);
     if (body.active !== undefined) patch.active = bool(body.active);
-    const updated = await store.update('competencies', params.id, patch);
-    await audit(store, auth.user, 'competency_updated', 'competencies', params.id, `Competency "${updated.name}" updated`);
-    return ok(updated);
+    // The key identifies the competency to the published catalogue sync, which
+    // finds competencies by key and creates any it cannot find. A blank key
+    // used to be accepted, and the next sync added a second, empty copy of
+    // the competency (on RSA: 8 competencies, weights summing to 118).
+    if (patch.key !== undefined) {
+      if (!patch.key) return bad('Competency key cannot be blank.');
+      if (patch.key === c.key) delete patch.key;
+    }
+    const apply = async () => {
+      if (patch.key !== undefined) {
+        const role = await store.get('roles', c.role_id);
+        if (isCatalogueCompetency(role, c)) {
+          return conflict(`"${c.name}" comes from the published ${role.name} catalogue. Its key links it to the catalogue sync and cannot be changed.`);
+        }
+        const siblings = await store.list('competencies', { role_id: c.role_id });
+        if (siblings.some((x) => x.id !== c.id && x.key === patch.key)) {
+          return conflict('Another competency in this track already uses that key.');
+        }
+      }
+      const updated = await store.update('competencies', params.id, patch);
+      await audit(store, auth.user, 'competency_updated', 'competencies', params.id, `Competency "${updated.name}" updated`);
+      return ok(updated);
+    };
+    return patch.key !== undefined ? withLock(`competencies:${c.role_id}`, apply) : apply();
   });
 
   route('DELETE', '/admin/competencies/:id', A, async ({ store, params, auth }) => {
@@ -1591,7 +1651,7 @@ export function adminHandlers(route) {
   });
 
   route('POST', '/admin/assessments', A, async (ctx) =>
-    withLock(`alloc:${ctx.body?.candidate_id}:${ctx.body?.role_id}`, async () => {
+    withLock(allocationLockKey(ctx.body?.candidate_id, ctx.body?.role_id), async () => {
       const { store, body, auth } = ctx;
     const miss = missing(body, ['candidate_id', 'role_id']);
     if (miss.length) return bad('candidate_id and role_id are required.');

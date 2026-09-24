@@ -58,6 +58,19 @@ export const PUBLISHED_CATALOGUES = {
   [SAMA_ROLE.key]: { role: SAMA_ROLE, competencies: SAMA_COMPETENCIES, questions: SAMA_QUESTIONS },
 };
 
+/**
+ * Is this competency the copy of a published catalogue competency? The sync
+ * (synchronizeBank) finds a track's competencies by `key` and creates any it
+ * cannot find, so such a competency's key is its link to the catalogue:
+ * blanked or renamed, the next sync added a second, empty copy beside it.
+ */
+export function isCatalogueCompetency(role, competency) {
+  const key = role?.key;
+  const catalogue = typeof key === 'string' && Object.hasOwn(PUBLISHED_CATALOGUES, key) ? PUBLISHED_CATALOGUES[key] : null;
+  return Boolean(catalogue && competency?.key && catalogue.competencies.some((c) => c.key === competency.key));
+}
+
+
 export const DEFAULT_CATALOGUE_ROLE_KEY = RSA_ROLE.key;
 
 /** The published catalogue for a role key, or null (unknown key). */
@@ -339,6 +352,22 @@ export async function synchronizeBank(store, role) {
   const existingCompetencies = await store.list('competencies', { role_id: role.id });
   const compIds = Object.fromEntries(existingCompetencies.map((c) => [c.key, c.id]));
 
+  // Heal a catalogue competency whose key was blanked. The API used to accept
+  // a blank key, and a sync then added a second, empty copy (weights summing
+  // past 100, an extra "not assessed" row on every report). A competency with
+  // no key and the catalogue competency's name gets its key back instead.
+  const sameName = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+  const adopted = [];
+  for (const c of catalogue.competencies) {
+    if (compIds[c.key]) continue;
+    const orphan = existingCompetencies.find((x) => !String(x.key ?? '').trim() && sameName(x.name, c.name)
+      && !adopted.some((a) => a.id === x.id));
+    if (!orphan) continue;
+    adopted.push({ id: orphan.id, patch: { key: c.key } });
+    compIds[c.key] = orphan.id;
+  }
+  if (adopted.length) await bulkUpdate(store, 'competencies', adopted);
+
   // Competencies the published questions rely on must exist before inserting.
   // Batch: only the ones actually missing.
   const missingComps = catalogue.competencies.filter((c) => !compIds[c.key]);
@@ -348,6 +377,7 @@ export async function synchronizeBank(store, role) {
     recs.forEach((rec) => { compIds[rec.key] = rec.id; });
   }
   const competenciesAdded = missingComps.length;
+  const competenciesRepaired = adopted.length;
 
   const existingQuestions = await store.list('questions', { role_id: role.id });
   const byPrompt = new Map();
@@ -379,7 +409,10 @@ export async function synchronizeBank(store, role) {
 
   const bankTotal = (await store.list('questions', { role_id: role.id }))
     .filter((q) => q.active !== false).length;
-  return { added, repaired, competencies_added: competenciesAdded, bank_total: bankTotal, role_id: role.id };
+  return {
+    added, repaired, competencies_added: competenciesAdded, competencies_repaired: competenciesRepaired,
+    bank_total: bankTotal, role_id: role.id,
+  };
 }
 
 /**

@@ -51,20 +51,59 @@ function donutSvg(value, tone) {
   </svg>`;
 }
 
+/**
+ * A competency the capped paper never reached has a null score. That is a real
+ * verdict ("not asked"), never a 0% failure, so every renderer below needs the
+ * same test.
+ */
+const isUntested = (c) => c.score_pct === null || c.score_pct === undefined;
+
+/**
+ * Each competency's share of the overall score, as a fraction (null = not
+ * assessed). The overall blend (computeReport in src/core/scoring.mjs) weights
+ * only the competencies the paper assessed, normalised over their total
+ * weight, or equally when that total is zero. The pie and its legend show that
+ * same share. The legend used to print each raw weight with a "%" after it,
+ * which only reads right when the weights sum to 100 and every competency was
+ * assessed: custom weights of 50/50/50 read "50%" three times, and a
+ * competency the capped paper never reached kept a slice of a score it had no
+ * part in.
+ */
+function weightShares(competencies) {
+  const assessed = competencies.map((c) => !isUntested(c));
+  // A report with nothing assessed has no blend to show; the framework's own
+  // mix is the closest honest picture.
+  const basis = assessed.some(Boolean) ? assessed : competencies.map(() => true);
+  const raw = competencies.map((c, i) => (basis[i] ? Math.max(0, finite(c.weight)) : 0));
+  const weighted = raw.some((v) => v > 0);
+  const values = raw.map((v, i) => (basis[i] ? (weighted ? v : 1) : 0));
+  const total = values.reduce((sum, v) => sum + v, 0) || 1;
+  return values.map((v, i) => (basis[i] ? v / total : null));
+}
+
+/** A whole disc as one path: an arc cannot start and end on the same point. */
+function discPath(radius = 42, cx = 50, cy = 50) {
+  return `M ${cx} ${cy - radius} A ${radius} ${radius} 0 1 1 ${cx} ${cy + radius} A ${radius} ${radius} 0 1 1 ${cx} ${cy - radius} Z`;
+}
+
 function weightPie(report) {
   const competencies = report.competencies || [];
   if (!competencies.length) {
     return `<div class="report-chart-empty">No competency data available.</div>`;
   }
-  const raw = competencies.map((c) => Math.max(0, finite(c.weight)));
-  const values = raw.some(Boolean) ? raw : competencies.map(() => 1);
-  const total = values.reduce((sum, value) => sum + value, 0) || 1;
+  const shares = weightShares(competencies);
   let angle = -Math.PI / 2;
-  const slices = values.map((value, index) => {
-    const next = angle + (value / total) * Math.PI * 2;
-    const slice = { color: CHART_COLORS[index % CHART_COLORS.length], d: piePath(angle, next) };
+  const slices = [];
+  shares.forEach((share, index) => {
+    if (!share) return; // not assessed, or a zero weight: no slice
+    const color = CHART_COLORS[index % CHART_COLORS.length];
+    // One competency carrying the whole score is a full disc. As a single
+    // arc its start and end points coincide and SVG draws nothing, which left
+    // a one-competency pie blank.
+    if (share > 0.99999) { slices.push({ color, d: discPath() }); return; }
+    const next = angle + share * Math.PI * 2;
+    slices.push({ color, d: piePath(angle, next) });
     angle = next;
-    return slice;
   });
   return `<svg class="report-pie" viewBox="0 0 100 100" role="img" aria-label="Assessment weight distribution">
     ${slices.map((slice) => `<path d="${slice.d}" fill="${slice.color}" stroke="#ffffff" stroke-width="1.4"/>`).join('')}
@@ -75,19 +114,19 @@ function weightPie(report) {
 }
 
 function renderWeightLegend(report) {
-  return (report.competencies || []).map((c, index) => `<li>
+  const competencies = report.competencies || [];
+  const shares = weightShares(competencies);
+  return competencies.map((c, index) => {
+    const share = shares[index];
+    const untested = share === null;
+    return `<li${untested ? ' class="is-untested"' : ''} title="Configured weight ${esc(finite(c.weight))}">
     <span class="report-legend-dot" style="background:${CHART_COLORS[index % CHART_COLORS.length]}"></span>
     <span class="report-legend-name">${esc(c.name)}</span>
-    <b>${esc(c.weight)}%</b>
-  </li>`).join('');
+    <b>${untested ? 'not assessed' : `${esc(rounded(share * 100))}%`}</b>
+  </li>`;
+  }).join('');
 }
 
-/**
- * A competency the capped paper never reached has a null score. That is a real
- * verdict ("not asked"), never a 0% failure, so every renderer below needs the
- * same test.
- */
-const isUntested = (c) => c.score_pct === null || c.score_pct === undefined;
 
 function renderCapabilityBars(report) {
   const competencies = report.competencies || [];

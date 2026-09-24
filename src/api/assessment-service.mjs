@@ -4,6 +4,19 @@ import { selectQuestions, dedupeQuestions } from '../core/question-selection.mjs
 import { sortedQuestions } from './quiz-session.mjs';
 import { applySpokenContract } from './catalogue-service.mjs';
 import { bulkUpdate } from './helpers.mjs';
+import { withLock } from './mutex.mjs';
+
+/**
+ * The lock both allocation paths take for one candidate and track: the manual
+ * "Allocate assessment" route and the automatic allocation that runs when a
+ * candidate's portal login is created. Each checks for an open paper and then
+ * inserts one. The automatic path used to take no lock at all, so the two
+ * could both pass the check: with remote-storage latency, creating a login
+ * and allocating at the same moment gave the candidate two open papers for
+ * one track in 17 of 31 timings. Per process, like every lock here (see
+ * src/api/mutex.mjs).
+ */
+export const allocationLockKey = (candidateId, roleId) => `alloc:${candidateId}:${roleId}`;
 
 /**
  * The active question bank for a role, in display order, with its competencies.
@@ -198,40 +211,42 @@ export async function autoAllocateAssessment(store, candidate, {
     if (assessor && assessor.role === 'assessor' && assessor.active !== false) assessor_id = assessor.id;
   }
 
-  const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
-    .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
-  if (open) {
-    return fail(`“${candidate.name}” already has an open ${role.name} assessment.`,
-      { role, assessment_id: open.id });
-  }
+  return withLock(allocationLockKey(candidate.id, role.id), async () => {
+    const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
+      .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
+    if (open) {
+      return fail(`“${candidate.name}” already has an open ${role.name} assessment.`,
+        { role, assessment_id: open.id });
+    }
 
-  const bank = await roleBank(store, role.id);
-  if (!bank?.questions.length) {
-    return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
-  }
-  const snapshot = snapshotFromBank(bank, autoQuestionLimit(bank.questions.length, questionCount));
-  if (!snapshot.questions.length) {
-    return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
-  }
+    const bank = await roleBank(store, role.id);
+    if (!bank?.questions.length) {
+      return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
+    }
+    const snapshot = snapshotFromBank(bank, autoQuestionLimit(bank.questions.length, questionCount));
+    if (!snapshot.questions.length) {
+      return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
+    }
 
-  const rec = await store.insert('assessments', {
-    candidate_id: candidate.id, role_id: role.id, assessor_id,
-    status: 'assigned', snapshot_json: snapshot, report_json: null,
-    ...paperSummary(snapshot),
-    overall_pct: null, readiness_key: '', readiness_label: '', created_by: actor?.id || null,
+    const rec = await store.insert('assessments', {
+      candidate_id: candidate.id, role_id: role.id, assessor_id,
+      status: 'assigned', snapshot_json: snapshot, report_json: null,
+      ...paperSummary(snapshot),
+      overall_pct: null, readiness_key: '', readiness_label: '', created_by: actor?.id || null,
+    });
+    if (!candidate.target_role_id) {
+      await store.update('candidates', candidate.id, { target_role_id: role.id });
+    }
+    await advanceStage(store, candidate.id, 'assessment');
+    const scope = snapshot.question_limit
+      ? `${snapshot.questions.length} of ${snapshot.bank_total} questions`
+      : `all ${snapshot.questions.length} questions`;
+    if (typeof auditFn === 'function') {
+      await auditFn('assessment_allocated', 'assessments', rec.id,
+        `Assessment auto-allocated to “${candidate.name}” (${scope} · ${role.name})${assessor_id ? '' : ' — assessor to be assigned'}`);
+    }
+    return { allocated: true, assessment: rec, role, question_count: snapshot.questions.length };
   });
-  if (!candidate.target_role_id) {
-    await store.update('candidates', candidate.id, { target_role_id: role.id });
-  }
-  await advanceStage(store, candidate.id, 'assessment');
-  const scope = snapshot.question_limit
-    ? `${snapshot.questions.length} of ${snapshot.bank_total} questions`
-    : `all ${snapshot.questions.length} questions`;
-  if (typeof auditFn === 'function') {
-    await auditFn('assessment_allocated', 'assessments', rec.id,
-      `Assessment auto-allocated to “${candidate.name}” (${scope} · ${role.name})${assessor_id ? '' : ' — assessor to be assigned'}`);
-  }
-  return { allocated: true, assessment: rec, role, question_count: snapshot.questions.length };
 }
 
 /**

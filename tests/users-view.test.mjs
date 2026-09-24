@@ -116,9 +116,13 @@ test('users view: creating a candidate user requires choosing the linked candida
     await flush(120);
 
     assert.equal(calls.posts.length, 0, 'invalid candidate account is not posted');
-    assert.match(document.getElementById('toast-root').textContent, /linked candidate/i);
-    const reopened = document.querySelector('.modal');
-    assert.ok(reopened, 'form remains available for correction');
-    assert.equal(reopened.querySelector('[name="role"]').value, 'candidate', 'previous role choice is preserved');
+    // The dialog never closes: the message sits on the linked-candidate field.
+    assert.equal(document.querySelector('.modal'), modal, 'the same dialog stays open for correction');
+    const err = modal.querySelector('#fm-err-candidate_id');
+    assert.equal(err.hidden, false);
+    assert.match(err.textContent, /linked candidate/i);
+    assert.equal(modal.querySelector('[name="candidate_id"]').getAttribute('aria-invalid'), 'true');
+    assert.equal(modal.querySelector('[name="role"]').value, 'candidate', 'previous role choice is preserved');
+    assert.equal(modal.querySelector('[name="username"]').value, 'new.candidate', 'typed values are preserved');
   } finally { teardown(dom); }
 });

@@ -119,7 +119,7 @@ export function ensureQuizState(a, questions) {
  * reports an event called `constructor` or `toString`, and the counter was then
  * filed under a garbage key instead of `other`.
  */
-const INTEGRITY_EVENT_KEYS = new Set([
+export const INTEGRITY_EVENT_KEYS = new Set([
   'blur',
   'copy',
   'paste',

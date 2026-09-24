@@ -238,11 +238,298 @@ it writes, and hashes before it inserts so a killed request leaves nothing behin
 20 pages, slowest **3.0 s**, all 2000 candidates, logins and papers. The published question
 catalogues and the SPA's remaining trust boundaries were re-read for this pass and found clean.
 
-Current verification: **558/558 Node tests** on Node 22 (527 of them also verified on Node 20,
-the deploy runtime per `netlify.toml`), **39/39 smoke tests**, **216/216 feature tests**, and
-**76/76 final-gauntlet checks** pass.
+A point-of-view pass then re-read the project one part at a time and tested it from each role's
+point of view, running the real screens in jsdom against the real in-process API. It adds a route × role
+guard matrix read from the live router. Nine defects were reproduced, fixed and pinned:
 
-## 📥 Bulk-onboarding pass — a 2000-row import was one 45-second request (latest)
+- A nameless integrity beacon wrote an audit row per request outside the flood cap.
+- One blocked paste was logged twice.
+- The submit handover took a storage race for a submission.
+- The admin integrity tiles hid copy, paste, screenshot and right-click counts.
+- Bulk-imported papers made the listing fetch and rewrite every paper.
+- A candidate's timeline never showed their assessments.
+- The report legend printed raw weights as if they were shares of the score.
+- The spreadsheet reader's zip-bomb guard trusted the archive's own size claim: a 600 KB file
+  allocated ~599 MB.
+- An uploaded workbook could inject a regular expression that blocked the server for hours.
+
+The newest pass fixed the five issues that pass had noted and left alone, plus one it found on
+the way:
+
+- One unreadable date took a whole screen down.
+- Two dialogs never answered when dismissed.
+- A catalogue competency's key could be blanked, and the next sync duplicated the competency.
+- Creating a candidate's login while allocating by hand could give two open papers for one track.
+- A refused save threw away everything the admin had typed.
+- Every form drew an empty error badge under each field.
+
+Current verification (Node 22.22): **655 Node tests: 653 pass, 0 fail, 2 skipped** (the SAMA
+workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
+**216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
+
+## 🩹 Follow-up pass: the five issues the point-of-view pass left open (latest)
+
+The point-of-view pass noted five issues without changing them. Each was fixed in its own pass,
+in order: dates, dialogs, competency keys, the allocation lock, then form saves. Each fix is
+pinned by a test that was run against the unfixed code and fails there. Where an obvious fix
+would itself be wrong, that variant was built as well, and fails too. Checking the form fix in a
+real browser (headless Chromium 153) turned up a sixth defect, which jsdom cannot see because it
+does no layout.
+
+`npm test`: **655 tests, 653 pass, 0 fail, 2 skipped** (was 632). Smoke 39/39, features 216/216,
+gauntlet 76/76.
+
+### Screens
+
+- **BUG AX — one unreadable date took a whole screen down.** `fmtDate` and `fmtDateTime` passed
+  `new Date(value)` straight to `Intl.DateTimeFormat`, which throws `RangeError: Invalid time
+  value` on an unreadable date. One such row replaced a whole list with the error page. The app
+  never writes such dates itself, since the server sets every timestamp, but a hand-edited
+  Airtable base or a migrated JSON store can. An unreadable date now reads "—", like a missing
+  one. Pinned by `tests/ui-dates.test.mjs`: two of its three tests fail without the fix, with
+  "Invalid time value".
+- **BUG AY — two dialogs never answered when dismissed.** "Allocate assessment" and the question
+  editor wrap `modal()` in their own promise, but only their Cancel button settled it. Esc, a
+  click on the backdrop and ✕ closed the dialog and left the promise pending for good, unlike
+  `formModal` and `confirmModal`, which report "cancelled". Nothing visible broke, because the
+  callers simply never continued, but the contract was wrong. Both dialogs also closed *before*
+  settling their result. So the obvious fix, resolving `null` on close, would have turned every
+  Allocate and Save into a silent no-op. Both now settle exactly once, with the value first, then
+  close. Pinned by `tests/ui-dialogs.test.mjs`: the old code fails two of its four tests, and the
+  naive fix fails three.
+
+### Server
+
+- **BUG AZ — a catalogue competency's key could be blanked, and the next sync duplicated it.**
+  `PATCH /admin/competencies/:id` accepted any `key`, blank included. The key is what ties a
+  catalogue competency to its published catalogue: the sync matches on it. The sync runs from
+  `POST /admin/content/sync`, a track install, and `npm run seed`. After a key was blanked on the
+  RSA track, the next sync added the competency again. The track went from 7 competencies to 8,
+  one of them an empty twin, and its weights summed to 118 instead of 100. `POST` had two quieter
+  versions of the same gap: a name with no Latin letters derived a blank key, and two
+  competencies with the same name derived the same key.
+  - A blank key is now refused (400).
+  - A catalogue competency's key cannot change (409, naming the catalogue).
+  - A key already used by another competency in the track is refused (409).
+  - Key changes and creates run under a per-track lock.
+  - Derived keys fall back to `competency` and take `-2`, `-3` suffixes, so they are never blank
+    and never collide.
+  - The sync adopts a same-named competency whose key was blanked before this fix, and reports
+    it as `competencies_repaired`.
+
+  The UI has no key field, so this was reachable only through the API. Pinned by
+  `tests/competency-keys.test.mjs` (six tests). With the route rules reverted, four fail; without
+  the repair, the repair test fails.
+- **BUG BA — creating a candidate's login while allocating by hand could give two open papers
+  for one track.** Creating a candidate's portal login runs an automatic allocation. It checked
+  for an open paper and then inserted one, without any lock. The manual "Allocate assessment"
+  route holds `alloc:<candidate>:<track>`, so the two never excluded each other. With 30 ms of
+  simulated storage latency (`.probe/alloc-race.mjs`), 17 of 31 timings left the candidate with
+  two open papers for the same track, and both requests answered 201. Both paths now take the
+  same lock, named by `allocationLockKey()`, and the probe finds 0 of 31. The lock order is
+  `users:create`, then `alloc:*`; the manual route takes only `alloc:*`, so they cannot deadlock.
+  Pinned by `tests/allocation-lock.test.mjs`. It parks one request inside its critical section
+  while the other arrives, so the race is deterministic. Without the shared lock, both ordering
+  tests fail. A third test checks that another candidate's allocation is not held up. Like every
+  lock here, it is per process: two function instances of a serverless deployment can still
+  race. That is the accepted limit recorded since the concurrency pass.
+
+### Forms
+
+- **BUG BB — a refused save threw away everything the admin had typed.** `formModal` resolved and
+  closed before its caller called the API. So when a save was refused (a taken username, a
+  candidate who already has a login, a wrong delete password, a server rule), a toast appeared
+  over a form that was already gone, and the admin had to type it all again. Only the
+  create-user form reopened, and only for its one client-side check.
+
+  `formModal` now takes an opt-in `onSubmit`:
+  - While it saves, the dialog stays open, both buttons are disabled, and the submit button reads
+    "Saving…".
+  - A refusal keeps every value. The message goes against the field it names: the field in
+    `err.field`, or else the field whose name or label the message mentions first, as a whole
+    word ("Username already exists." goes on Username). A message that names no field appears
+    in a banner above the form.
+  - The dialog closes only once the save succeeds.
+  - Closed mid-save, it still reports the outcome. A save that lands is not reported as
+    cancelled, and a failure becomes a toast.
+  - A 401 closes the dialog, because the app has gone back to the sign-in page.
+
+  All ten admin forms use it: add and edit candidate, the delete confirmation, reassign assessor,
+  new track, add and edit competency, edit role, create and edit user, and reset password. Pinned
+  by `tests/form-save.test.mjs` (seven tests; two drive the Users and Candidates screens against
+  the real API).
+  - With the old dialog, five of them fail.
+  - With the new dialog but the old callers, the two screen tests fail.
+  - A naive version that reports "cancelled" when closed mid-save fails its own test, and so does
+    one that stays clickable while saving.
+
+  `tests/users-view.test.mjs` now expects the linked-candidate message on its field in the
+  still-open dialog, not in a toast over a reopened form.
+- **BUG BC — hidden elements were drawn anyway.** `.field-err` sets `display: flex`. In a
+  browser, any `display` rule in the page's stylesheet beats the `hidden` attribute, because the
+  browser's own `[hidden] { display: none }` has the lowest precedence. So every form dialog drew
+  an empty red "!" badge under each field: 10 in "Add candidate" and 5 in "Add question". The
+  allocation dialog also drew its question-count row in full-bank mode. A global `[hidden] {
+  display: none !important; }` fixes the whole class. Audited in headless Chromium across the
+  sign-in page and four dialogs, 16 hidden elements were drawn before the fix and none after.
+  jsdom does not model stylesheet origins, so the last test in `tests/form-save.test.mjs` pins
+  the rule itself and also checks the real stylesheet over a real dialog. Without the rule, both
+  checks fail.
+
+### Noted, not changed
+
+- The exam gate's rules text hardcodes the timings (30 s, 60 s and 2 min) instead of reading
+  the configured budgets.
+- The assessor's finalize toast reads `report.band.label`. `computeReport` returns
+  `band: null` when no readiness band matches, and the toast would then throw after a
+  successful finalize.
+- `PATCH /admin/questions/:id` checks for a duplicate prompt without a lock, so two saves of the
+  same prompt at the same moment could both pass. This is the gap AZ closed for competency keys.
+- `formModal`'s `pattern` option is tested unanchored, unlike HTML's `pattern` attribute. No
+  form uses it today.
+
+## 🎭 Point-of-view pass: what each role actually sees, through the real API (previous)
+
+**Method.** The whole project was re-read one part at a time: the API handlers, the scoring and
+selection core, quiz sessions, the spreadsheet parser, candidate import, storage, and every SPA
+view. Each part was then checked from the point of view of the person who uses it. Every
+suspected defect was reproduced by a probe (`.probe/`, gitignored) before it was touched, fixed,
+and pinned by a regression test that fails without the fix. The new suites run the real views in
+jsdom against the **real in-process API** instead of a stubbed `fetch`, so what a screen shows is
+what the server holds:
+
+- `tests/helpers/world.mjs` builds a throwaway world (a JSON store, the real app, an admin, a
+  two-competency track, MCQ and open questions) with helpers to onboard, allocate, walk, submit,
+  assign, score and finalize.
+- `tests/helpers/spa.mjs` boots the SPA with either a stubbed or a real backend.
+- `tests/pov-candidate`, `pov-admin` and `pov-assessor` cover the API side of each role.
+- `tests/pov-ui-candidate`, `pov-ui-admin`, `pov-ui-assessor` and `pov-ui-report` cover the
+  screens.
+- `tests/pov-rbac` is a route × role matrix read from the live router, so a route added later is
+  covered automatically. Every guarded route returns 401 signed out and 403 to a wrong role. The
+  right role is let through, and gets a client error, never a 500, on junk input. The policy test
+  also fails if a new route's guard does not match its prefix.
+
+`npm test`: **632 tests, 630 pass, 0 fail, 2 skipped** (was 587, with 2 failing).
+
+### Candidate
+
+- **BUG AO — nameless integrity beacons could flush the audit log.** `POST
+  /candidate/assessments/:id/integrity` with no `event` (or a non-string one) was ignored by
+  `integrityPatch`. So it never entered the exam trail and never counted toward the 200-event cap
+  that stops audit floods. Each one still cost an assessment write and an `integrity_integrity`
+  audit row. A candidate's browser, or a script with their token, could send them without limit
+  and push every admin action out of the 2,000-row rotating audit log. The route now refuses a
+  beacon without a string name with a 400, before any read or write. The exam client always sends
+  a literal name. Pinned by `tests/pov-candidate.test.mjs` (a nameless beacon writes nothing; a
+  flood of them leaves admin actions in the log).
+- **BUG AP — one blocked paste was logged twice.** The answer box had its own `onpaste` beacon on
+  top of the exam's document-level paste guard, so a single paste into `#exam-ta` sent two
+  `paste_attempt` events and doubled the candidate's count on the admin's trail. The duplicate
+  handler is removed. Pinned in `tests/pov-ui-candidate.test.mjs`.
+- **BUG AQ — the submit handover took a storage race for a submission.** `submitExam` treated
+  *every* 409 as "already submitted". The route's own conflicts ("already submitted", "already
+  scored") do mean an earlier attempt landed. But the storage layer's insert race ("That record
+  was created by another request…") is also a 409 and means nothing was written. The candidate
+  was told "Assessment submitted" and sent to a journey page that still showed the exam open. That
+  409 is now retried like a 5xx, as the exam's own lock already does, and it fails loudly if it
+  persists. Pinned in `tests/pov-ui-candidate.test.mjs`.
+
+### Admin
+
+- **BUG AR — the integrity screen's tiles hid most of what they counted.** The headline summed
+  every counter, but the tile grid left out `copy`, `paste`, `screenshot`, `contextmenu` and every
+  unrecognised event (`other`). A trail could read "0" on every copy tile while the headline
+  counted the copies. The legacy `visibility` and `blur` names were not tiled either. The tiles
+  are now data-driven: every key in `INTEGRITY_EVENT_KEYS` (now exported from
+  `src/api/quiz-session.mjs`) lands in exactly one tile, and a new "Screenshot / right-click /
+  other" tile holds the rest. The routine `exam_start` and `tab_return` counters stay in the
+  headline only. `copy` and `paste` badges are amber rather than grey, and the headline says
+  "1 event", not "1 events". Pinned in `tests/pov-ui-admin.test.mjs`, which iterates the real
+  registry, so a counter added later without a tile fails the suite.
+- **BUG AS — bulk-imported papers lacked the listing facts.** The bulk import built its assessment
+  rows with a bare `question_count`, while single allocations spread `paperSummary(snapshot)`. So
+  the first listing after an import fetched every imported paper whole, snapshot included, to work
+  out `question_limit`, `bank_total` and `total_points`, then rewrote each row to backfill them: a
+  read-only screen doing one read and one write per imported paper (2,000 of each after a full
+  import), which is exactly what the summary exists to avoid. The batch now spreads the same
+  summary. Pinned in `tests/pov-admin.test.mjs` (imported rows carry the same facts as a single
+  allocation, and a listing after an import makes no paper reads and no writes).
+- **BUG AT — a candidate's timeline never showed their assessments.** `GET
+  /admin/candidates/:id` built the timeline from audit rows on the *candidate* entity only. Every
+  milestone of the candidate's papers (allocated, reassigned, submitted, scored) is audited
+  against the *assessment*, so none of them appeared. A candidate created by a spreadsheet import
+  (one audit row for the whole file, with no entity id) read "No events yet" despite having a
+  login and a paper. The timeline now also includes the `assessment_*` rows of the candidate's own
+  papers. Integrity beacons stay out: they have their own screen, and up to 200 of them would push
+  the milestones out of the 30-row list. Pinned by two cases in `tests/pov-admin.test.mjs` and the
+  record screen in `tests/pov-ui-admin.test.mjs`.
+
+### Reports (all audiences)
+
+- **BUG AU — the report's pie and legend showed raw weights, not shares of the score.** The
+  legend printed each competency's configured weight with a "%" after it. That only reads right
+  when the weights sum to 100 and every competency was assessed. Custom weights of 50/50/50 read
+  "50%" three times. A competency the capped paper never reached kept a slice of a score it had no
+  part in, while `computeReport` blends only assessed competencies, normalised over their weight.
+  The pie and legend now show that same share (or equal shares when every weight is 0, as the
+  blend does), and an unassessed competency reads "not assessed" with no slice. A latent drawing
+  bug is fixed too: one competency carrying the whole score is a single 2π arc whose start and end
+  points coincide, which SVG draws as nothing, so that pie was blank. The four published tracks
+  (weights summing to 100) render exactly as before. Pinned by `tests/pov-ui-report.test.mjs`
+  (eight cases, including the legend agreeing with a real `computeReport` run).
+
+### Spreadsheet uploads (candidate and question-bank imports)
+
+- **BUG AV — the zip-bomb guard trusted the archive's own size claim.** `unzip()` refused a part
+  whose *declared* size was absurd, but the declared size is whatever the archive says. A part can
+  claim 1,000 bytes and inflate to gigabytes, and the running total was checked only after the
+  whole part was already in memory. Measured (`.probe/zipbomb.mjs`): a 100 KB file claiming 1,000
+  bytes was inflated to 100 MB and accepted, and a 600 KB file allocated **~599 MB** before being
+  refused. Memory tracked the true expansion, so an 8 MB upload (the route's limit, about 1000:1
+  for deflate) could demand gigabytes and take the process down. The realistic path is an admin
+  importing a candidate list received from a third party. `inflateRawSync` now runs with
+  `maxOutputLength` set to what is left of the budget, so the inflate itself stops. The same three
+  files are refused in ~50 ms with a ~60 MB high-water mark. Pinned in
+  `tests/deployment-hardening.test.mjs` (a part claiming 1,000 bytes that expands to 200 MB is
+  refused with memory bounded; the old reader held ~400 MB).
+- **BUG AW — a workbook could inject a regular expression into the sheet lookup.** The first
+  sheet's `r:id`, text from the uploaded file, was spliced into `new RegExp(...)`. An `r:id` of
+  `(a+)+b` against a relationship `Id` of repeated "a"s backtracks exponentially: measured 92 ms
+  for 24 of them, 208 ms for 25, and **9.3 s** for 28 (`.probe/redos.mjs`). Around 40 would block
+  the event loop, which every request shares, candidates' exam locks included, for hours. Each
+  `<Relationship>` tag is now matched with a fixed pattern and its `Id` compared as a plain string
+  (0–1 ms at any length). The old pattern also required `Id` to come before `Target`. Packages
+  written by .NET's packaging library put `Target` first, so their workbooks silently fell back to
+  `sheet1.xml`, the wrong tab whenever the first tab is stored under another name. Attribute order
+  no longer matters. Pinned by two cases in `tests/deployment-hardening.test.mjs` (the first tab
+  resolved through the relationships with `Target` before `Id`; the smuggled pattern parses in
+  under 500 ms).
+
+### Test suite
+
+- `tests/sama-workbook.test.mjs` read the SAMA source workbook, which is not in the repository, so
+  a clean checkout failed 2 tests with `ENOENT`. Those tests now skip, with the reason, when the
+  workbook is absent. They run as before when it is present.
+
+### Verified and left as-is
+
+- Question ids are `rec_<hex>` everywhere (317 questions and 222 snapshot questions checked), so
+  the assessor screen's `#score-${id}` selectors are always valid CSS.
+- Manual scoring means `type === 'text'` in both `isManualQuestion` and the assessor screen, so
+  what the screen asks for is exactly what finalize requires.
+- `new RegExp` elsewhere (the router, the client router, form patterns) is built from
+  developer-written patterns, never uploaded text.
+- The JSON store writes atomically (a unique temp file, then rename), quarantines a corrupt file
+  instead of crashing, and rolls back memory if a write fails. Deactivating a user revokes their
+  live sessions at once.
+- Generated import passwords are 17 characters. The only policy is eight characters (form, reset
+  and import alike), so a generated password without a digit is not a problem.
+- The assessor detail route answers 409 for an unsubmitted paper, so the assessor screen's own
+  "Not ready for scoring" branch is effectively unreachable. The router's error page shows the
+  server's message instead. Harmless, and the workspace never links an unsubmitted paper.
+
+## 📥 Bulk-onboarding pass — a 2000-row import was one 45-second request (previous)
 
 **Method.** The largest write the product invites — `POST /admin/candidates/import` with
 `create_users` and auto-allocation for the 2000 rows the dry run accepts — timed in-process
