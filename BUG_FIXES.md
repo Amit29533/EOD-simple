@@ -267,14 +267,16 @@ The newest campaign was a whole-project deep audit: the code was re-read one par
 (core domain, storage adapters, API/server, then the SPA), each part probed with adversarial
 scripts against the real in-process app, followed by dedicated point-of-view passes for the
 candidate, the assessor and the admin (≈130 live probes in total), a UI review of every screen
-and shared module, and a full live black-box run. Four defects were reproduced, fixed and
+and shared module, and a full live black-box run. Five defects were reproduced, fixed and
 pinned: an interleave that could put two open questions back to back on an equal-size paper,
 open-answer text and transcripts with no length cap at all, scale answers accepted through
-bare `Number()` coercion (`true` scored as level 1), and a crafted `?role=` link that could
-inject extra query params into the question-bank screen's requests. The candidate, assessor
+bare `Number()` coercion (`true` scored as level 1), a crafted `?role=` link that could
+inject extra query params into the question-bank screen's requests, and two PATCH routes whose
+duplicate-prompt check ran outside the lock the create routes hold — concurrent renames could
+land the same question twice in one bank. The candidate, assessor
 and admin isolation, lifecycle, locking, race and escaping guarantees all held under probe.
 
-Current verification (Node 22.22): **662 Node tests: 660 pass, 0 fail, 2 skipped** (the SAMA
+Current verification (Node 22.22): **666 Node tests: 664 pass, 0 fail, 2 skipped** (the SAMA
 workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
 **216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
 
@@ -287,9 +289,9 @@ prototype keys, cursor/phase/isolation attacks, concurrency races and pagination
 dedicated point-of-view passes then hammered the live API as each role: **37 assessor probes**,
 **90 admin probes** and a candidate probe battery, plus a UI-escaping review of every view and
 a full black-box run (`smoke.py`, `features.py`, `final-gauntlet.py`) against a freshly seeded
-server. Four defects were confirmed, fixed and pinned; everything else held.
+server. Five defects were confirmed, fixed and pinned; everything else held.
 
-`npm test`: **662 tests, 660 pass, 0 fail, 2 skipped** (was 655). Smoke 39/39, features
+`npm test`: **666 tests, 664 pass, 0 fail, 2 skipped** (was 655). Smoke 39/39, features
 216/216, gauntlet 76/76.
 
 ### Core domain
@@ -330,6 +332,25 @@ server. Four defects were confirmed, fixed and pinned; everything else held.
   added for BUG BB now accepts only a plain number or a numeric string on client-input paths,
   matching what the picker can actually produce; stored legacy rows stay lenient (no
   stranding). Pinned by the scale test in `tests/exam-answer-limits.test.mjs`.
+
+### Admin API
+
+- **BUG BE — two PATCH routes checked for a duplicate prompt outside the create lock, so
+  concurrent renames could land the same question twice.** The duplicate-prompt rule is a
+  check-then-write. `POST /admin/questions` and `POST /admin/question-bank/questions` run it
+  under a lock (per role / per bank), but `PATCH /admin/questions/:id` and
+  `PATCH /admin/question-bank/questions/:id` ran the same check unlocked. Two admins renaming
+  two different questions onto one prompt — or a rename racing a create of that prompt — both
+  passed the check before either wrote, and **both landed**: the same question twice in one
+  bank, which allocation then deals as literally the same question asked twice on one paper.
+  (Delivery-time `uniqueBy` de-dupe softened but did not close this: it fires per paper, not
+  across the two rows now sitting in the bank.) Both PATCH routes now take the same lock their
+  create counterpart holds before the check-then-write. The published-question visibility
+  branch of the bank PATCH (a check-then-insert of an override row) is inside the lock too.
+  Pinned by `tests/question-duplicate-race.test.mjs`: four tests fire each pair concurrently
+  and assert exactly one winner (200/201) and one 409, plus a store-level count that the prompt
+  exists once. All four fail on the unlocked code (both writes land), all four pass with the
+  lock.
 
 ### Admin SPA
 
@@ -381,16 +402,17 @@ server. Four defects were confirmed, fixed and pinned; everything else held.
 - **Noted without change (legacy-only or benign):** a report-path dereference for hypothetical
   legacy rows missing their report (F5), `saveRecording` writing the audio row before the
   response-row CAS check (F6 — a failed CAS can leave one orphan recording, unreachable with
-  current writers), legacy inline `audio_b64` rows bypassing the recordings endpoint (F7 —
-  hypothetical), and `PATCH /admin/questions/:id`'s duplicate-prompt check running outside the
-  per-role lock (mitigated by the delivery-time de-dupe).
+  current writers), and legacy inline `audio_b64` rows bypassing the recordings endpoint (F7 —
+  hypothetical). A fifth note from the assessor pass — the PATCH duplicate-prompt check running
+  outside its create route's lock — was confirmed as BUG BE above and fixed.
 
 ### Files changed
 
 `src/core/paper-order.mjs`, `src/core/constants.mjs`, `src/api/handlers/candidate.mjs`,
-`public/js/views/candidate.js`, `public/js/views/admin.js`, plus tests
-`tests/paper-order.test.mjs`, `tests/exam-answer-limits.test.mjs` (new),
-`tests/exam-mic-ui.test.mjs`, `tests/modules-view.test.mjs`.
+`src/api/handlers/admin.mjs`, `public/js/views/candidate.js`, `public/js/views/admin.js`, plus
+tests `tests/paper-order.test.mjs`, `tests/exam-answer-limits.test.mjs` (new),
+`tests/question-duplicate-race.test.mjs` (new), `tests/exam-mic-ui.test.mjs`,
+`tests/modules-view.test.mjs`.
 
 ## 🩹 Follow-up pass: the five issues the point-of-view pass left open (previous)
 
