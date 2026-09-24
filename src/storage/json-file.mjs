@@ -271,6 +271,25 @@ export function createJsonStore(file = 'data/ecod.json') {
 
   return {
     kind: 'json-file',
+    /** Conditional change of a response shard or the assessment cursor. */
+    changeRow(t, data, decide) {
+      if (isShardTable(t)) return shardTable(t).change(data, decide);
+      if (t !== 'assessments') throw new Error(`Table "${t}" does not support changeRow`);
+      const id = data?.id;
+      return withLock(async () => {
+        const prior = rowOf(table(t), id);
+        const patch = decide(prior ? { ...prior } : null);
+        if (!prior || patch === undefined)
+          return { row: prior ? { ...prior } : null, changed: false };
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch))
+          throw new TypeError('assessment changeRow requires a patch object');
+        const rec = await detacher(t).split({ ...prior, ...patch, id, updated_at: new Date().toISOString() });
+        return mutate(t, [id], () => {
+          table(t)[id] = rec;
+          return { row: { ...rec }, changed: true };
+        });
+      });
+    },
     /**
      * `opts.detached === false` leaves detached columns (see row-tables.mjs
      * DETACHED_COLUMNS) as markers instead of reading one file per row — for

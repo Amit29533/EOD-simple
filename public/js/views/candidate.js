@@ -489,14 +489,26 @@ async function runExamSession(view, id, payload) {
     // the server has actually taken the final lock, so a timeout there lands
     // back on the question rather than on a spinner with nothing behind it.
     if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Locking…'; }
-    const out = await attempt(() => api(`/candidate/assessments/${id}/next`, {
+    const sendLock = () => api(`/candidate/assessments/${id}/next`, {
       method: 'POST',
       // The question this advance answers: if a retried/duplicated request
       // arrives after the cursor moved on, the server no-ops it instead of
       // skipping the live question (see the /next idempotency guard).
       body: { answer: answer === undefined ? null : answer, question_id: d?.current_question?.id },
       timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
-    }));
+    });
+    const out = await attempt(async () => {
+      try { return await sendLock(); }
+      catch (err) {
+        // Older function instances can still see the draft/lock insert race
+        // during a rolling deploy. Retry that specific 409 once, silently:
+        // the same question_id is idempotent and a refresh would burn exam
+        // time. Other conflicts (submitted/scored, invalid input) are real.
+        if (!unmounted && err?.status === 409 && /record was created by another request/i.test(err.message || ''))
+          return sendLock();
+        throw err;
+      }
+    });
     if (unmounted) return; // the view was swapped while the lock was in flight
     if (!out) {
       // Offline, timed out or 5xx: re-arm the button and let them send it

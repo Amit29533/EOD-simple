@@ -357,6 +357,43 @@ export function createShardTable(t, io, legacy = null) {
       const row = rowOf((await readShard(parsed.shard)).value, id);
       return row ? { ...row } : null;
     },
+    /**
+     * Atomically change a natural-key row using the LATEST copy, not a row
+     * the route read earlier. `decide(row|null)` is pure and synchronous; a
+     * refused ETag write re-runs it against the winner's row. Return a patch
+     * to insert/update, null to remove, or undefined to leave it as-is.
+     *
+     * The exam's autosave and /next both write the same response id. A plain
+     * list → insert/update lets the loser of that race throw DUPLICATE_ID, or
+     * worse, lets a late draft overwrite an already locked answer. This CAS
+     * operation lets the draft skip a locked row and the lock use the newest
+     * draft, whether the requests land on one instance or two.
+     */
+    change(data, decide) {
+      const id = idFor(data);
+      const s = parseId(id).shard;
+      return mutateShard(s, (rows) => {
+        const prior = rowOf(rows, id);
+        const decision = decide(prior ? { ...prior } : null);
+        if (decision === undefined || (decision === null && !prior)) {
+          return { result: { row: prior ? { ...prior } : null, changed: false }, write: false };
+        }
+        if (decision === null) {
+          delete rows[id];
+          return { result: { row: null, changed: true }, write: true };
+        }
+        if (typeof decision !== 'object' || Array.isArray(decision))
+          throw new TypeError('changeRow decision must be an object, null or undefined');
+        const stamp = new Date().toISOString();
+        const rec = prior
+          ? { ...prior, ...decision, id, updated_at: stamp }
+          : { ...data, ...decision, id, created_at: data.created_at || stamp };
+        rec[shard] = s;
+        if (natural) rec[natural] = data[natural];
+        rows[id] = rec;
+        return { result: { row: { ...rec }, changed: true }, write: true };
+      });
+    },
     insert(data) {
       const id = idFor(data);
       const rec = { ...data, id, created_at: data.created_at || new Date().toISOString() };

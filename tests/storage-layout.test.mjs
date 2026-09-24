@@ -119,6 +119,27 @@ test('json-file: the paper, the report and the answers live outside the database
   assert.equal(await again.get('assessments', 'asm1'), null);
 });
 
+test('json-file: conditional draft/lock and cursor writes preserve a locked answer and the detached paper', async () => {
+  const store = createJsonStore(tmpFile());
+  await store.insert('assessments', {
+    id: 'asm1', status: 'in_progress', snapshot_json: paper(), quiz_state: { index: 0 },
+  });
+  const key = { assessment_id: 'asm1', question_id: 'q1' };
+  const draft = await store.changeRow('responses', key, (row) => row?.locked ? undefined : { answer: 'a' });
+  assert.equal(draft.row.answer, 'a');
+  assert.equal(draft.changed, true);
+  const lock = await store.changeRow('responses', key, (row) => row?.locked ? undefined : { answer: 'b', locked: true });
+  assert.equal(lock.row.answer, 'b');
+  assert.equal((await store.changeRow('responses', key, (row) => row?.locked ? undefined : { answer: 'a' })).changed, false);
+  assert.equal((await store.get('responses', 'asm1/q1')).answer, 'b');
+  const move = (row) => row.quiz_state.index === 0 ? { quiz_state: { index: 1 } } : undefined;
+  assert.equal((await store.changeRow('assessments', { id: 'asm1' }, move)).changed, true);
+  assert.equal((await store.changeRow('assessments', { id: 'asm1' }, move)).changed, false);
+  const a = await store.get('assessments', 'asm1');
+  assert.equal(a.quiz_state.index, 1);
+  assert.deepEqual(a.snapshot_json, paper());
+});
+
 test('json-file: the database file no longer grows with the papers and answers', async () => {
   const file = tmpFile();
   const store = createJsonStore(file);

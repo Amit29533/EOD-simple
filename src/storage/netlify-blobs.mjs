@@ -295,6 +295,30 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
   return {
     kind: 'netlify-blobs',
     /**
+     * Conditional row change: a response's natural-key shard or an assessment
+     * cursor in the shared table. The pure decision is re-run after an ETag
+     * conflict, so two instances cannot both advance the same quiz state.
+     * Assessment results keep detached-column markers (the caller needs only
+     * the small status/cursor fields, not the frozen paper).
+     */
+    changeRow(t, data, decide) {
+      if (isShardTable(t)) return shardTable(t).change(data, decide);
+      if (t !== 'assessments') throw new Error(`Table "${t}" does not support changeRow`);
+      const id = data?.id;
+      return mutate(t, async (rows) => {
+        const prior = rowOf(rows, id);
+        const patch = decide(prior ? { ...prior } : null);
+        if (!prior || patch === undefined) {
+          return { result: { row: prior ? { ...prior } : null, changed: false }, write: false };
+        }
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch))
+          throw new TypeError('assessment changeRow requires a patch object');
+        const rec = await detacher(t).split({ ...prior, ...patch, id, updated_at: new Date().toISOString() });
+        rows[id] = rec;
+        return { result: { row: { ...rec }, changed: true }, write: true };
+      });
+    },
+    /**
      * `opts.detached === false` leaves detached columns (see row-tables.mjs
      * DETACHED_COLUMNS) as markers instead of fetching one blob per row — for
      * listings that only need the small columns.

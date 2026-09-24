@@ -161,7 +161,10 @@ function setup({ pages = [payload()], nextError = null, draftReply = null, mic =
       if (/\/candidate\/assessments$/.test(path)) return json({ candidate: { id: 'c1', name: 'Cand', stage: 'assessment' }, assessments: [] });
       if (method === 'POST' && path.includes('/next')) {
         calls.push({ method, path, body: JSON.parse(opts.body || '{}') });
-        if (harness.nextError) return json({ error: 'lock failed' }, harness.nextError);
+        const error = Array.isArray(harness.nextError) ? harness.nextError.shift() : harness.nextError;
+        if (error) return json({ error: error === 409
+          ? 'That record was created by another request at the same time. Please refresh and try again.'
+          : 'lock failed' }, error);
         page += 1;
         return json(current());
       }
@@ -274,6 +277,21 @@ test('a pending draft rides with the lock; a lost lock keeps the clock running a
     assert.equal(h.locks().at(-1).body.answer, 'a', 'the retry still carries the answer');
     assert.match(textOf(view), /Question\s*3\s*of\s*3/, 'the paper moved on once the lock landed');
     assert.notEqual(view.querySelector('#exam-timer').textContent, shownAfterFailure, 'the countdown did not stay frozen');
+    h.unmount();
+  } finally { await h.teardown(); }
+});
+
+test('the old draft/lock collision 409 is retried once without telling a candidate to refresh mid-exam', { skip: SKIP }, async () => {
+  const h = setup({ pages: [payload(), payload({ index: 2 })], nextError: [409] });
+  try {
+    const view = await paint(h);
+    view.querySelector('.opt input').click();
+    view.querySelector('#exam-next').click();
+    for (let i = 0; i < 20 && h.locks().length < 2; i += 1) await flush(25);
+    assert.equal(h.locks().length, 2, 'only the specific duplicate-id conflict gets one automatic retry');
+    assert.deepEqual(h.locks()[0].body, h.locks()[1].body, 'the retry is idempotent on question_id');
+    assert.match(textOf(view), /Question\s*3\s*of\s*3/);
+    assert.doesNotMatch(textOf(h.window.document.getElementById('toast-root')), /record was created/i);
     h.unmount();
   } finally { await h.teardown(); }
 });
@@ -476,6 +494,45 @@ test('audio_keep: a draft keeps the recording it uploaded through note edits, cl
   const a = await w.store.get('assessments', w.id);
   assert.equal(a.quiz_state.integrity?.spoken_answer_missing || 0, 0, 'no missing-recording count for a kept recording');
   assert.ok(!(a.quiz_state.events || []).some((e) => e.event === 'spoken_answer_missing'), 'and no exam-trail event');
+});
+
+test('a retry completes a partially written open-answer lock without losing its integrity event', async () => {
+  const w = await makeWorld();
+  const open = await w.toOpen();
+  const typed = { text: 'typed notes', transcript: '', source: 'typed', audio_missing: true };
+  // Simulate the first function being interrupted after committing the row
+  // but before advancing quiz_state (the response and cursor are separate).
+  await w.store.insert('responses', { assessment_id: w.id, question_id: open.id, answer: typed, locked: true });
+  const retry = await w.next(open.id, null);
+  assert.equal(retry.status, 200);
+  // Allocated papers are shuffled: the open question may be first or last.
+  // The interrupted lock must advance exactly once, not necessarily finish the paper.
+  assert.equal(retry.body.index, w.paper.findIndex((q) => q.id === open.id) + 1);
+  const state = (await w.store.get('assessments', w.id)).quiz_state;
+  assert.equal(state.integrity.spoken_answer_missing, 1);
+  assert.equal(state.events.filter((e) => e.event === 'spoken_answer_missing' && e.question_id === open.id).length, 1);
+  assert.equal((await w.row(open.id)).answer.text, 'typed notes');
+});
+
+test('a stale audio autosave cannot replace a clip that /next already locked', async () => {
+  const w = await makeWorld();
+  const open = await w.toOpen();
+  const oldAssessment = await w.store.get('assessments', w.id);
+  const answer = { text: '', transcript: '', source: 'audio', audio_b64: CLIP, audio_mime: 'audio/webm' };
+  assert.equal((await w.put({ [open.id]: answer })).status, 200);
+  assert.equal((await w.next(open.id, { text: 'final', transcript: '', audio_keep: true })).status, 200);
+  const ref = (await w.row(open.id)).answer.audio_ref;
+
+  // The delayed PUT still thinks the previous question is live. Its copy of
+  // the assessment is stale, but the locked response and recording are not.
+  const get = w.store.get.bind(w.store);
+  w.store.get = (table, id) => table === 'assessments' && id === w.id
+    ? Promise.resolve(oldAssessment) : get(table, id);
+  const late = await w.put({ [open.id]: { ...answer, audio_b64: Buffer.from('late clip').toString('base64') } });
+  assert.equal(late.status, 200);
+  assert.deepEqual(late.body.ignored_question_ids, [open.id]);
+  assert.equal((await w.row(open.id)).answer.audio_ref, ref);
+  assert.equal((await w.recordings(open.id))[0].audio.b64, CLIP, 'the locked clip is not replaced');
 });
 
 test('audio_keep cannot plant evidence: with nothing stored the answer is flagged like any typed-only one', async () => {
