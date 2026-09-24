@@ -1,7 +1,7 @@
 import { ok, bad, notFound, conflict, unprocessable, audit, bulkInsert, bulkUpdate, bulkRemove, stableJson } from '../helpers.mjs';
 import { questionForCandidate, competencyForCandidate, reportForCandidate } from '../projections.mjs';
 import { autoScore, isAutoQuestion } from '../../core/scoring.mjs';
-import { MAX_AUDIO_B64 } from '../../core/constants.mjs';
+import { MAX_AUDIO_B64, MAX_ANSWER_TEXT, MAX_ANSWER_TRANSCRIPT } from '../../core/constants.mjs';
 import {
   sortedQuestions, isOpenQuestion, budgetsFor, ensureQuizState, remainingMs, remainingTimeMs, integrityPatch,
   MAX_INTEGRITY_EVENTS,
@@ -106,8 +106,11 @@ function splitAnswer(q, value, { trusted = false, keep = null } = {}) {
     : value;
   if (q.type !== 'text' || !open || typeof open !== 'object') return { answer: value, audio: null, kept: false };
   const out = {
-    text: String(open.text || ''),
-    transcript: String(open.transcript || ''),
+    // Defense in depth behind the request-time caps (validateAnswerShape
+    // strict mode): whatever reaches storage fits the shard every exam step
+    // re-reads, including a legacy row re-normalised at submit.
+    text: String(open.text || '').slice(0, MAX_ANSWER_TEXT),
+    transcript: String(open.transcript || '').slice(0, MAX_ANSWER_TRANSCRIPT),
     source: open.source === 'audio' ? 'audio' : 'typed',
   };
   // The mime type ends up in a `data:` URL on the assessor's screen: keep it
@@ -196,7 +199,25 @@ async function changeAssessment(store, assessmentId, decide) {
 const keepsRecording = (q, value, prior) => q.type === 'text' && value && typeof value === 'object'
   && value.audio_keep === true && typeof prior?.answer?.audio_ref === 'string' && Boolean(prior.answer.audio_ref);
 
-function validateAnswerShape(q, value) {
+/**
+ * Is this a well-formed answer for the question?
+ *
+ * `strict` is what every CLIENT-input path uses (draft autosave, the lock on
+ * /next, the sheet posted to /submit). Without it the check stays lenient for
+ * STORED rows re-validated at submit: rows written before these rules existed
+ * (a scale answer stored as `true` or `"0x3"`, an open answer past the text
+ * caps) must still submit — refusing them would strand a candidate mid-exam —
+ * and submit re-normalises them through splitAnswer on persist.
+ *
+ * Strict mode tightens two things:
+ *  - scale: a plain number (or the numeric string a form posts) only. The
+ *    lenient `Number(value)` coercion also accepted `true` (stored, scored 1),
+ *    `[3]` (stored an array, scored 3) and `"0x3"` (Number() reads hex), so a
+ *    scripted client could park junk the assessor view then renders verbatim.
+ *  - text: the typed halves are capped (MAX_ANSWER_TEXT / MAX_ANSWER_TRANSCRIPT)
+ *    so a request cannot store megabytes of "notes" per question.
+ */
+function validateAnswerShape(q, value, { strict = false } = {}) {
   switch (q.type) {
     case 'mcq_single': {
       const ids = new Set((q.options || []).map((o) => String(o.id)));
@@ -207,15 +228,24 @@ function validateAnswerShape(q, value) {
       return Array.isArray(value) && value.every((v) => ids.has(String(v)));
     }
     case 'scale': {
+      if (strict) {
+        const n = typeof value === 'number'
+          ? value
+          : (typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : NaN);
+        return Number.isInteger(n) && n >= 1 && n <= 5;
+      }
       const n = Number(value);
       return Number.isInteger(n) && n >= 1 && n <= 5;
     }
     case 'text':
-      if (typeof value === 'string') return true;
+      if (typeof value === 'string') return !strict || value.length <= MAX_ANSWER_TEXT;
       if (value && typeof value === 'object') {
         if (value.audio_b64 != null && String(value.audio_b64).replace(/\s/g, '').length > MAX_AUDIO_B64)
           return false;
-        return typeof (value.text || '') === 'string' && typeof (value.transcript || '') === 'string';
+        if (typeof (value.text || '') !== 'string' || typeof (value.transcript || '') !== 'string') return false;
+        return !strict
+          || (String(value.text || '').length <= MAX_ANSWER_TEXT
+            && String(value.transcript || '').length <= MAX_ANSWER_TRANSCRIPT);
       }
       return false;
     default:
@@ -341,7 +371,7 @@ export function candidateHandlers(route) {
       const q = qById.get(qid);
       if (!q) continue;
       const clearing = value === null || value === '' || (Array.isArray(value) && !value.length);
-      if (!clearing && !validateAnswerShape(q, value)) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
+      if (!clearing && !validateAnswerShape(q, value, { strict: true })) return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
     }
     for (const [qid, value] of Object.entries(answers)) {
       const q = qById.get(qid);
@@ -561,7 +591,7 @@ export function candidateHandlers(route) {
     const posted = answerToLock !== undefined && answerToLock !== null && !isBlank(q, answerToLock);
     const keepRequest = q.type === 'text' && answerToLock && typeof answerToLock === 'object'
       && answerToLock.audio_keep === true;
-    if ((posted || keepRequest) && !validateAnswerShape(q, answerToLock))
+    if ((posted || keepRequest) && !validateAnswerShape(q, answerToLock, { strict: true }))
       return unprocessable('Invalid answer for the current question.');
     const audio = posted && q.type === 'text' && !r?.locked ? splitAnswer(q, answerToLock).audio : null;
     const audioRef = audio ? await saveRecording(store, a.id, q.id, audio) : null;
@@ -651,7 +681,9 @@ export function candidateHandlers(route) {
     const missingQ = [];
     for (const q of questions) {
       const posted = incoming[q.id];
-      if (posted !== undefined && posted !== null && !isBlank(q, posted) && !validateAnswerShape(q, posted))
+      // The posted sheet is client input (strict); the STORED rows below are
+      // validated leniently so a legacy row can never make a paper unsubmittable.
+      if (posted !== undefined && posted !== null && !isBlank(q, posted) && !validateAnswerShape(q, posted, { strict: true }))
         return unprocessable(`Invalid answer for question "${q.prompt.slice(0, 60)}".`);
       const v = answers[q.id];
       if (isBlank(q, v)) missingQ.push(q.id);

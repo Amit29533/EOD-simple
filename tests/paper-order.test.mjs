@@ -62,6 +62,24 @@ test('interleave works when the "minority" is actually the larger group', () => 
   assert.equal(maxRunLength(typesOf(out)), Math.ceil(12 / 6));
 });
 
+test('interleave alternates perfectly when the groups are the same size', () => {
+  // Equal counts are the degenerate case of the guarantee: neither group may
+  // repeat, so the only legal paper is a strict alternation. The random deal
+  // used to leave one interior gap empty (base === 0, one seat short of the
+  // gap count), putting two opens back to back on ~85% of seeds — e.g. a
+  // capped custom-track paper of 10 objective + 10 open questions.
+  for (const n of [1, 2, 3, 5, 10, 12, 25]) {
+    for (const seed of [1, 7, 42, 99, 4242]) {
+      const out = interleave(paper(n, n), isOpen, seeded(seed));
+      assert.equal(out.length, 2 * n, `n ${n} seed ${seed}`);
+      assert.equal(maxRunOf(typesOf(out), 'open'), 1, `n ${n} seed ${seed}`);
+      assert.equal(maxRunOf(typesOf(out), 'objective'), 1, `n ${n} seed ${seed}`);
+      assert.deepEqual(out.map((q) => q.id).sort(), paper(n, n).map((q) => q.id).sort(),
+        `still a permutation, n ${n} seed ${seed}`);
+    }
+  }
+});
+
 test('interleave is a permutation: nothing dropped, nothing duplicated', () => {
   const items = paper(30, 20);
   const out = interleave(items, isOpen, seeded(11));

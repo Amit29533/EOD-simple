@@ -263,11 +263,136 @@ the way:
 - A refused save threw away everything the admin had typed.
 - Every form drew an empty error badge under each field.
 
-Current verification (Node 22.22): **655 Node tests: 653 pass, 0 fail, 2 skipped** (the SAMA
+The newest campaign was a whole-project deep audit: the code was re-read one part at a time
+(core domain, storage adapters, API/server, then the SPA), each part probed with adversarial
+scripts against the real in-process app, followed by dedicated point-of-view passes for the
+candidate, the assessor and the admin (≈130 live probes in total), a UI review of every screen
+and shared module, and a full live black-box run. Four defects were reproduced, fixed and
+pinned: an interleave that could put two open questions back to back on an equal-size paper,
+open-answer text and transcripts with no length cap at all, scale answers accepted through
+bare `Number()` coercion (`true` scored as level 1), and a crafted `?role=` link that could
+inject extra query params into the question-bank screen's requests. The candidate, assessor
+and admin isolation, lifecycle, locking, race and escaping guarantees all held under probe.
+
+Current verification (Node 22.22): **662 Node tests: 660 pass, 0 fail, 2 skipped** (the SAMA
 workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
 **216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
 
-## 🩹 Follow-up pass: the five issues the point-of-view pass left open (latest)
+## 🧭 Whole-project deep audit: four point-of-view passes over every layer (latest)
+
+The whole project was re-read one part at a time — `src/core`, `src/storage`, `src/api` and the
+server transports, then every SPA screen and shared module — and each part was probed with
+adversarial scripts against the real in-process app (`.probe/`): junk and hostile bodies,
+prototype keys, cursor/phase/isolation attacks, concurrency races and pagination edges. Three
+dedicated point-of-view passes then hammered the live API as each role: **37 assessor probes**,
+**90 admin probes** and a candidate probe battery, plus a UI-escaping review of every view and
+a full black-box run (`smoke.py`, `features.py`, `final-gauntlet.py`) against a freshly seeded
+server. Four defects were confirmed, fixed and pinned; everything else held.
+
+`npm test`: **662 tests, 660 pass, 0 fail, 2 skipped** (was 655). Smoke 39/39, features
+216/216, gauntlet 76/76.
+
+### Core domain
+
+- **BUG BA — an equal-size paper could deal two open questions back to back.**
+  `interleave()` in `src/core/paper-order.mjs` spreads the smaller group into the gaps around
+  the larger one. When the groups are the *same* size (`few === many`, so `base === 0` and one
+  seat short of the gap count) the random deal left one gap empty — and when that gap was an
+  interior one (11 of 13 gap positions at 12/12), two minority items landed adjacent, breaking
+  the module's documented guarantee that the smaller group is *never* dealt twice in a row.
+  A probe measured **3 813 violations in 5 000 equal-count trials**; existing tests only pinned
+  unequal splits. Reachable via capped custom-track papers (e.g. 10 objective + 10 open) and
+  any module-bank quota that yields equal counts. When `base === 0` the extras are now dealt to
+  interior gaps first (a stable sort keeps the deal uniformly random within each class), so an
+  equal-size paper is a strict alternation. Pinned by `tests/paper-order.test.mjs`: 7 sizes ×
+  5 seeds assert a maximum run of 1 for *both* groups — fails on ~85 % of seeds without the fix.
+
+### Candidate exam path
+
+- **BUG BB — open-answer text and transcripts had no length cap.** The spoken-answer contract
+  caps the recording (`MAX_AUDIO_B64`), but the typed halves of an open answer were unbounded:
+  a scripted client stored a **1.5 MB "note" plus a 200 KB transcript** on a single question
+  (probe-confirmed accepted and persisted). Across a ~33-open-question paper that is tens of
+  megabytes inside the response shard *every* exam step re-reads and rewrites — slow autosaves,
+  a submit that can breach the 413 request ceiling, and permanent store bloat.
+  `src/core/constants.mjs` gains `MAX_ANSWER_TEXT = 20 000` and `MAX_ANSWER_TRANSCRIPT = 60 000`
+  (sized well past any realistic typed note or 2-minute transcript). `validateAnswerShape`
+  enforces both on every **client-input** path — the draft autosave `PUT …/answers`, the
+  `POST …/next` lock and the submit sheet (`{ strict: true }`) — while rows *already stored*
+  are re-validated leniently at submit, so a legacy oversized answer can never make a paper
+  unsubmittable; `splitAnswer` additionally truncates on persist (defence in depth), so such a
+  row is trimmed the moment it is rewritten. The exam textarea carries `maxlength="20000"`.
+  Pinned by `tests/exam-answer-limits.test.mjs` (5 tests: oversized draft refused, oversized
+  lock refused, at-cap accepted, legacy row still submittable and trimmed) plus a UI assertion
+  in `tests/exam-mic-ui.test.mjs`. Area suites: 116/116 green.
+- **BUG BC — scale answers were validated by bare `Number()` coercion.** `true` was stored as a
+  scale answer and auto-scored as level 1; `[3]` and `"0x3"` were accepted too. The strict mode
+  added for BUG BB now accepts only a plain number or a numeric string on client-input paths,
+  matching what the picker can actually produce; stored legacy rows stay lenient (no
+  stranding). Pinned by the scale test in `tests/exam-answer-limits.test.mjs`.
+
+### Admin SPA
+
+- **BUG BD — a crafted `?role=` link injected query params into the question-bank screen.**
+  `modulesView` interpolated the raw hash-query `role` param into
+  `apiAll('/admin/questions?role_id=…')` unencoded, two lines above where the same file encodes
+  `catalogueKey` for exactly this reason. A hand-crafted link such as
+  `#/modules?role=rec_x%26active%3Dfalse` appended a second filter to the served-questions
+  request (or truncated it at a `#`, silently breaking pagination). Impact is scoped to the
+  admin's own session — a filter-confusion/robustness defect, not remote XSS — but it is a
+  deviation from the codebase's own convention. Fixed with `encodeURIComponent` and pinned by
+  a regression in `tests/modules-view.test.mjs` that records every fetch URL (fails without
+  the fix, passes with it).
+
+### Verified clean under probe (no change needed)
+
+- **Assessor POV (37 probes):** cross-tenant isolation (404s), candidate-on-assessor routes
+  (403), pre-submit scoring (409), score-validation fuzz (`true`, `"0x2"`, out-of-range,
+  structured values all refused), finalize gating incl. missing-scores 422, double-finalize
+  409, recordings 404 for non-owners, projections hide candidate email/notes, candidate report
+  withholds assessor comments. `computeReport`'s NaN-propagation concern (noted in the core
+  read) is unreachable: the assessor score PUT rejects every non-finite value.
+- **Admin POV (90 probes):** prototype-key ids on seven admin routes (404/4xx, never 5xx or a
+  phantom row, `Object.prototype` unpolluted); junk-body sweeps on POST/PUT/PATCH/DELETE (no
+  5xx); allocation caps (`question_count` fuzz all 400, over-bank explained, duplicate open
+  paper 409, non-assessor refused); user provisioning (duplicate username 409, weak/structured
+  passwords 400, `PATCH role` ignored — no escalation, self-/primary-admin deactivation
+  refused, password reset revokes live sessions); candidate deletion (password-gated 403,
+  finalized report 409, open candidate cascades users + assessments, second delete 404);
+  frameworks (bad config 422 + problems, unknown role 400); roles/competencies/questions
+  (weight/target bounds, non-Latin names derive keys, duplicate prompt 409, blank points
+  default 4, negative points 400); content tracks (`__proto__`/unknown install refused,
+  re-install is an idempotent top-up, one role row); audit pagination clamps.
+- **Races:** concurrent duplicate-username creates, concurrent allocations for one candidate
+  and concurrent same-key role creates each produce **exactly one winner** under the existing
+  per-resource locks.
+- **Bulk import (live, 253-row file):** dry-run counts and previews, unpaged commit > 200 rows
+  422, paged commit imports/creates/allocates all 250 with credentials returned once, re-upload
+  reports every row as a duplicate and re-commit writes nothing, bad paging params handled.
+- **Auth edges:** logout kills the session, deactivation kills live sessions and blocks login,
+  email login is case-insensitive, malformed/forged tokens 401, login junk never 5xx, `me`
+  never leaks `password_hash`.
+- **UI review:** every interpolation in `report.js`, `assessor.js`, `login.js`, `candidate.js`
+  and `admin.js` passes through `esc()`/`textContent` (dialogs escape titles, toasts set text
+  nodes, badges escape labels); route `:id` params cannot carry `/` or `?` and a malformed `%`
+  bounces home; credential CSV export stays formula-injection-safe (`csvCell`); exam audio caps
+  match the server's; `app.js` keeps the session on non-401 boot failures and releases
+  exam-time document pins via the unmount event.
+- **Noted without change (legacy-only or benign):** a report-path dereference for hypothetical
+  legacy rows missing their report (F5), `saveRecording` writing the audio row before the
+  response-row CAS check (F6 — a failed CAS can leave one orphan recording, unreachable with
+  current writers), legacy inline `audio_b64` rows bypassing the recordings endpoint (F7 —
+  hypothetical), and `PATCH /admin/questions/:id`'s duplicate-prompt check running outside the
+  per-role lock (mitigated by the delivery-time de-dupe).
+
+### Files changed
+
+`src/core/paper-order.mjs`, `src/core/constants.mjs`, `src/api/handlers/candidate.mjs`,
+`public/js/views/candidate.js`, `public/js/views/admin.js`, plus tests
+`tests/paper-order.test.mjs`, `tests/exam-answer-limits.test.mjs` (new),
+`tests/exam-mic-ui.test.mjs`, `tests/modules-view.test.mjs`.
+
+## 🩹 Follow-up pass: the five issues the point-of-view pass left open (previous)
 
 The point-of-view pass noted five issues without changing them. Each was fixed in its own pass,
 in order: dates, dialogs, competency keys, the allocation lock, then form saves. Each fix is

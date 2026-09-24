@@ -1238,7 +1238,10 @@ export async function modulesView(view) {
   const [bank, plan, servedOut, catalogue] = await Promise.all([
     api(`/admin/question-bank/modules?include_optional=1&role_key=${roleKey}`),
     attempt(() => api(`/admin/question-bank/plan?role_key=${roleKey}`)),
-    attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${roleParam}` : ''}`, 'questions')),
+    // roleParam is raw hash-query input: encode it so a `&`/`#` inside a
+    // crafted ?role= value cannot inject extra query params or truncate the
+    // URL (the catalogueKey call below already encodes for the same reason).
+    attempt(() => apiAll(`/admin/questions${roleParam ? `?role_id=${encodeURIComponent(roleParam)}` : ''}`, 'questions')),
     attempt(() => api(`/admin/content/catalogue${catalogueKey ? `?role_key=${encodeURIComponent(catalogueKey)}` : ''}`)),
   ]);
   const served = servedOut || [];

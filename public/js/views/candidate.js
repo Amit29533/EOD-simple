@@ -749,9 +749,13 @@ async function runExamSession(view, id, payload) {
       const existing = currentAnswer && typeof currentAnswer === 'object' ? currentAnswer : { text: currentAnswer || '', transcript: '' };
       let text = existing.text || '';
       let transcript = existing.transcript || '';
+      // The notes box maxlength must stay equal to MAX_ANSWER_TEXT on the server
+      // (src/core/constants.mjs): the API refuses an oversized draft/lock, so the
+      // browser caps typing at the same limit and a candidate can never compose
+      // an answer the lock would then reject. tests/exam-mic-ui.test.mjs pins it.
       body.innerHTML = `
         <div class="exam-answer${needsMic ? ' has-audio' : ''}">
-          <textarea id="exam-ta" rows="8" placeholder="${needsMic ? 'Optional notes — the recording below is your answer' : 'Type your answer here'}">${esc(text)}</textarea>
+          <textarea id="exam-ta" rows="8" maxlength="20000" placeholder="${needsMic ? 'Optional notes — the recording below is your answer' : 'Type your answer here'}">${esc(text)}</textarea>
           ${needsMic ? `
           <div class="exam-audio-side">
             <button type="button" class="btn rec-btn" id="rec-btn" aria-pressed="false">
