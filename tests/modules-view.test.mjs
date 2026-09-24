@@ -503,6 +503,31 @@ test('a deactivated question is visibly marked in its family', { skip: SKIP }, a
 
 /* ============ the retired Question Bank screen now lives on this one ============ */
 
+test('a crafted ?role= value cannot inject extra query params', { skip: SKIP }, async () => {
+  // The role param is raw hash-query input. Interpolated unencoded, a value
+  // like `x&active=false` would append a second filter to the served-questions
+  // request (or truncate it at a `#`). It must reach the URL percent-encoded.
+  const dom = setupDom();
+  try {
+    const urls = [];
+    const base = stubFetch();
+    globalThis.fetch = async (url, opts) => { urls.push(String(url)); return base(url, opts); };
+    location.hash = '#/modules?role=rec_x%26active%3Dfalse';
+    localStorage.setItem('ecod.token', 'test-token');
+    const { state } = await import('../public/js/app.js');
+    state.meta = { pipelineStages: [], assessmentStatuses: [], userRoles: [], questionTypes: [], difficulties: [] };
+    const admin = await import('../public/js/views/admin.js');
+    await admin.modulesView(document.getElementById('view'));
+    await flush(20);
+    const served = urls.filter((u) => u.includes('/admin/questions'));
+    assert.ok(served.length, 'the served-question request is made');
+    for (const u of served) {
+      assert.ok(u.includes('role_id=rec_x%26active%3Dfalse'), `role param stays encoded: ${u}`);
+      assert.ok(!u.includes('role_id=rec_x&active=false'), `no injected active filter: ${u}`);
+    }
+  } finally { teardown(dom); }
+});
+
 test('the served question set is managed on the modules screen', { skip: SKIP }, async () => {
   const dom = setupDom();
   try {

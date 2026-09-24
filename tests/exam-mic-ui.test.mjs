@@ -150,6 +150,8 @@ test('an open question renders the mandatory microphone beside the optional text
     assert.ok(view.querySelector('.exam-answer').classList.contains('has-audio'), 'the answer box uses the mic layout');
     assert.match(view.querySelector('#rec-state').textContent, /Required/i);
     assert.match(view.querySelector('#exam-ta').placeholder, /Optional notes/i, 'the text box is the optional channel');
+    assert.equal(view.querySelector('#exam-ta').getAttribute('maxlength'), '20000',
+      'the notes box is capped in the browser to match the server limit');
     assert.match(view.innerHTML, /Recorded answer required/, 'the question is labelled as microphone-required');
     assert.match(view.innerHTML, /Recording window · 2 min/);
   } finally {

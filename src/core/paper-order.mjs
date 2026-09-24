@@ -67,7 +67,19 @@ export function interleave(items, group, rng = Math.random) {
   const base = Math.floor(many.length / gaps);
   let extra = many.length % gaps;
   const sizes = new Array(gaps).fill(base);
-  for (const slot of shuffle([...sizes.keys()], rng)) {
+  const slots = shuffle([...sizes.keys()], rng);
+  // An interior gap (between two smaller-group items) that stays empty puts two
+  // of them back to back, breaking the never-repeats guarantee. That can only
+  // happen when base === 0 — i.e. the groups are the same size, few === many,
+  // so extra === few and the few - 1 interior gaps can always be filled first
+  // (the single leftover seat goes to a random end gap). With base >= 1 every
+  // gap already holds an item and the deal stays uniformly random as before.
+  if (base === 0) {
+    const isInterior = (g) => g > 0 && g < gaps - 1;
+    // Stable sort keeps the shuffled order inside each class.
+    slots.sort((a, b) => Number(isInterior(b)) - Number(isInterior(a)));
+  }
+  for (const slot of slots) {
     if (extra <= 0) break;
     sizes[slot] += 1;
     extra -= 1;

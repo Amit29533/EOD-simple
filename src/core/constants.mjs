@@ -108,5 +108,17 @@ export const RSA_ORAL_SET = 'rsa-oral';
 /** Max base64 characters stored with an open-response audio clip (~300 KB). */
 export const MAX_AUDIO_B64 = 400_000;
 
+/**
+ * Caps on the typed halves of an open answer. The clip has MAX_AUDIO_B64; the
+ * notes and the transcript had none, so a scripted client could store ~2 MB
+ * (the request-body ceiling) of "notes" per open question — tens of megabytes
+ * per paper in the response shard every exam step re-reads, on a shared store
+ * everyone else pays for. Both caps are far past what the exam can produce
+ * (a two-minute answer is a few hundred words; speech-to-text of it, a few
+ * thousand characters), so a real sitting never meets them.
+ */
+export const MAX_ANSWER_TEXT = 20_000;
+export const MAX_ANSWER_TRANSCRIPT = 60_000;
+
 /** Largest spreadsheet (xlsx/csv) an import endpoint will accept, in bytes. */
 export const MAX_SPREADSHEET_BYTES = 8_000_000;
