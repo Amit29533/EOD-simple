@@ -4,6 +4,7 @@
  *  - every published track (role, competencies, question bank, scoring framework):
  *      * Databricks RSA (databricks-rsa)
  *      * Senior Databricks AI/BI & Genie Consultant (databricks-ai-bi-genie)
+ *      * Technology Risk Consultant - SAMA (technology-risk-sama)
  *      * Senior Consultant (senior-consultant) — competencies only; its
  *        question bank is authored from the Admin UI
  *  - three demo candidates at different pipeline stages, one with a fully scored example report

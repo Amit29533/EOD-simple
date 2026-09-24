@@ -147,14 +147,20 @@ AI/BI & Genie bank (`src/content/ai-bi-genie-question-bank.mjs`, 100 questions
 across 10 modules, generated from `AI BI G Question bank 1.1.xlsx` with the same
 `extract → build` pipeline: `scripts/extract-ai-bi-bank-from-xlsx.mjs` +
 `scripts/build-question-bank.py` + `scripts/ai-bi-bank-config.json`) is a
-first-class entry: its own tree, plan, preview, import and authoring. All
+first-class entry: its own tree, plan, preview, import and authoring. The
+Technology Risk Consultant - SAMA bank (`src/content/sama-question-bank.mjs`, 100
+questions across 10 modules, generated from `SAMA Question bank 1.1.xlsx` by
+`scripts/extract-sama-bank-from-xlsx.mjs` + `scripts/sama-bank-config.json`; its
+served catalogue is `src/content/sama-catalogue.mjs`, authored ids `TRC-…`) is
+registered the same way. All
 `/admin/question-bank/*` routes accept `role_key` (query or body); authored
 `bank_questions` rows and published-visibility overrides carry a `role_key`
 column (legacy rows without it belong to the default RSA bank), so the banks
 can never bleed into each other. The per-track paper shape is derived from the
 bank's own module list (`blueprintFor()` in `core/test-generation.mjs`) — RSA
 computes 50 questions as before, AI/BI & Genie 31 (21 technical objective +
-7 technical open + 3 consulting open).
+7 technical open + 3 consulting open), SAMA 34 (24 risk & control objective +
+8 risk & control open + 2 reporting & client open).
 
 The finalized RSA bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
 the published `Question bank 1.4.xlsx` workbook) is organised **MODULE → FAMILY →

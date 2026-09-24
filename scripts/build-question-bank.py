@@ -23,6 +23,12 @@ Pipeline (AI/BI & Genie bank):
     python3 scripts/build-question-bank.py data/ai-bi-bank.json \\
         src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
 
+Pipeline (Technology Risk Consultant - SAMA bank):
+    node scripts/extract-sama-bank-from-xlsx.mjs \\
+        "SAMA Question bank 1.1.xlsx"  data/sama-bank.json
+    python3 scripts/build-question-bank.py data/sama-bank.json \\
+        src/content/sama-question-bank.mjs 1.1 scripts/sama-bank-config.json
+
 The emitted module is organised MODULE -> FAMILY -> QUESTION, which is also
 the order questions appear in the file, so the catalogue reads the same way
 the Admin UI presents it and a new question has exactly one place to go.

@@ -15,6 +15,7 @@
 
 import * as RSA from './rsa-question-bank.mjs';
 import * as AIBI from './ai-bi-genie-question-bank.mjs';
+import * as SAMA from './sama-question-bank.mjs';
 import { OPTIONAL_QUESTIONS, OPTIONAL_FAMILIES, optionalSummary } from './rsa-optional-bank.mjs';
 
 export const DEFAULT_MODULE_BANK_ROLE_KEY = 'databricks-rsa';
@@ -50,6 +51,18 @@ export const MODULE_BANKS = {
     findFamily: AIBI.findFamily,
     optional: null,
   },
+  'technology-risk-sama': {
+    roleKey: 'technology-risk-sama',
+    role_name: 'Technology Risk Consultant - SAMA',
+    version: SAMA.QUESTION_BANK_VERSION,
+    authoredPrefix: 'TRC',
+    groups: SAMA.MODULE_GROUPS,
+    modules: SAMA.MODULES,
+    questions: SAMA.QUESTIONS,
+    families: SAMA.FAMILIES,
+    findFamily: SAMA.findFamily,
+    optional: null,
+  },
 };
 
 /** The published module bank for a role key, or null. */
@@ -72,7 +85,7 @@ export function publishedModuleBanks() {
 }
 
 /**
- * The authored-question id prefix for a bank (RSA-T01-A001, AIBI-G01-A001).
+ * The authored-question id prefix for a bank (RSA-T01-A001, AIBI-G01-A001, TRC-R01-A001).
  * Each bank declares its own prefix, so the banks can never mint colliding ids.
  */
 export function authoredIdPrefix(roleKey) {
