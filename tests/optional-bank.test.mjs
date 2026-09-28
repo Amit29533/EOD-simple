@@ -103,6 +103,51 @@ test('the optional pool covers a shortfall in the primary bank', () => {
   assert.equal(served.optional, true);
 });
 
+test('an objective seat is never filled by a question with no choices', () => {
+  // The retired catalogue's 1-5 self-assessment items carry no options; the
+  // pool maps every non-`text` row to `objective`. Drawn as a fallback they
+  // handed the generated paper a question with no choices — unanswerable, and
+  // unscoreable because its key is empty. The seats must be filled from
+  // servable fallback rows instead (and the paper stays a full 50).
+  // (`generateTest` backs the admin preview and the module-bank plan; real
+  // papers are allocated from the competency catalogues, which hold no such
+  // row — this keeps the generated path honest either way.)
+  const optionless = OPTIONAL_QUESTIONS.filter((q) => q.type === 'objective' && !(q.options?.length >= 2));
+  assert.ok(optionless.length > 0, 'the legacy pool still holds optionless rows');
+
+  for (const moduleKey of [...new Set(optionless.map((q) => q.module))]) {
+    const thinned = QUESTIONS.filter((q) => !(q.module === moduleKey && q.type === 'objective'));
+    const technical = MODULES.find((m) => m.key === moduleKey).technical === true;
+    for (const seed of [1, 2, 3, 5, 8, 13]) {
+      const { questions, counts } = generateTest(
+        { modules: MODULES, questions: [...thinned, ...OPTIONAL_QUESTIONS] }, { rng: seeded(seed) }
+      );
+      const bad = questions.filter((q) => q.type === 'objective' && !(q.options?.length >= 2));
+      assert.deepEqual(bad.map((q) => q.id), [], `${moduleKey} seed ${seed}`);
+      assert.equal(counts.total, 50, `${moduleKey} seed ${seed}: the paper stays full`);
+      if (technical) {
+        assert.equal(questions.filter((q) => q.module === moduleKey && q.type === 'objective').length, 3,
+          `${moduleKey} seed ${seed}: the objective quota still comes from servable rows`);
+      }
+    }
+  }
+});
+
+test('the plan counts objective seats with the same rule selection uses', () => {
+  // A module whose only objective rows offer no choices is NOT able to meet its
+  // quota: advertising the seat would promise a question that can never be
+  // asked (and, before the selection rule, one that could never be scored).
+  const modules = [{ key: 'X1', name: 'Thin', group: 'technical', technical: true }];
+  const questions = [
+    { id: 'x1', module: 'X1', type: 'objective', prompt: 'Self-assessment: rate yourself.', options: [], correct_option_ids: [], active: true },
+    { id: 'x2', module: 'X1', type: 'objective', prompt: 'Pick one.', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], correct_option_ids: ['a'], active: true },
+  ];
+  const plan = testPlan({ modules, questions }).modules[0];
+  assert.equal(plan.available_objective, 1, 'only the question with choices is a seat');
+  assert.equal(plan.required_objective, 3);
+  assert.equal(plan.sufficient, false);
+});
+
 test('higher-priority optional questions are preferred', () => {
   const thinned = QUESTIONS.filter((q) => !(q.module === 'T01' && q.type === 'open'));
   const pool = OPTIONAL_QUESTIONS.filter((q) => q.module === 'T01' && q.type === 'open');

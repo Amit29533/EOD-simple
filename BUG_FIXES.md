@@ -276,11 +276,117 @@ duplicate-prompt check ran outside the lock the create routes hold — concurren
 land the same question twice in one bank. The candidate, assessor
 and admin isolation, lifecycle, locking, race and escaping guarantees all held under probe.
 
-Current verification (Node 22.22): **666 Node tests: 664 pass, 0 fail, 2 skipped** (the SAMA
+The **latest pass (below)** re-verified the retention feature from a clean seed and then
+attacked it — and the whole stack around it — with ~220 probe checks: the sweep under load and
+races, a full deep-diff of the on-disk store around a purge, the Airtable backend for the same
+feature, auth/exam/admin adversarial input, and the published question banks' data integrity.
+Two defects were reproduced and fixed: the cleanup policy could not be saved on Airtable at all
+(the new `settings` table was provisioned without the adapter's `created_at` stamp — the same
+class of gap as the earlier adapter-wide one), and a generated paper could contain an objective
+question with no options to choose from (the legacy 1–5 self-assessment rows in the fallback
+pool), unanswerable and never scoreable.
+
+Current verification (Node 22.22): **718 Node tests: 716 pass, 0 fail, 2 skipped** (the SAMA
 workbook suite, whose source workbook is not in the repository), plus **39/39 smoke tests**,
 **216/216 feature tests** and **76/76 final-gauntlet checks** against a live server.
 
-## 🏁 Final-stage pass: assessor ownership, exam-lock latency and a line-by-line sweep (latest)
+## 🔎 Fresh-seed verification & retention-under-stress pass: Airtable parity and question-bank integrity (latest)
+
+The retention feature — a finalized paper stays reviewable (answer sheet, transcripts, one clip
+player per question), a 30-day admin policy cleans the raw material up, and the assessor can
+delete a single recording — was re-verified from a clean seed and then attacked with throwaway
+probe suites (`.probe/`, ~220 checks) aimed at everything the committed suites do not reach:
+the sweep under load and races, a full deep-diff of the on-disk store around a purge, the
+Airtable backend for the same feature, auth/exam/admin adversarial input, and the published
+question banks' own data integrity. **Two defects were reproduced and fixed**, both pinned by
+new regression tests; everything else held.
+
+- **BUG CA — the cleanup policy could not be saved on Airtable at all.** The retention pass
+  added a `settings` table to `airtable-setup.mjs` but not the `created_at` column the adapter
+  stamps on every insert, so the first `PUT /admin/settings/retention` died on Airtable's
+  generic `422 UNKNOWN_FIELD_NAME` (the JSON and blob stores were unaffected, which is why the
+  suite was green). The same class of gap as the adapter-wide missing stamps fixed two passes
+  ago — this table simply arrived later. The column is provisioned, and two tests now pin both
+  halves: every table in the setup schema carries the columns the adapter stamps (the tables
+  the app updates are read off the source, so the next table that forgets one fails in the
+  suite instead of in production), and the policy saves and re-saves through the real adapter
+  over the Airtable mock.
+- **BUG CB — a generated paper could contain an objective question with no options.** The
+  retired competency catalogue holds 15 “Self-assessment: rate your experience (1 = low, 5 =
+  expert)” scale items; the optional fallback pool maps every non-`text` legacy row to
+  `objective`, and those rows carry `options: []` with an empty key. When a module had to fall
+  back — its primary objective rows deactivated, deleted or retired — roughly half of the
+  generated papers drew one: a question with no choices (nothing to click, and nothing that can
+  ever match the empty key), so the paper reported a filled objective seat that could not be
+  answered or scored. Blast radius, stated precisely: `generateTest` is reached only from the
+  admin's *Sample generated test* preview and the module-bank plan (real papers are allocated
+  from the competency catalogues through `core/question-selection.mjs`, whose banks the same
+  sweep found clean), so this corrupted a preview/plan and any future module-bank-driven
+  allocation rather than a candidate's sitting. An objective seat now requires a question that
+  actually offers choices (`options.length >= 2`), and `testPlan` counts with the same rule so
+  a seat that can never be filled is never advertised. The fallback still fills every seat from
+  servable rows, so papers stay at 50 questions (verified over 40 seeds × each affected
+  module). Two regressions in `tests/optional-bank.test.mjs`.
+
+What held under probe:
+
+- **Retention, 50 checks** — the 25-paper run cap with an honest `remaining`; two concurrent
+  sweeps purge a paper exactly once (one marker, one audit row); a sweep racing a manual clip
+  delete settles in every interleaving (sheet cleared, transcript kept, report intact); a store
+  that throws on one paper counts it as `failed` and the next run retries it; junk/legacy
+  settings rows fall back to the documented defaults and a PUT repairs them; a missing
+  `settings` table reports `provisioned:false` instead of 500ing; orphan response rows and a
+  nulled snapshot are handled; a 20-request listing storm triggers exactly one purge; 3 MB
+  bodies are refused with 413.
+- **Purge deep-diff, 16 checks** — with the whole store (database, response shards, detached
+  columns) snapshotted before and after, a sweep changed **only** the retention markers, the
+  adapter's `updated_at` stamps and the audit rows: the report and snapshot columns are
+  byte-identical, every score/lock/comment survives, the in-window paper's files are untouched,
+  and no clip file outside the purged paper is removed.
+- **Airtable backend, 15 checks** — the policy round-trips (including checkboxes switched OFF,
+  which Airtable omits unless they are declared as such), a due paper purges, its clips go, the
+  marker is stored as an object, the report survives, the audit row is written, and the manual
+  recording delete keeps notes + transcript and is idempotent.
+- **API adversarial, 79 checks** — malformed/expired/deactivated auth (a case-insensitive
+  scheme and surrounding whitespace authenticate per RFC 7235; everything else is 401), exam
+  abuse (non-object drafts, unknown ids, prototype keys, a 260-beacon integrity flood capped at
+  200, duplicate advances, phase order, double submit), cross-candidate isolation on all six
+  exam routes plus encoded traversal, and admin invariants (duplicate usernames and role keys,
+  malformed frameworks, junk query values, 5,000-character ids, deletes with and without the
+  password).
+- **Question-bank integrity, 67 checks** — module keys, group membership, family scoping,
+  unique ids, option/key validity, rubrics, and the optional pool's flags and priorities across
+  RSA, AI/BI & Genie, SAMA and the legacy pool. The probe also draws papers from the pool to
+  assert the optionless scale rows are never served (the BUG CB regression), and resolves
+  optional families against `bank.optional.families` rather than the published family list.
+
+Static sweeps over `src/`, `public/js`, `server.mjs` and `netlify/` found no `eval` /
+`new Function` / `child_process`, no empty `catch`, no TODO/FIXME markers, no secrets in logs
+and no interpolated `href`/`src`; the three `innerHTML` interpolations the heuristic flagged are
+numeric loop variables, not data.
+
+Inspection coverage (line-by-line reads of the modules that carry the invariants): the storage
+contract and its three adapters (`schema.mjs`, `row-tables.mjs`, `json-file.mjs`,
+`netlify-blobs.mjs`, `airtable.mjs`, `audit-rotation.mjs`), the request path (`server.mjs`,
+`netlify/functions/api.mjs`, `router.mjs`, `app.mjs`, `cors.mjs`, `rate-limit.mjs`,
+`mutex.mjs`, `gate.mjs`, `passwords.mjs`), every handler (candidate, assessor, admin, auth,
+meta) and every core module (selection, generation, ordering, scoring, spoken-answer,
+quiz-session, prompt-key, retention, sheet-parser, candidate-import, question-intake), plus the
+SPA (`app.js`, `ui.js`, `api.js`, `exam-audio.js` and each view). Data-level sweeps were run
+over all three published module banks and all four catalogues — 548 module-bank questions and
+315 catalogue questions: unique ids, module/family resolution, ≥2 options per objective, every
+`correct_option_ids` entry present among the options, non-empty rubrics on open questions, no
+duplicate option ids, sane points/quotas — all clean. The one shape that is not servable (the
+15 optionless legacy scale rows) is confined to the fallback pool and is now excluded from
+selection (BUG CB). No further defects were reproduced: the two fixed above were the pass's
+findings.
+
+Observation (not a defect, flagged for a product decision): published bank questions carry no
+`points`, so a module-bank paper scores 1 mark per question through the `?? 1` default used
+consistently by selection, scoring and the projections — unlike admin-authored questions at 4/5
+marks.
+
+## 🏁 Final-stage pass: assessor ownership, exam-lock latency and a line-by-line sweep (previous)
 
 **Feature-by-feature live probe (91 checks across all 65 API routes) — two small findings, both fixed:**
 

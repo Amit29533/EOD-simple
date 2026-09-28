@@ -516,7 +516,9 @@ Two Airtable behaviours the adapter absorbs, so the rest of the app never sees t
   `settings` table (key `retention`; the two toggles are checkbox columns so an all-off policy
   round-trips as `false`), and a cleaned paper records what was removed in
   `assessments.retention_json`. A base provisioned before the retention feature needs both
-  (`npm run airtable:setup` adds the table and prints the column to add).
+  (`npm run airtable:setup` adds the table and prints the column to add) — including the
+  `created_at` column the adapter stamps on every insert; without it the policy cannot be saved
+  at all (`422 UNKNOWN_FIELD_NAME`).
 - **Paper facts on the assessment record.** Allocation stores `question_count`,
   `total_points`, `question_limit`, `bank_total` and `role_name` beside the paper so listings
   never have to parse every `snapshot_json`; a base provisioned before these columns existed

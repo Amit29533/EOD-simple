@@ -85,7 +85,9 @@ export const SCHEMA = {
   // policy is the `retention` row (src/core/retention.mjs); the toggles are
   // checkboxes so switching the cleanup OFF round-trips as `false` instead of
   // vanishing (which would read as "not set" and fall back to the default, on).
-  settings:     ['key', 'scope', 'updated_at', 'updated_by'].map((f) => ({ name: f, ...txt }))
+  // `created_at` / `updated_at` are the adapter's own stamps — every table it
+  // inserts into or updates needs both columns.
+  settings:     ['key', 'created_at', 'scope', 'updated_at', 'updated_by'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'days', ...num },
                          { name: 'auto_delete_answer_sheets', ...chk }, { name: 'auto_delete_recordings', ...chk }]),
   audit_log:    ['actor_id', 'actor_name', 'action', 'entity', 'entity_id', 'created_at'].map((f) => ({ name: f, ...txt }))
