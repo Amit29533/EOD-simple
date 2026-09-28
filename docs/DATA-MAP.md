@@ -263,15 +263,21 @@ text cell caps at 100 000 chars, so the JSON columns are split across continuati
 | --- | --- |
 | Answer re-recorded or cleared | that one `recordings` row replaced / deleted; transcript in the response row updated |
 | Exam submitted | nothing deleted; rows freeze (`locked`) |
-| Report finalized | **nothing deleted** — clips, transcripts and marks are kept alongside the report |
-| `DELETE /admin/assessments/:id` | allowed only before submission; removes that paper's `responses`, `recordings` and the assessment |
+| Report finalized | **nothing deleted at that moment** — clips, transcripts and marks are kept alongside the report, and the assessor can still read them (Admin → Settings can put a clock on it, below) |
+| **Retention cleanup** (admin setting, default **30 days** after `scored_at`) | removes the `recordings` rows and clears the answer content per scope (`all` answers, or open answers only), keeping **every** score and the whole `report_json`; leaves an `answer.retention` marker on each row and `assessments.retention_json` on the paper, and writes `assessment_data_purged` to the audit log |
+| Assessor deleting one recording (`DELETE /assessor/assessments/:id/recordings/:question_id`) | removes that clip and clears its reference; notes, transcript, marks and the report stay; audited as `assessment_recording_deleted` |
+| `DELETE /admin/assessments/:id` | allowed only before submission; removes that paper's `responses`, `recordings` and the assessment (also fine after a cleanup, when the recordings are already gone) |
 | `DELETE /admin/candidates/:id` | refused if the candidate has a finalized report (reports protect the record); otherwise removes portal login, sessions, and every open paper's `responses` + `recordings` + assessment |
 | Audit log | trimmed to the newest 2 000 rows |
 | Integrity events | newest 200 kept, counters keep lifetime totals |
 
-So there is no separate "archive" step and no post-report cleanup: **the recording, the
-transcript and the marking of every question stay queryable for as long as the assessment row
-exists.**
+So there is still no separate "archive" step, but there is now a **policy-driven cleanup**: after
+the report has existed for the configured period, the raw material (answers, transcripts,
+recordings) is deleted from the stores, while the report card and every marking — the things a
+later audit actually reads — stay queryable for as long as the assessment row exists. Nothing is
+swept before a report exists, and the policy (days, scope, which artefact) lives in the
+`settings` table under key `retention`; the full design and its verification are in
+`docs/RETENTION.md`.
 
 ---
 
@@ -287,4 +293,6 @@ exists.**
 | Report computation, finalize, allocation, snapshots | `src/api/assessment-service.mjs`, `src/core/scoring.mjs` |
 | Candidate/assessor/admin projections (compartmentalization) | `src/api/projections.mjs` |
 | Mic + speech-to-text client helpers | `public/js/exam-audio.js` |
+| Retention policy (pure: defaults, due maths, purgeAnswer) | `src/core/retention.mjs` |
+| Retention I/O: settings row, sweep, manual clip delete | `src/api/retention-service.mjs` |
 | Retention of the trail | `src/storage/audit-rotation.mjs`, `src/api/quiz-session.mjs` (`MAX_INTEGRITY_EVENTS`) |

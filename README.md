@@ -148,6 +148,20 @@ python3 tests/features.py     # 216 checks: every feature — CRUD, validation, 
   typed-only lock is stored but marked `audio_missing` and logged as `spoken_answer_missing`
   in the proctoring trail, the audit log and the assessor's paper.
 - **Assessor portal** — sees *only own assignments*: limited candidate profile, answers, rubrics; scores open questions; finalizes → report.
+- **A finished paper keeps its evidence** — finalisation generates the report, it never hides the
+  material behind it. A scored paper's screen carries an **Answer sheet & recordings** tab: the
+  same answers, transcripts and per-question clip players, read-only, with the marks and comments
+  that were given. From there the assessor can delete a single recording by hand (behind a
+  confirm — it is the only copy) and the notes, transcript, scores and report stay.
+- **Answer-sheet retention, 30 days by default** — **Admin → Settings** decides how long answer
+  sheets, transcripts and recordings are kept after a report is generated: the period (default
+  **30 days**; 0 = delete at the next cleanup), whether all answers or only open answers are
+  deleted, and whether recordings go too. The cleanup runs on demand (**Run cleanup now**) and
+  automatically from the dashboard / assessments / workspace screens when something is due — there
+  is no scheduler. It removes only the raw material, under the assessment lock, in batches of 25
+  papers: report cards, scores and the audit trail are never touched, and every purge is audited
+  (`assessment_data_purged`). The assessments list shows each paper's evidence state
+  (days left / due / deleted).
 - **Question/assessment engine** — 4 question types (single/multi MCQ, 1–5 scale, open scenario answered by microphone recording), autosaving quiz, strict submission validation, optional per-assessment question count.
 - **Finalisation that cannot hang** — every answer is already persisted the moment it is locked,
   so the end-of-exam submit stores only the rows that actually changed, in **one batch per table**
@@ -498,6 +512,11 @@ Two Airtable behaviours the adapter absorbs, so the rest of the app never sees t
   scoring screen loads a paper in one small request and fetches clips one at a time. A base
   provisioned before this table existed needs it created (`npm run airtable:setup` adds
   missing tables).
+- **The `settings` table and `assessments.retention_json`.** The retention policy lives in the
+  `settings` table (key `retention`; the two toggles are checkbox columns so an all-off policy
+  round-trips as `false`), and a cleaned paper records what was removed in
+  `assessments.retention_json`. A base provisioned before the retention feature needs both
+  (`npm run airtable:setup` adds the table and prints the column to add).
 - **Paper facts on the assessment record.** Allocation stores `question_count`,
   `total_points`, `question_limit`, `bank_total` and `role_name` beside the paper so listings
   never have to parse every `snapshot_json`; a base provisioned before these columns existed

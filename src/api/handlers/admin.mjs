@@ -24,6 +24,11 @@ import {
   moduleBankFor, DEFAULT_MODULE_BANK_ROLE_KEY,
 } from '../../content/module-banks.mjs';
 import {
+  readRetentionSettings, saveRetentionSettings, runRetentionSweep, retentionStatus,
+  sweepInBackground, paperRetention,
+} from '../retention-service.mjs';
+import { DEFAULT_RETENTION } from '../../core/retention.mjs';
+import {
   generateTest, testPlan, blueprintFor, isActive,
 } from '../../core/test-generation.mjs';
 import {
@@ -304,6 +309,10 @@ export function adminHandlers(route) {
     const [candidates, assessments, roles] = await Promise.all([
       store.list('candidates'), store.list('assessments', {}, { detached: false }), store.list('roles'),
     ]);
+    // Opportunistic retention cleanup from the one screen an admin opens first
+    // (see src/api/retention-service.mjs): the rows are already in hand, so
+    // this costs no extra listing and is never awaited.
+    sweepInBackground(store, { rows: assessments });
     const byStage = Object.fromEntries(PIPELINE_STAGES.map((s) => [s.key, 0]));
     for (const c of candidates) byStage[c.stage || 'intake'] = (byStage[c.stage || 'intake'] ?? 0) + 1;
     const byStatus = {};
@@ -1379,6 +1388,11 @@ export function adminHandlers(route) {
     // Small columns only: the papers stay in their own objects (one fetch per
     // row would make this listing cost every paper ever allocated).
     let rows = await store.list('assessments', {}, { detached: false });
+    // Opportunistic cleanup (no scheduler in this deployment): the listing the
+    // admin is looking at is exactly the set the policy applies to. Never
+    // awaited — the response is already built from the rows below.
+    const { settings: retention } = await readRetentionSettings(store);
+    sweepInBackground(store, { rows });
     if (query.status) rows = rows.filter((a) => a.status === query.status);
     if (query.assessor_id) rows = rows.filter((a) => a.assessor_id === query.assessor_id);
     if (query.role_id) rows = rows.filter((a) => a.role_id === query.role_id);
@@ -1404,6 +1418,9 @@ export function adminHandlers(route) {
         last_integrity_event: a.quiz_state?.events?.length
           ? a.quiz_state.events[a.quiz_state.events.length - 1].event
           : null,
+        // Whether this paper's raw material is still here, and when the
+        // cleanup will take it (src/core/retention.mjs).
+        retention: paperRetention(a, retention),
       })),
       total: page.total,
       limit: page.limit,
@@ -1929,11 +1946,15 @@ export function adminHandlers(route) {
       return conflict('Report is available after scoring is finalized.');
     const candidate = await store.get('candidates', a.candidate_id);
     const assessor = a.assessor_id ? await store.get('users', a.assessor_id) : null;
+    const { settings: retention } = await readRetentionSettings(store);
     return ok({
       candidate: { id: candidate?.id, name: candidate?.name, current_title: candidate?.current_title, email: candidate?.email },
       assessor_name: assessor?.name || 'Unassigned',
       report: a.report_json,
       status: a.status,
+      // Is the evidence behind this report (answer sheet, transcripts,
+      // recordings) still kept, or already removed by the cleanup?
+      retention: paperRetention(a, retention),
     });
   });
 
@@ -1951,6 +1972,82 @@ export function adminHandlers(route) {
     const total = rows.length;
     const slice = rows.slice(offset, offset + limit);
     return ok({ events: slice, total, limit, offset });
+  });
+
+  // ------------------------------------------------ settings: data retention
+  /**
+   * How long the raw material of a finished assessment is kept — the answer
+   * sheet (typed notes + transcripts, and the objective answers when the scope
+   * is `all`) and the recorded clips. Defaults to 30 days from the moment the
+   * report was generated; the policy itself lives in src/core/retention.mjs.
+   *
+   * Reads the effective policy plus the counts the screen shows. A backend
+   * without a settings table (an Airtable base created before this feature)
+   * still answers with the defaults and says `provisioned: false`, so the page
+   * explains what to run instead of failing.
+   */
+  route('GET', '/admin/settings/retention', A, async ({ store }) => {
+    const { settings, row, provisioned, error } = await readRetentionSettings(store);
+    // Deliberately NO cleanup here, unlike the dashboard and the assessments
+    // list: this is the screen an admin opens to *decide* the policy, and it
+    // must report what is due rather than act on it (and never clear a paper
+    // under the policy the admin is halfway through changing). The button below
+    // runs it explicitly.
+    const rows = await store.list('assessments', {}, { detached: false });
+    const status = await retentionStatus(store, settings, { rows });
+    let updated_by_name = null;
+    if (row?.updated_by) {
+      const user = await store.get('users', row.updated_by);
+      updated_by_name = user?.name || null;
+    }
+    return ok({
+      settings,
+      // The documented defaults, so the screen can say what "unset" means.
+      defaults: DEFAULT_RETENTION,
+      status,
+      updated_at: row?.updated_at || null,
+      updated_by_name,
+      provisioned,
+      ...(provisioned ? {} : { detail: `The settings table is not available on this backend yet (${error || 'not found'}).` }),
+    });
+  });
+
+  route('PUT', '/admin/settings/retention', A, async ({ store, body, auth }) => {
+    const saved = await saveRetentionSettings(store, body, auth.user);
+    if (saved.error) return bad(saved.error);
+    await audit(store, auth.user, 'retention_settings_updated', 'settings', saved.row?.id || 'retention',
+      `Answer-sheet retention set to ${saved.settings.days} day(s) `
+      + `(answers: ${saved.settings.auto_delete_answer_sheets ? saved.settings.scope : 'kept'}, `
+      + `recordings: ${saved.settings.auto_delete_recordings ? 'deleted' : 'kept'})`,
+      { settings: saved.settings });
+    const rows = await store.list('assessments', {}, { detached: false });
+    return ok({ settings: saved.settings, status: await retentionStatus(store, saved.settings, { rows }) });
+  });
+
+  /**
+   * Run the cleanup now, for the papers that are due. Never deletes anything
+   * early: a paper is only taken once its retention window has elapsed under
+   * the CURRENT settings (set the period to 0 to clear a paper immediately).
+   * Capped at 25 papers per run — press again for the rest.
+   */
+  route('POST', '/admin/retention/run', A, async ({ store, auth }) => {
+    const result = await runRetentionSweep(store, { actor: auth.user, reason: 'retention' });
+    const rows = await store.list('assessments', {}, { detached: false });
+    if (result.ran && result.purged) {
+      await audit(store, auth.user, 'retention_cleanup_run', 'settings', 'retention',
+        `Retention cleanup removed ${result.rows} answer row(s) and ${result.clips} recording(s) from ${result.purged} assessment(s)`,
+        { papers: result.papers.map((p) => p.id) });
+    }
+    return ok({
+      ran: result.ran,
+      reason: result.reason || null,
+      purged: result.purged || 0,
+      rows: result.rows || 0,
+      clips: result.clips || 0,
+      failed: result.failed || 0,
+      remaining: result.remaining || 0,
+      status: await retentionStatus(store, result.settings, { rows }),
+    });
   });
 }
 

@@ -67,6 +67,8 @@ export const SCHEMA = {
   // `overflow` declares how many each column has).
   assessments:  ['candidate_id', 'role_id', 'assessor_id', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label', 'role_name'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'quiz_state', ...long },
+                         // what the retention cleanup removed from this paper (src/core/retention.mjs)
+                         { name: 'retention_json', ...long },
                          { name: 'overall_pct', ...num }, { name: 'question_count', ...num },
                          // listing facts kept beside the paper (src/api/assessment-service.mjs paperSummary)
                          { name: 'total_points', ...num }, { name: 'question_limit', ...num }, { name: 'bank_total', ...num }])
@@ -79,6 +81,13 @@ export const SCHEMA = {
   recordings:   ['assessment_id', 'question_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'audio', ...long }])
                 .concat(overflowColumns('recordings').map((f) => ({ name: f, ...long }))),
+  // Platform settings, one row per `key`. The answer-sheet / recording cleanup
+  // policy is the `retention` row (src/core/retention.mjs); the toggles are
+  // checkboxes so switching the cleanup OFF round-trips as `false` instead of
+  // vanishing (which would read as "not set" and fall back to the default, on).
+  settings:     ['key', 'scope', 'updated_at', 'updated_by'].map((f) => ({ name: f, ...txt }))
+                .concat([{ name: 'days', ...num },
+                         { name: 'auto_delete_answer_sheets', ...chk }, { name: 'auto_delete_recordings', ...chk }]),
   audit_log:    ['actor_id', 'actor_name', 'action', 'entity', 'entity_id', 'created_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'message', ...long }, { name: 'meta', ...long }]),
 };
@@ -118,7 +127,9 @@ async function main() {
     console.log('[airtable] run, add any missing columns manually: candidates.assessor_id (text), questions.question_set,');
     console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
     console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
-    console.log('[airtable] responses.locked, the bank_questions / bank_question_overrides tables, the recordings');
+    console.log('[airtable] responses.locked, assessments.retention_json (what the retention cleanup removed),');
+    console.log('[airtable] the settings table (the answer-sheet / recording retention policy), the bank_questions /');
+    console.log('[airtable] bank_question_overrides tables, the recordings');
     console.log(`[airtable] table (recorded answers), and the long-text continuation columns ${[...overflowColumns('assessments'), ...overflowColumns('responses'), ...overflowColumns('recordings')].join(', ')}`);
     console.log('[airtable] (without them, papers and recorded answers over 100,000 characters cannot be saved).');
   }

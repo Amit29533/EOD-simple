@@ -173,7 +173,7 @@ function reportStats(report) {
   };
 }
 
-export function renderReport(view, { candidate, report, assessor_name, audience }) {
+export function renderReport(view, { candidate, report, assessor_name, audience, actionsHtml = '' }) {
   const band = report.band || {};
   const tone = scoreTone(band.tone);
   const fullDetail = audience !== 'candidate';
@@ -184,7 +184,7 @@ export function renderReport(view, { candidate, report, assessor_name, audience 
       <div class="card no-print report-actions">
         <div class="row between">
           <a href="${audience === 'admin' ? '#/assessments' : audience === 'assessor' ? '#/workspace' : '#/journey'}" class="btn ghost sm">← Back</a>
-          <button type="button" class="btn secondary sm" id="report-print">🖨️ Print / Save PDF</button>
+          <div class="row">${actionsHtml}<button type="button" class="btn secondary sm" id="report-print">🖨️ Print / Save PDF</button></div>
         </div>
       </div>
 
