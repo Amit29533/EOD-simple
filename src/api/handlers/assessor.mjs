@@ -6,6 +6,10 @@ import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.
 import { finalizeScoring, paperFacts } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
 import { withLock } from '../mutex.mjs';
+import {
+  getRetentionSettings, paperRetention, deleteAssessmentRecording, sweepInBackground,
+} from '../retention-service.mjs';
+import { answerRetention } from '../../core/retention.mjs';
 
 const R = ['assessor'];
 
@@ -31,12 +35,33 @@ async function own(store, assessorId, assessmentId) {
 function answerForDetail(answer) {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return answer;
   const { audio_b64, audio_ref, ...rest } = answer;
-  return { ...rest, has_recording: Boolean(audio_ref || audio_b64) };
+  const mark = answerRetention(answer);
+  return {
+    ...rest,
+    has_recording: Boolean(audio_ref || audio_b64),
+    // Explain a hole instead of leaving the assessor to guess: the cleanup or
+    // a manual delete removed the recording, and/or the retention policy
+    // cleared the answer sheet. Without these flags a purged answer would read
+    // exactly like one the candidate never gave.
+    ...(mark?.recording
+      ? { recording_deleted: true, recording_deleted_at: mark.at || null }
+      : {}),
+    ...(mark?.sheet
+      ? {
+        answer_deleted: true, answer_deleted_at: mark.at || null,
+        deleted_by: mark.by || null, deleted_reason: mark.reason || null,
+      }
+      : {}),
+  };
 }
 
 export function assessorHandlers(route) {
   route('GET', '/assessor/assessments', R, async ({ store, auth }) => {
     const rows = await store.list('assessments', { assessor_id: auth.user.id }, { detached: false });
+    // The cleanup runs from the screens either role opens; this one is the
+    // assessor's landing page (see src/api/retention-service.mjs). A full
+    // sweep needs every paper, not only this assessor's, so no rows are passed.
+    sweepInBackground(store);
     const candidates = await store.list('candidates');
     const cmap = Object.fromEntries(candidates.map((c) => [c.id, c]));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -66,6 +91,7 @@ export function assessorHandlers(route) {
     const qById = new Map(questions.map((q) => [q.id, q]));
     const manualTotal = questions.filter(isManualQuestion).length;
     const manualScored = responses.filter((r) => r.assessor_score !== undefined && r.assessor_score !== null).length;
+    const retention = paperRetention(a, await getRetentionSettings(store));
     return ok({
       assessment: {
         id: a.id, status: a.status, submitted_at: a.submitted_at, scored_at: a.scored_at,
@@ -77,13 +103,22 @@ export function assessorHandlers(route) {
       questions, // full: includes rubric + correct answers (assessor-only)
       responses: responses.map((r) => {
         const q = qById.get(r.question_id);
-        const live = q && isAutoQuestion(q) ? (autoScore(q, r.answer) ?? 0) : r.auto_score;
+        // Re-scoring an auto item in the live projection keeps the assessor's
+        // screen honest after the snapshot changed. A row whose answer the
+        // cleanup removed has nothing left to re-score: its stored mark is the
+        // truth (and the only thing left of the candidate's choice).
+        const live = q && isAutoQuestion(q) && !answerRetention(r.answer)
+          ? (autoScore(q, r.answer) ?? 0)
+          : r.auto_score;
         return {
           question_id: r.question_id, answer: answerForDetail(r.answer),
           auto_score: live, assessor_score: r.assessor_score, assessor_comment: r.assessor_comment || '',
         };
       }),
       scoring_progress: { manual_total: manualTotal, manual_scored: manualScored },
+      // How long this paper's raw material (answers, transcripts, recordings)
+      // stays reviewable — and whether the cleanup already took it.
+      retention,
       // after finalization, the assessor may review the report they produced
       report: ['scored', 'validated'].includes(a.status) ? a.report_json : null,
     });
@@ -108,6 +143,31 @@ export function assessorHandlers(route) {
     if (inline?.audio_b64) return ok({ question_id: qid, audio_b64: inline.audio_b64, audio_mime: inline.audio_mime || 'audio/webm' });
     return notFound('No recording for this question.');
   });
+
+  /**
+   * Delete ONE recorded answer at the assessor's request.
+   *
+   * A recording that should not be kept — a silent clip, a misfire, a
+   * candidate who asked for their voice not to be stored — can be removed
+   * without touching the rest of the paper: the typed notes and the live
+   * transcript are the answer sheet, not the audio, and they stay. The clip is
+   * the only copy (no archive exists), so the screen warns before calling this.
+   *
+   * Allowed from submission onwards (an assessor may clear a bad clip while
+   * scoring), never on a paper that is still being sat; own papers only, and
+   * nothing but the clip is written.
+   */
+  route('DELETE', '/assessor/assessments/:id/recordings/:question_id', R, locked(async ({ store, auth, params }) => {
+    const a = await own(store, auth.user.id, params.id);
+    if (!a) return notFound('Assessment not found.');
+    if (['assigned', 'in_progress'].includes(a.status))
+      return conflict('The candidate has not submitted this assessment yet.');
+    const result = await deleteAssessmentRecording(store, a, params.question_id, { actor: auth.user });
+    if (result.missing) return notFound('No recording for this question.');
+    return ok({
+      ok: true, question_id: result.question_id, deleted: result.deleted, already_deleted: result.already === true,
+    });
+  }));
 
   route('PUT', '/assessor/assessments/:id/scores', R, locked(async ({ store, auth, params, body }) => {
     const a = await own(store, auth.user.id, params.id);

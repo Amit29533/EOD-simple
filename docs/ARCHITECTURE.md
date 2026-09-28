@@ -307,6 +307,30 @@ exporter clips long MCQ options inside fixed-height table cells, so the correct
 answer is restored from the Expected Evidence column and any item still missing a
 distractor is flagged `needs_option_review` for an admin to complete.
 
+## 2d. Answer-sheet retention is a policy, not a cascade
+
+A finalized paper's raw material (answers, transcripts, `recordings` rows) is kept until the
+admin-set retention period has passed. `src/core/retention.mjs` holds the pure policy (defaults
+**30 days**, scope `all`/`open`, the two toggles, due maths `scored_at + days`) and
+`src/api/retention-service.mjs` the I/O (the `settings` row keyed `retention`, the sweep, the
+manual clip delete). The sweep runs on demand (Admin → Settings → *Run cleanup now*) and
+opportunistically — fire-and-forget, never awaited, never allowed to fail a request — from the
+admin dashboard / assessments list and the assessor workspace; there is no scheduler in this
+deployment, the same trade the audit trim makes. It is idempotent, caps at 25 papers per run, and
+takes `withLock('assessment:<id>')` before re-reading the paper, so two requests cannot
+double-purge the same one.
+
+It deletes *only* the raw material: every score stays on the response rows (`auto_score` /
+`assessor_score` / `final_score`), `assessments.report_json` is untouched, and markers
+(`answer.retention`, `assessments.retention_json`) record what was removed, by whom and under
+which policy — so the admin list and the assessor's answer sheet can explain the hole instead of
+showing a blank. A paper whose report does not exist yet has no clock and is never swept: a
+paper still waiting on its assessor must not lose its evidence.
+
+The same markers back the assessor's **manual** delete of a single recording
+(`DELETE /assessor/assessments/:id/recordings/:question_id`), which is the retention service
+minus the policy: one clip, one row, the notes and transcript untouched.
+
 ## 3. Everything domain-specific is data
 Roles, competencies (weights, target levels, enrichment hints), the question bank and the
 scoring framework (readiness bands, level thresholds, gap severity) are stored records

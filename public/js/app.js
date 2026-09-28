@@ -23,9 +23,13 @@ const ROUTES = {
     ['#/questions', redirectToModules],
     ['#/modules', admin.modulesView],
     ['#/users', admin.usersView], ['#/audit', admin.auditView],
+    ['#/settings', admin.settingsView],
   ],
   assessor: [
     ['#/workspace', assessor.workspaceView], ['#/assessments/:id', assessor.assessmentView],
+    // The answer sheet, transcripts and recordings of a paper — kept after the
+    // report is generated, so the evidence behind every mark stays reviewable.
+    ['#/assessments/:id/answers', assessor.answersView],
   ],
   candidate: [
     ['#/journey', candidate.portalView], ['#/assessments/:id/quiz', candidate.quizView],
@@ -63,6 +67,7 @@ const NAV_ICONS = {
   modules: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="10.4" width="17" height="4.2" rx="1.2"></rect><rect x="3.5" y="16.8" width="17" height="3.2" rx="1.2"></rect></svg>',
   users: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5.5 20c.5-4 2.5-6 6.5-6s6 2 6.5 6"></path></svg>',
   audit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"></path></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12h2.2M17.2 12h2.2M6.8 6.8l1.6 1.6M15.6 15.6l1.6 1.6M17.2 6.8l-1.6 1.6M8.4 15.6l-1.6 1.6"></path></svg>',
   workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 17 5-5 3 3 7-8"></path><path d="M15 7h4v4"></path></svg>',
   journey: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17c3-8 8-9 16-10"></path><path d="m16 5 4 2-3 3"></path><circle cx="5" cy="18" r="2"></circle></svg>',
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 11 8-7 8 7v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"></path><path d="M9 20v-6h6v6"></path></svg>',
@@ -70,7 +75,7 @@ const NAV_ICONS = {
 const NAV = {
   admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'],
           ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Question Bank'],
-          ['#/users', 'Users & Access'], ['#/audit', 'Audit Log']],
+          ['#/users', 'Users & Access'], ['#/audit', 'Audit Log'], ['#/settings', 'Settings']],
   assessor: [['#/workspace', 'My Assessments']],
   candidate: [['#/journey', 'My Journey']],
   validator: [['#/home', 'Home']],
@@ -95,7 +100,7 @@ function renderShell() {
   const GROUPS = {
     Workspace: ['#/dashboard', '#/candidates', '#/assessments'],
     Configure: ['#/roles', '#/modules'],
-    Governance: ['#/users', '#/audit'],
+    Governance: ['#/users', '#/audit', '#/settings'],
   };
   const navGroups = u.role === 'admin'
     ? Object.entries(GROUPS)

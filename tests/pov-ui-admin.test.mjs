@@ -453,3 +453,86 @@ test('candidate record: an inactive target track stays selected as "(inactive)" 
     assert.ok(![...addSelect.options].some((o) => o.value === w.role.id), 'inactive tracks are not offered for new candidates');
   } finally { spa.teardown(); }
 });
+
+/* ------------------------------------------------------------ settings / retention */
+
+test('settings: the retention policy shows its defaults, saves what the admin chooses and is audited', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const spa = await bootSpa({ hash: '#/settings', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.settingsView(spa.view);
+    await flush(40);
+
+    assert.match(spa.text(), /Answer sheet & recording retention/);
+    const days = spa.view.querySelector('#ret-days');
+    assert.equal(days.value, '30', 'the documented default is on screen');
+    assert.equal(spa.view.querySelector('#ret-sheets').checked, true);
+    assert.equal(spa.view.querySelector('#ret-recordings').checked, true);
+    assert.equal(spa.view.querySelector('#ret-scope').value, 'all');
+    assert.match(spa.text(), /0 finalized papers/, 'nothing has been scored yet');
+
+    // Change the policy: 14 days, open answers only, recordings kept.
+    type(days, '14');
+    type(spa.view.querySelector('#ret-scope'), 'open');
+    spa.view.querySelector('#ret-recordings').checked = false;
+    spa.view.querySelector('#retention-form').dispatchEvent(new spa.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush(150);
+
+    const stored = (await w.store.list('settings', { key: 'retention' }))[0];
+    assert.deepEqual(
+      { days: stored.days, scope: stored.scope, sheets: stored.auto_delete_answer_sheets, recordings: stored.auto_delete_recordings },
+      { days: 14, scope: 'open', sheets: true, recordings: false },
+    );
+    assert.equal(spa.view.querySelector('#ret-days').value, '14', 'the screen repaints from what was stored');
+    assert.equal(spa.view.querySelector('#ret-scope').value, 'open');
+    assert.equal(spa.view.querySelector('#ret-recordings').checked, false);
+    assert.match(spa.text(), /keeping evidence for 14 days, then deleting answer sheets \(open answers only\)/, 'and says what the policy now means');
+    assert.ok((await w.store.list('audit_log', { action: 'retention_settings_updated' })).length === 1, 'the change is on the audit trail');
+
+    // A rejected value is reported and nothing is stored.
+    type(spa.view.querySelector('#ret-days'), '9999');
+    spa.view.querySelector('#retention-form').dispatchEvent(new spa.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush(120);
+    assert.equal((await w.store.list('settings', { key: 'retention' }))[0].days, 14, 'the stored policy is untouched');
+    assert.ok(spa.document.querySelectorAll('#toast-root .toast').length > 0, 'and the admin is told why');
+  } finally { spa.teardown(); }
+});
+
+test('settings: "Run cleanup now" clears the due papers only, and says what it removed', { skip: SKIP }, async (t) => {
+  const w = await makeWorld({ t });
+  const A = await w.assessorUser('cleanup.assessor');
+  // Two finalized papers, one of them past the window.
+  const old = await w.candidateUser('cleanup.old', { name: 'Old Paper' });
+  const fresh = await w.candidateUser('cleanup.fresh', { name: 'Fresh Paper' });
+  for (const c of [old, fresh]) {
+    await w.walkAndSubmit(c.token, c.assessmentId);
+    await w.assign(c.assessmentId, A.user.id);
+    await w.scoreAndFinalize(A.token, c.assessmentId, { score: 4 });
+  }
+  await w.store.update('assessments', old.assessmentId, { scored_at: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() });
+
+  const spa = await bootSpa({ hash: '#/settings', backend: { app: w.app, token: w.tok } });
+  try {
+    const admin = await import('../public/js/views/admin.js');
+    await admin.settingsView(spa.view);
+    await flush(40);
+    assert.match(spa.text(), /2 finalized papers/);
+    assert.match(spa.text(), /1 due for cleanup now/);
+
+    spa.view.querySelector('#ret-run').click();
+    await flush(40);
+    const confirm = spa.document.querySelector('#modal-root .m-foot .btn:last-child');
+    assert.ok(confirm, 'running the cleanup asks first');
+    confirm.click();
+    await flush(250);
+
+    assert.ok((await w.store.get('assessments', old.assessmentId)).retention_json?.purged_at, 'the due paper was cleared');
+    assert.equal((await w.store.get('assessments', fresh.assessmentId)).retention_json, undefined, 'the paper inside its window was not');
+    assert.ok((await w.store.list('responses', { assessment_id: old.assessmentId })).every((r) => r.answer?.retention), 'its answers are marked');
+    assert.match(spa.text(), /1 already cleaned/, 'the screen repaints with the new counts');
+    assert.ok(toastsOf(spa.document).some((m) => /Cleanup finished: 1 paper/.test(m)), 'and the admin is told what happened');
+  } finally { spa.teardown(); }
+});
+
+const toastsOf = (doc) => [...doc.querySelectorAll('#toast-root .toast')].map((el) => el.textContent.replace(/\s+/g, ' ').trim());

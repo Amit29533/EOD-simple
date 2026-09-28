@@ -116,6 +116,19 @@ const isObjective = (q) => q?.type === 'objective';
 const isOpen = (q) => q?.type === 'open';
 const isOptional = (q) => q?.optional === true;
 /**
+ * A question can only take an OBJECTIVE seat if it actually offers something to
+ * choose between.
+ *
+ * The retired competency catalogue holds 1-5 self-assessment items
+ * (`type: 'scale'`, no options). The optional pool maps every non-`text` row to
+ * `objective`, so 15 fallback rows carry `options: []` and an empty key.
+ * Drawing one handed the candidate a question with no choices — unanswerable,
+ * and unscoreable because nothing can match the empty key — in roughly half of
+ * the papers for a module that had to fall back. The legacy rows stay visible
+ * in the bank tree; they are simply never asked.
+ */
+const isServableObjective = (q) => isObjective(q) && Array.isArray(q.options) && q.options.length >= 2;
+/**
  * A question is servable unless it has been switched off. Exported because the
  * admin bank counts must use the *same* rule as selection — otherwise the UI
  * advertises questions that can never be drawn.
@@ -208,7 +221,7 @@ export function generateTest({ modules = [], questions = [] } = {}, { rng = Math
     const wantObjective = q.objective;
     const wantOpen = q.open;
 
-    const objective = draw(pool, isObjective, wantObjective, rng);
+    const objective = draw(pool, isServableObjective, wantObjective, rng);
     const open = draw(pool, isOpen, wantOpen, rng);
 
     const drawn = [...objective.picked, ...open.picked];
@@ -287,7 +300,9 @@ export function testPlan({ modules = [], questions = [] } = {}) {
     const wantObjective = q.objective;
     const wantOpen = q.open;
 
-    const objectivePool = pool.filter((q) => isObjective(q) && !isOptional(q));
+    // The plan must count with the SAME rule selection uses, so a row the
+    // generator would never ask can never be advertised as a free seat.
+    const objectivePool = pool.filter((q) => isServableObjective(q) && !isOptional(q));
     const openPool = pool.filter((q) => isOpen(q) && !isOptional(q));
     const optionalPool = pool.filter(isOptional);
 

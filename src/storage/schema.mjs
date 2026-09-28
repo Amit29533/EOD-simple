@@ -27,7 +27,7 @@ export const TABLES = {
   // the row itself is small and is rewritten on every exam step. Listings
   // read the paper facts kept beside it (question_count, total_points,
   // question_limit, bank_total, role_name — assessment-service paperSummary).
-  assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state'], flags: [],
+  assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state', 'retention_json'], flags: [],
                   overflow: { snapshot_json: 3, report_json: 1, quiz_state: 1 } },
   // One object per assessment in the file and blob adapters (SHARD_TABLES):
   // every read filters by assessment_id, and the exam step that writes it
@@ -39,6 +39,12 @@ export const TABLES = {
   // the file and blob adapters store this table one object per row
   // (src/storage/row-tables.mjs), Airtable one record with continuation cells.
   recordings:   { json: ['audio'], flags: [], overflow: { audio: 4 } },
+  // Platform settings, one row per `key` (the retention policy for answer
+  // sheets and recordings lives at `key: 'retention'`, src/core/retention.mjs).
+  // The toggles are declared flags so a backend that drops an unchecked
+  // checkbox reports `false` instead of "not set": an admin who switches the
+  // cleanup OFF must not be read as "use the default (on)".
+  settings:     { json: [], flags: ['auto_delete_answer_sheets', 'auto_delete_recordings'] },
   audit_log:    { json: ['meta'], flags: [] },
 };
 

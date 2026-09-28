@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createAirtableStore, AIRTABLE_TEXT_CELL_LIMIT } from '../src/storage/airtable.mjs';
+import { readRetentionSettings, saveRetentionSettings } from '../src/api/retention-service.mjs';
 import { TABLES, overflowColumns } from '../src/storage/schema.mjs';
 import { SCHEMA } from '../scripts/airtable-setup.mjs';
 
@@ -255,6 +258,52 @@ test('airtable adapter: the boolean registry matches the provisioned checkbox co
   for (const [table, fields] of Object.entries(SCHEMA)) {
     const checkboxes = fields.filter((f) => f.type === 'checkbox').map((f) => f.name).sort();
     assert.deepEqual([...(TABLES[table]?.flags || [])].sort(), checkboxes, `${table}: schema.mjs flags vs airtable-setup checkbox columns`);
+  }
+});
+
+test('airtable adapter: every provisioned table carries the columns the adapter stamps', () => {
+  // The adapter adds `created_at` to every insert and `updated_at` to every
+  // update. The retention `settings` row was provisioned without `created_at`,
+  // so the very first save of the cleanup policy died with Airtable's generic
+  // 422 UNKNOWN_FIELD_NAME — the feature was unusable on this backend. Which
+  // tables get updated is read off the source (an under-approximation: a table
+  // named by a variable simply is not checked), so a new update call on a
+  // table that forgot its column fails here instead of in production.
+  const sources = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.mjs')) sources.push(fs.readFileSync(full, 'utf8'));
+    }
+  };
+  walk(new URL('../src', import.meta.url).pathname);
+  const text = sources.join('\n');
+  const updated = (table) => new RegExp(`(?:store\.)?(?:update|updateMany|bulkUpdate)\\(\\s*(?:store,)?\\s*'${table}'|updateMany\\(\\s*'${table}'`).test(text)
+    || new RegExp(`SETTINGS_TABLE`).test(text) && table === 'settings';
+  for (const [table, fields] of Object.entries(SCHEMA)) {
+    const names = fields.map((f) => f.name);
+    assert.ok(names.includes('created_at'), `${table}: the adapter stamps created_at on every insert`);
+    if (updated(table)) assert.ok(names.includes('updated_at'), `${table}: updated by the app, so it needs the adapter's updated_at column`);
+  }
+});
+
+test('airtable adapter: the cleanup policy saves (and re-saves) through the real adapter', async () => {
+  // End-to-end regression for the missing column above: insert the `retention`
+  // row, then update it — both must reach the backend untouched by 422s.
+  const { server, port } = await mockAirtable({ columns: provisioned });
+  try {
+    const store = connect(port);
+    const first = await saveRetentionSettings(store, { days: 45, scope: 'open', auto_delete_answer_sheets: false, auto_delete_recordings: false }, { id: 'u1' });
+    assert.equal(first.settings.days, 45);
+    assert.equal(first.error, undefined);
+    assert.equal((await readRetentionSettings(store)).settings.auto_delete_recordings, false, 'an OFF toggle survives the round trip');
+    const second = await saveRetentionSettings(store, { days: 7 }, { id: 'u2' });
+    assert.equal(second.settings.days, 7);
+    assert.equal(second.settings.auto_delete_answer_sheets, false, 'the untouched field survives the update');
+    assert.equal((await store.list('settings', { key: 'retention' })).length, 1, 'one policy row, never a twin');
+  } finally {
+    server.close();
   }
 });
 

@@ -45,7 +45,14 @@ export async function assessmentView(view, { id }) {
   const d = await api(`/assessor/assessments/${id}`);
 
   if (['scored', 'validated'].includes(d.assessment.status) && d.report) {
-    renderReport(view, { candidate: d.candidate, report: d.report, assessor_name: 'You', audience: 'assessor' });
+    // The report is the landing screen of a finalized paper, as before — with a
+    // way into the evidence it was built from. The answer sheet, the
+    // transcripts and the recordings are kept after finalization (until the
+    // retention policy removes them), which is what `answersView` opens.
+    renderReport(view, {
+      candidate: d.candidate, report: d.report, assessor_name: 'You', audience: 'assessor',
+      actionsHtml: `<a class="btn secondary sm" href="#/assessments/${id}/answers">🧾 Answer sheet &amp; recordings</a>`,
+    });
     return;
   }
   if (d.assessment.status !== 'submitted') {
@@ -53,7 +60,31 @@ export async function assessmentView(view, { id }) {
     return;
   }
 
-  // scoring workspace
+  renderAnswerSheet(view, d, { id, readonly: false });
+}
+
+/**
+ * The answer sheet of a submitted or finalized paper.
+ *
+ * This is the same screen the assessor scores on, and — once the report
+ * exists — the read-only review of the evidence behind it: every question as
+ * served, the MCQ picks with the correct answers marked, the typed notes, the
+ * live transcripts and a player per recorded answer. On a finalized paper the
+ * inputs are disabled, the finalize button is gone and the report card is one
+ * click away; nothing here disappears until the admin's retention policy says
+ * so (per paper, the `retention` block says when).
+ */
+export async function answersView(view, { id }) {
+  view.innerHTML = loading();
+  const d = await api(`/assessor/assessments/${id}`);
+  if (['assigned', 'in_progress'].includes(d.assessment.status)) {
+    view.innerHTML = `<div class="card">${emptyState('Not ready', 'The candidate has not submitted this assessment yet.')}</div>`;
+    return;
+  }
+  renderAnswerSheet(view, d, { id, readonly: ['scored', 'validated'].includes(d.assessment.status) });
+}
+
+function renderAnswerSheet(view, d, { id, readonly }) {
   const responses = Object.fromEntries(d.responses.map((r) => [r.question_id, r]));
   const manualQs = d.questions.filter((q) => q.type === 'text');
   const scores = {};        // qid -> score
@@ -64,19 +95,24 @@ export async function assessmentView(view, { id }) {
   }
   let qNo = 0;
 
+  const retentionNote = readonly ? retentionLine(d.retention) : '';
+
   view.innerHTML = `
     <div class="score-topbar card">
-      <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">Scoring review</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}</span></div></div>
-      <div class="row score-actions"><span class="badge grey" id="score-progress"></span><button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button></div>
+      <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">${readonly ? 'Answer sheet · report finalized' : 'Scoring review'}</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}${readonly && d.assessment.scored_at ? ` · finalized ${esc(fmtDate(d.assessment.scored_at))}` : ''}</span></div></div>
+      <div class="row score-actions"><span class="badge grey" id="score-progress"></span>${readonly
+        ? `<a class="btn secondary" href="#/assessments/${esc(id)}">View report card <span aria-hidden="true">→</span></a>`
+        : '<button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button>'}</div>
     </div>
     <div class="card">
       <div class="small muted">Candidate profile (shared with you for context): <b>${esc(d.candidate?.current_title || 'n/a')}</b>${d.candidate?.years_experience != null ? `, ${d.candidate.years_experience} years of experience` : ''}. Objective MCQ and scale items are scored automatically — review them; your judgment is required only for open responses, scored against the rubric.</div>
+      ${retentionNote ? `<div class="small muted" style="margin-top:8px">🗂 ${retentionNote}</div>` : ''}
     </div>
     ${d.competencies.map((c) => {
       const qs = d.questions.filter((x) => x.competency_id === c.id);
       if (!qs.length) return '';
       return `<div class="comp-header"><h3>${esc(c.name)}</h3><div class="meta">weight ${esc(c.weight)} · target L${esc(c.target_level)}</div></div>
-        ${qs.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id]); }).join('')}`;
+        ${qs.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id], { readonly }); }).join('')}`;
     }).join('')}
     ${(() => {
       // A paper frozen before its competency was deactivated (or by an older
@@ -88,10 +124,13 @@ export async function assessmentView(view, { id }) {
       const orphans = d.questions.filter((q) => !grouped.has(q.competency_id));
       if (!orphans.length) return '';
       return `<div class="comp-header"><h3>Other questions</h3><div class="meta">competency no longer part of this track · not counted in the report</div></div>
-        ${orphans.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id]); }).join('')}`;
+        ${orphans.map((q) => { qNo += 1; return scoreCard(q, qNo, responses[q.id], { readonly }); }).join('')}`;
     })()}`;
 
+  // Clips load per question; the delete control beside each player removes
+  // that one recording (it is the only copy — the dialog says so).
   loadRecordings(view, id);
+  wireRecordingDeletes(view, id);
 
   const updateProgress = () => {
     const scored = manualQs.filter((q) => scores[q.id] !== null && scores[q.id] !== '').length;
@@ -124,6 +163,8 @@ export async function assessmentView(view, { id }) {
     comment.onchange = () => { comments[q.id] = comment.value; save(); };
   }
 
+  if (readonly) return; // finalized: scores are locked, the inputs are disabled
+
   view.querySelector('#finalize-btn').onclick = async () => {
     const scored = updateProgress();
     if (scored < manualQs.length) {
@@ -138,6 +179,54 @@ export async function assessmentView(view, { id }) {
       renderReport(view, { candidate: out.candidate, report: out.report, assessor_name: 'You', audience: 'assessor' });
     }
   };
+}
+
+/**
+ * What the paper's retention block means, in the assessor's words: how long the
+ * evidence behind the report stays reviewable, and what the cleanup already
+ * took (a purged paper keeps its report — and says so here).
+ */
+function retentionLine(ret) {
+  if (!ret) return '';
+  if (ret.state === 'purged') {
+    return `The answer sheet and recordings were deleted by the retention policy on ${esc(fmtDate(ret.purged_at))}. The report card keeps every prompt, score and comment.`;
+  }
+  if (ret.state === 'off') {
+    return 'Automatic cleanup is switched off: the answer sheet, transcripts and recordings are kept until an admin removes them.';
+  }
+  if (ret.due_at) {
+    const days = ret.days_left;
+    const left = days == null ? '' : days <= 0 ? ' (due for cleanup)' : ` (in ${days} day${days === 1 ? '' : 's'})`;
+    return `Kept for review: the answer sheet, transcripts and recordings are deleted automatically on ${esc(fmtDate(ret.due_at))}${left}.`;
+  }
+  return '';
+}
+
+/**
+ * "Delete recording" behind each player. One confirmation (the clip is the only
+ * copy), one DELETE, and the slot is repainted in place — a clip still being
+ * fetched for that question is dropped with it.
+ */
+function wireRecordingDeletes(view, assessmentId) {
+  view.querySelectorAll('[data-delete-recording]').forEach((btn) => {
+    btn.onclick = async () => {
+      const qid = btn.dataset.deleteRecording;
+      const yes = await confirmModal(
+        'Delete this recording?',
+        'The recorded answer is the only copy and cannot be recovered. The transcript and the typed notes stay in the answer sheet, and the deletion is written to the audit log.',
+        'Delete recording', true,
+      );
+      if (!yes) return;
+      const out = await attempt(() => api(`/assessor/assessments/${assessmentId}/recordings/${encodeURIComponent(qid)}`, { method: 'DELETE' }));
+      if (!out) return;
+      const slot = btn.closest('.q-card')?.querySelector('.exam-audio-slot');
+      // Replacing the node detaches it, so a clip still loading for this
+      // question cannot paint itself back over the note.
+      if (slot) slot.outerHTML = '<div class="small muted">🎙 Recording deleted — the transcript and typed notes are kept.</div>';
+      btn.remove();
+      toast('Recording deleted', 'success', 2000);
+    };
+  });
 }
 
 /**
@@ -188,12 +277,16 @@ export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecor
   pump();
 }
 
-function scoreCard(q, n, r) {
+function scoreCard(q, n, r, { readonly = false } = {}) {
   const answer = r?.answer;
   const head = `<div class="q-head"><span class="q-num">${n}</span>
     <div><div class="q-prompt">${esc(q.prompt)}</div>
       <div class="small muted" style="margin-top:5px"><span class="chip">${esc(q.type)}</span> <span class="chip">${esc(q.difficulty)}</span> <span class="chip">${esc(q.points)} pts</span>
-      ${q.type !== 'text' ? `<span class="chip" style="background:var(--blue-bg);color:var(--blue)">auto-scored</span>` : `<span class="chip" style="background:var(--amber-bg);color:var(--amber)">needs your score</span>`}
+      ${q.type !== 'text'
+        ? '<span class="chip" style="background:var(--blue-bg);color:var(--blue)">auto-scored</span>'
+        : readonly
+          ? '<span class="chip" style="background:var(--blue-bg);color:var(--blue)">assessor-scored</span>'
+          : '<span class="chip" style="background:var(--amber-bg);color:var(--amber)">needs your score</span>'}
       ${q.audio_required ? `<span class="chip chip-mic">🎙 recorded answer required</span>` : ''}</div>
     </div></div>`;
 
@@ -231,38 +324,53 @@ function scoreCard(q, n, r) {
     // the player — plus an explicit warning when the mandatory recording is
     // missing — has to be in front of the assessor, not hidden in the payload.
     const ans = answer && typeof answer === 'object' ? answer : { text: answer || '' };
-    const textAns = [ans.text, ans.transcript && ans.transcript !== ans.text ? `\n\n[Transcript]\n${ans.transcript}` : ''].filter(Boolean).join('');
+    // The retention cleanup (and the manual delete) leave a marker instead of
+    // an empty answer: without these notes a purged row would read exactly like
+    // a question the candidate never answered.
+    const sheetDeleted = ans.answer_deleted === true;
+    const recordingDeleted = ans.recording_deleted === true;
+    const textAns = sheetDeleted
+      ? ''
+      : [ans.text, ans.transcript && ans.transcript !== ans.text ? `\n\n[Transcript]\n${ans.transcript}` : ''].filter(Boolean).join('');
     // The clip itself is not in the detail payload (a whole-bank paper holds
     // ~10 MB of audio); `has_recording` marks a slot that loadRecordings()
     // fills from the per-question endpoint once the page is up.
-    const hasRecording = ans.has_recording === true || Boolean(ans.audio_b64);
+    const hasRecording = !sheetDeleted && (ans.has_recording === true || Boolean(ans.audio_b64));
     const audioPlayer = hasRecording
-      ? `<div class="exam-audio-slot" data-recording="${esc(q.id)}"><span class="small muted">Loading recording…</span></div>`
-      : '';
-    const nothingSpoken = !hasRecording && !String(ans.transcript || '').trim();
-    const spokenWarning = ans.audio_missing === true
-      ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Open questions require a spoken answer, so this is typed notes only — score accordingly and say so in the feedback.</div>'
-      : (nothingSpoken && q.audio_required === true && String(ans.text || '').trim()
-        ? '<div class="small" style="margin-top:6px;color:var(--amber);font-weight:700">⚠ No recording attached to this open answer.</div>'
+      ? `<div class="exam-audio-slot" data-recording="${esc(q.id)}"><span class="small muted">Loading recording…</span></div>
+        <div class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" style="color:var(--red)" data-delete-recording="${esc(q.id)}" title="Permanently delete this recorded answer">🗑 Delete recording</button></div>`
+      : (recordingDeleted && !sheetDeleted
+        ? '<div class="small muted" style="margin-top:6px">🎙 The recording was deleted — the transcript and typed notes above are what remain.</div>'
         : '');
-    // A blank open answer carries how it came about: the clock ran out, or the
-    // candidate moved on without answering. Say which, so the assessor is not
-    // left guessing from an empty box.
-    const blankNote = !textAns && !hasRecording
-      ? (ans.source === 'timed_out' ? '— no answer · time expired —' : ans.source === 'skipped' ? '— no answer · question skipped —' : '— no answer —')
-      : '';
+    const nothingSpoken = !hasRecording && !String(ans.transcript || '').trim();
+    const spokenWarning = sheetDeleted || recordingDeleted
+      ? ''
+      : ans.audio_missing === true
+        ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Open questions require a spoken answer, so this is typed notes only — score accordingly and say so in the feedback.</div>'
+        : (nothingSpoken && q.audio_required === true && String(ans.text || '').trim()
+          ? '<div class="small" style="margin-top:6px;color:var(--amber);font-weight:700">⚠ No recording attached to this open answer.</div>'
+          : '');
+    // A blank open answer carries how it came about: the clock ran out, the
+    // candidate moved on, the retention policy removed the material, or the
+    // assessor deleted the clip. Say which, so the assessor is not left
+    // guessing from an empty box.
+    const blankNote = sheetDeleted
+      ? `— answer sheet deleted by ${ans.deleted_reason === 'manual' ? 'the assessor' : 'the retention policy'} on ${fmtDate(ans.answer_deleted_at)} —`
+      : (!textAns && !hasRecording && !recordingDeleted
+        ? (ans.source === 'timed_out' ? '— no answer · time expired —' : ans.source === 'skipped' ? '— no answer · question skipped —' : '— no answer —')
+        : '');
     answerBlock = `
-      <blockquote class="answer">${esc(textAns || blankNote)}</blockquote>
+      <blockquote class="answer">${textAns ? esc(textAns) : `<span class="muted">${esc(blankNote)}</span>`}</blockquote>
       ${audioPlayer}
       ${spokenWarning}
-      ${ans.source === 'audio' ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
+      ${ans.source === 'audio' && !sheetDeleted ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
       <details class="fold" style="margin-top:10px"><summary>📋 Scoring rubric (expected evidence)</summary>
         <div class="rubric" style="margin-top:8px">${esc(q.rubric || 'No rubric configured.')}</div></details>
       <div class="row" style="margin-top:12px;align-items:flex-end">
         <label class="f" style="margin:0"><span class="lbl">Your score (0-${esc(q.points)})</span>
-          <input type="number" class="score-input" id="score-${esc(q.id)}" min="0" max="${esc(q.points)}" step="0.5" value="${esc(r?.assessor_score ?? '')}"/></label>
+          <input type="number" class="score-input" id="score-${esc(q.id)}" min="0" max="${esc(q.points)}" step="0.5" value="${esc(r?.assessor_score ?? '')}" ${readonly ? 'disabled' : ''}/></label>
         <label class="f" style="margin:0;flex:1"><span class="lbl">Feedback for the report (internal)</span>
-          <input type="text" id="comment-${esc(q.id)}" value="${esc(r?.assessor_comment || '')}" placeholder="Why this score? Not shown to the candidate."/></label>
+          <input type="text" id="comment-${esc(q.id)}" value="${esc(r?.assessor_comment || '')}" placeholder="Why this score? Not shown to the candidate." ${readonly ? 'disabled' : ''}/></label>
       </div>`;
   }
   return `<div class="q-card">${head}${answerBlock}</div>`;
