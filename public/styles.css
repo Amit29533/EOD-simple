@@ -490,11 +490,18 @@ body.exam-lock #topbar,
 body.exam-lock .skip-link { display: none !important; }
 body.exam-lock { display: block; user-select: none; }
 body.exam-lock .main-col { min-height: 100vh; }
-body.exam-lock .view { max-width: 860px; padding-top: 28px; }
+/* The secure shell owns the full viewport after navigation is hidden. Give
+   scenario text, options and the recording workspace the room that creates,
+   while retaining a bounded canvas on ultrawide displays. */
+body.exam-lock .view {
+  max-width: 1280px;
+  padding: 28px clamp(24px, 3.5vw, 52px) 72px;
+}
 .exam-prompt, .exam-item .q-prompt { user-select: none; -webkit-user-select: none; }
-.exam-hall { animation: riseIn .35s ease; }
+.exam-hall { width: 100%; animation: riseIn .35s ease; }
 .exam-seal { padding: 32px 34px; }
 .exam-seal h1 { margin: 8px 0 10px; }
+.exam-seal > p, .exam-seal .exam-rules { max-width: 92ch; }
 .exam-rules { margin: 16px 0 8px; padding: 0 0 0 18px; color: var(--ink-2); font-size: 13px; line-height: 1.65; }
 .exam-rules li { margin-bottom: 8px; }
 .exam-ack { margin-top: 14px; align-items: flex-start; }
@@ -548,11 +555,18 @@ body.exam-lock .view { max-width: 860px; padding-top: 28px; }
 }
 
 .exam-comp { color: var(--ink-3); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; margin: -6px 0 12px; }
+.exam-item { padding: clamp(22px, 2.5vw, 34px); }
+.exam-item .q-head { gap: 14px; }
+.exam-item .q-prompt {
+  max-width: 82ch;
+  font-size: clamp(15px, 1.25vw, 18px);
+  line-height: 1.55;
+}
 .exam-review { padding: 12px 14px; border-radius: 12px; background: var(--note-bg); border: 1px solid var(--note-line); color: var(--note-ink); }
 .exam-answer textarea { min-height: 180px; user-select: text; }
 .exam-answer.has-audio {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 250px);
   gap: 12px 14px;
   align-items: start;
 }
@@ -1091,6 +1105,7 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
   .mobile-nav-toggle { display: grid; place-items: center; }
   .topbar-right { gap: 9px; }.topbar-role, .topbar-divider { display: none; }.live-status { font-size: 10px; }.topbar-avatar { width: 29px; height: 29px; }
   .view { padding: 24px 18px 52px; }
+  body.exam-lock .view { padding: 24px 18px 52px; }
   .grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-heading { align-items: flex-start; flex-direction: column; margin-bottom: 22px; }
@@ -1133,6 +1148,7 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
   .auth-heading h2 { font-size: 26px; }
   h1 { font-size: 27px; }
   .view { padding: 20px 14px 44px; }
+  body.exam-lock .view { padding: 20px 14px 44px; }
   .grid.cols-4, .grid.cols-3, .grid.cols-2, .f-row, .f-row-3 { grid-template-columns: 1fr; }
   .card, .stat { padding: 18px; border-radius: 14px; margin-bottom: 15px; }
   .card.flat { padding: 13px; }
