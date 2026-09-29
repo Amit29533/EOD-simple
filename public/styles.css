@@ -1913,8 +1913,12 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 .preview-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 
 /* --- Module -> family accordion --- */
+.bank-controls { display: flex; align-items: center; gap: 12px; padding: 11px 14px; margin-bottom: 10px; }
+.bank-search { flex: 1; min-width: 220px; }
+.bank-search input { width: 100%; }
 .module-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
 .module-card { padding: 0; overflow: hidden; }
+.module-card[hidden] { display: none; }
 .module-summary { display: flex; align-items: center; gap: 13px; padding: 14px 17px; cursor: pointer; list-style: none; }
 .module-summary::-webkit-details-marker { display: none; }
 .module-summary::after { content: '⌄'; margin-left: 4px; color: var(--ink-3); font-size: 14px; transition: transform .16s ease; }
@@ -1925,10 +1929,37 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 .module-title small { color: var(--ink-3); font-size: 10.5px; }
 .module-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .family-table { padding: 0 6px 6px; border-top: 1px solid var(--line); }
+.served-toolbar { flex-wrap: wrap; }
+.served-toolbar input[type=search] { flex: 1 1 260px; width: auto; }
+.served-toolbar select { flex: 0 1 210px; width: auto; }
+.served-question-copy { max-width: 560px; line-height: 1.45; }
+.pagination-bar { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 10px 14px 16px; color: var(--ink-3); font-size: 11px; }
+.pagination-bar[hidden] { display: none; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 @media (max-width: 720px) {
+  .bank-controls { align-items: stretch; flex-wrap: wrap; }
+  .bank-search { flex-basis: 100%; }
   .module-summary { flex-wrap: wrap; }
   .module-metrics { width: 100%; justify-content: flex-start; }
+  .served-toolbar input[type=search], .served-toolbar select { flex-basis: 100%; width: 100%; }
+}
+
+/* --- Candidate journey --- */
+.candidate-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+.overview-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 3px 12px rgba(16, 39, 56, .025); }
+.overview-item span { color: var(--ink-3); font-size: 10.5px; font-weight: 700; }
+.overview-item b { color: var(--brand-dark); font-family: var(--display); font-size: 22px; }
+.candidate-assessment-card { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 12px; }
+.candidate-assessment-main { flex: 1; min-width: 0; }
+.candidate-assessment-title { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.candidate-assessment-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 7px; }
+.candidate-assessment-meta > span + span::before { content: '·'; margin-right: 8px; color: var(--ink-3); }
+.candidate-next-step { margin: 10px 0 0; color: var(--ink-2); line-height: 1.5; }
+.candidate-assessment-action { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  .candidate-overview { grid-template-columns: 1fr; gap: 8px; }
+  .candidate-assessment-card { align-items: stretch; flex-direction: column; gap: 14px; }
+  .candidate-assessment-action .btn { width: 100%; justify-content: center; }
 }
 
 /* --- Question authoring: add one, or import a sheet --- */

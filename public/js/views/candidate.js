@@ -16,9 +16,21 @@ export async function portalView(view) {
   view.innerHTML = loading();
   const d = await api('/candidate/assessments');
   const stages = state.meta.pipelineStages;
+  const active = d.assessments.filter((a) => ['assigned', 'in_progress'].includes(a.status));
+  const awaiting = d.assessments.filter((a) => a.status === 'submitted');
+  const completed = d.assessments.filter((a) => ['scored', 'validated'].includes(a.status));
+  const nextMessage = active.length
+    ? `${active.length} assessment${active.length === 1 ? '' : 's'} ready for you`
+    : awaiting.length ? `${awaiting.length} assessment${awaiting.length === 1 ? '' : 's'} under review`
+      : completed.length ? 'Your latest report is ready' : 'No action is needed right now';
   view.innerHTML = `
     <div class="page-heading candidate-heading">
-      <div><h1>${esc(d.candidate.name.split(' ')[0])}</h1><p class="muted">Your assessments and pipeline status.</p></div>
+      <div><div class="eyebrow">My journey</div><h1>Welcome, ${esc(d.candidate.name.split(' ')[0])}</h1><p class="muted">${esc(nextMessage)}.</p></div>
+    </div>
+    <div class="candidate-overview" aria-label="Assessment summary">
+      <div class="overview-item"><span>Ready or in progress</span><b>${active.length}</b></div>
+      <div class="overview-item"><span>Under review</span><b>${awaiting.length}</b></div>
+      <div class="overview-item"><span>Reports ready</span><b>${completed.length}</b></div>
     </div>
     <div class="card journey-card">
       <div class="panel-head"><div><h2>Pipeline</h2></div></div>
@@ -27,21 +39,24 @@ export async function portalView(view) {
     <div class="card assessment-list-card">
       <div class="panel-head"><div><h2>Assessments</h2></div></div>
       ${d.assessments.length ? d.assessments.map((a) => `
-        <div class="q-card row between" style="margin-bottom:12px">
-          <div>
-            <b>${esc(a.role_name)}</b>
-            <div class="small muted" style="margin-top:3px">
-              ${assessmentStatusBadge(state.meta.assessmentStatuses, a.status)}
+        <article class="q-card candidate-assessment-card">
+          <div class="candidate-assessment-main">
+            <div class="candidate-assessment-title"><b>${esc(a.role_name)}</b>${assessmentStatusBadge(state.meta.assessmentStatuses, a.status)}</div>
+            <div class="small muted candidate-assessment-meta">
               ${a.readiness_label ? readinessBadge(a.readiness_key, a.readiness_label) : ''}
-              · ${a.question_count} questions · allocated ${esc(fmtDate(a.created_at))}
+              <span>${a.question_count} questions</span><span>Allocated ${esc(fmtDate(a.created_at))}</span>
             </div>
+            <p class="small candidate-next-step">${a.status === 'assigned' ? 'Review the exam rules and device checks before you begin.'
+              : a.status === 'in_progress' ? 'Your saved exam is waiting. Continue from the next question.'
+                : a.status === 'submitted' ? 'Under assessor review. The report will appear here when scoring is complete.'
+                  : 'Your assessment has been scored. Open the report for results and development guidance.'}</p>
           </div>
-          <div class="row">
+          <div class="candidate-assessment-action">
             ${['assigned', 'in_progress'].includes(a.status) ? `<a class="btn" href="#/assessments/${a.id}/quiz">${a.status === 'in_progress' ? 'Continue secure exam' : 'Enter exam hall'} →</a>` : ''}
-            ${a.status === 'submitted' ? `<span class="chip">Under assessor review — report arrives after scoring</span>` : ''}
+            ${a.status === 'submitted' ? `<span class="chip">No action needed</span>` : ''}
             ${['scored', 'validated'].includes(a.status) ? `<a class="btn" href="#/assessments/${a.id}/report">View report card</a>` : ''}
           </div>
-        </div>`).join('')
+        </article>`).join('')
       : emptyState('No assessments yet', 'Your administrator will allocate one when you are ready.')}
     </div>`;
 }

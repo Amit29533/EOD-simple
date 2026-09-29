@@ -1521,10 +1521,15 @@ export async function modulesView(view) {
       <a class="btn secondary sm" href="#/roles/${esc(inactiveTrack.id)}">Open track</a>
     </div>` : ''}
 
-    <div class="module-list">
-    ${modules.map((m) => {
+    <div class="card flat bank-controls" aria-label="Question bank module controls">
+      <label class="bank-search"><span class="sr-only">Find a module or family</span><input id="mv-module-search" type="search" placeholder="Find a module or family…" autocomplete="off"></label>
+      <span class="toolbar-hint" id="mv-module-count">${modules.length} modules</span>
+      <div class="row"><button class="btn ghost sm" id="mv-expand-all">Expand all</button><button class="btn ghost sm" id="mv-collapse-all">Collapse all</button></div>
+    </div>
+    <div class="module-list" id="mv-module-list">
+    ${modules.map((m, moduleIndex) => {
       const row = planFor.get(m.key);
-      const open = m.technical;
+      const open = moduleIndex === 0;
       return `
       <details class="card module-card" ${open ? 'open' : ''} data-module="${esc(m.key)}">
         <summary class="module-summary">
@@ -1585,27 +1590,42 @@ export async function modulesView(view) {
           <small>The published ${esc(catalogue.role.name)} catalogue carries ${catalogue.catalogue_total} questions — this bank has ${catalogue.bank_total}, so assessments top out below the ${maxAssessmentQuestions()}-question cap.</small></span>
         <button class="btn sm" id="served-sync">Add published questions</button>
       </div>` : ''}
-      <div class="card flat toolbar-card">
-        <div class="toolbar-label"><span class="toolbar-icon">⌘</span><span>Show questions for</span></div>
+      <div class="card flat toolbar-card served-toolbar">
+        <div class="toolbar-label"><span class="toolbar-icon">⌕</span><span>Find questions</span></div>
+        <input id="served-search" type="search" placeholder="Search prompt or competency…" autocomplete="off" aria-label="Search served questions">
         <select id="served-role" aria-label="Filter the served set by role"><option value="">All roles</option>
           ${roles.map((r) => `<option value="${r.id}" ${r.id === roleParam ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
-        <span class="toolbar-hint">${served.length} question${served.length === 1 ? '' : 's'} in this view</span>
+        <select id="served-type" aria-label="Filter by question type"><option value="">All types</option>
+          ${Object.entries(typeLabel).map(([key, label]) => `<option value="${esc(key)}">${esc(label)}</option>`).join('')}</select>
+        <select id="served-status" aria-label="Filter by question status"><option value="">Any status</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+        <span class="toolbar-hint" id="served-result-count"></span>
       </div>
-      <div class="table-card">
-        ${served.length ? dataTable([
-          { label: 'Question', render: (qq) => `<div style="max-width:520px">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name || '')}</div>` },
-          { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>${qq.audio_required ? '<div class="small muted" style="margin-top:4px">🎙 recorded answer required</div>' : ''}` },
-          { label: 'Points', render: (qq) => esc(qq.points) },
-          { label: 'Difficulty', render: (qq) => esc(qq.difficulty || '') },
-          { label: 'Status', render: (qq) => qq.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
-          { label: '', cls: 'actions', render: (qq) => `<button class="btn ghost sm" data-served-edit="${qq.id}">Edit</button><button class="btn ghost sm" style="color:var(--red)" data-served-del="${qq.id}">Delete</button>` },
-        ], served) : emptyState('No questions', roleParam ? 'This role has no questions yet.' : 'Choose a role and add questions.')}
-      </div>
+      <div class="table-card" id="served-results"></div>
+      <div class="pagination-bar" id="served-pagination" hidden></div>
     </div>`;
 
   // Re-render after a write so the counts, chips and readiness badges reflect
   // what was just added rather than going stale until the next navigation.
   const refresh = () => modulesView(view);
+
+  // Keep the catalogue compact. Search includes family names, and bulk
+  // controls make it quick to compare modules without opening every card by
+  // default on a page that can contain dozens of tables.
+  const moduleCards = [...view.querySelectorAll('.module-card')];
+  const moduleSearch = view.querySelector('#mv-module-search');
+  const updateModuleFilter = () => {
+    const term = moduleSearch.value.trim().toLowerCase();
+    let visible = 0;
+    for (const card of moduleCards) {
+      const match = !term || card.textContent.toLowerCase().includes(term);
+      card.hidden = !match;
+      if (match) { visible += 1; if (term) card.open = true; }
+    }
+    view.querySelector('#mv-module-count').textContent = `${visible} of ${moduleCards.length} modules`;
+  };
+  moduleSearch.oninput = updateModuleFilter;
+  view.querySelector('#mv-expand-all').onclick = () => moduleCards.filter((c) => !c.hidden).forEach((c) => { c.open = true; });
+  view.querySelector('#mv-collapse-all').onclick = () => moduleCards.forEach((c) => { c.open = false; });
 
   // Switching the track re-renders with the other bank. The hash carries the
   // role record id (what the Roles screen links with), so the served panel
@@ -1687,17 +1707,58 @@ export async function modulesView(view) {
   };
   const addServed = view.querySelector('#served-add');
   if (addServed) addServed.onclick = () => editServed(null);
-  for (const btn of view.querySelectorAll('[data-served-edit]')) {
-    btn.onclick = () => editServed(served.find((x) => x.id === btn.dataset.servedEdit));
+
+  // The live set can contain hundreds of records. Filter and page it in the
+  // browser so the screen remains useful without extra API traffic.
+  const servedResults = view.querySelector('#served-results');
+  const servedPagination = view.querySelector('#served-pagination');
+  const servedSearch = view.querySelector('#served-search');
+  const servedType = view.querySelector('#served-type');
+  const servedStatus = view.querySelector('#served-status');
+  let servedPage = 1;
+  const pageSize = 25;
+  const renderServed = () => {
+    const term = servedSearch.value.trim().toLowerCase();
+    const type = servedType.value;
+    const status = servedStatus.value;
+    const filtered = served.filter((q) => {
+      const haystack = `${q.prompt || ''} ${q.competency_name || ''}`.toLowerCase();
+      return (!term || haystack.includes(term))
+        && (!type || q.type === type)
+        && (!status || (status === 'active' ? q.active !== false : q.active === false));
+    });
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    servedPage = Math.min(servedPage, pages);
+    const start = (servedPage - 1) * pageSize;
+    const rows = filtered.slice(start, start + pageSize);
+    view.querySelector('#served-result-count').textContent = `${filtered.length} of ${served.length} questions`;
+    servedResults.innerHTML = rows.length ? dataTable([
+      { label: 'Question', render: (qq) => `<div class="served-question-copy">${esc(qq.prompt)}</div><div class="small muted">${esc(qq.competency_name || '')}</div>` },
+      { label: 'Type', render: (qq) => `<span class="chip">${esc(typeLabel[qq.type] || qq.type)}</span>${qq.audio_required ? '<div class="small muted" style="margin-top:4px">🎙 recorded answer required</div>' : ''}` },
+      { label: 'Points', render: (qq) => esc(qq.points) },
+      { label: 'Difficulty', render: (qq) => esc(qq.difficulty || '') },
+      { label: 'Status', render: (qq) => qq.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
+      { label: '', cls: 'actions', render: (qq) => `<button class="btn ghost sm" data-served-edit="${qq.id}">Edit</button><button class="btn ghost sm danger" data-served-del="${qq.id}">Delete</button>` },
+    ], rows) : emptyState('No matching questions', 'Clear a filter or search for a different prompt or competency.');
+    servedPagination.hidden = filtered.length <= pageSize;
+    servedPagination.innerHTML = `<button class="btn ghost sm" id="served-prev" ${servedPage === 1 ? 'disabled' : ''}>← Previous</button><span>Page <b>${servedPage}</b> of ${pages}</span><button class="btn ghost sm" id="served-next" ${servedPage === pages ? 'disabled' : ''}>Next →</button>`;
+    servedPagination.querySelector('#served-prev').onclick = () => { servedPage -= 1; renderServed(); };
+    servedPagination.querySelector('#served-next').onclick = () => { servedPage += 1; renderServed(); };
+  };
+  for (const control of [servedSearch, servedType, servedStatus]) {
+    control.addEventListener(control === servedSearch ? 'input' : 'change', () => { servedPage = 1; renderServed(); });
   }
-  for (const btn of view.querySelectorAll('[data-served-del]')) {
-    btn.onclick = async () => {
-      const yes = await confirmModal('Delete question', 'Delete this question? In-flight assessments keep their snapshot.', 'Delete', true);
-      if (!yes) return;
-      await attempt(() => api(`/admin/questions/${btn.dataset.servedDel}`, { method: 'DELETE' }), { okMessage: 'Question deleted' });
-      refresh();
-    };
-  }
+  servedResults.onclick = async (event) => {
+    const edit = event.target.closest('[data-served-edit]');
+    if (edit) { editServed(served.find((x) => x.id === edit.dataset.servedEdit)); return; }
+    const del = event.target.closest('[data-served-del]');
+    if (!del) return;
+    const yes = await confirmModal('Delete question', 'Delete this question? In-flight assessments keep their snapshot.', 'Delete', true);
+    if (!yes) return;
+    await attempt(() => api(`/admin/questions/${del.dataset.servedDel}`, { method: 'DELETE' }), { okMessage: 'Question deleted' });
+    refresh();
+  };
+  renderServed();
 }
 
 /** The questions inside one family — what a new question would join. */

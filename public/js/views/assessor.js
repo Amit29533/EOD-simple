@@ -17,16 +17,28 @@ export async function workspaceView(view) {
   view.innerHTML = loading();
   const d = await api('/assessor/assessments');
   const pending = d.assessments.filter((a) => a.status === 'submitted');
+  // Put actionable work first while keeping completed reports available.
+  const priority = { submitted: 0, in_progress: 1, assigned: 2, scored: 3, validated: 4 };
+  const assessments = [...d.assessments].sort((a, b) =>
+    (priority[a.status] ?? 9) - (priority[b.status] ?? 9)
+    || String(b.submitted_at || b.created_at || '').localeCompare(String(a.submitted_at || a.created_at || '')));
   view.innerHTML = `
     <div class="page-heading">
       <div><h1>Assessments</h1><p class="muted">Score submitted work. Candidate contact details are not shown.</p></div>
       <div class="heading-actions"><span class="workspace-pill">${d.assessments.length} assigned</span></div>
     </div>
     ${pending.length ? `<div class="card attention-card"><span class="attention-icon">!</span><span><b>${pending.length} assessment${pending.length === 1 ? '' : 's'} awaiting your scoring.</b><small>Open a submitted assessment to complete the review.</small></span></div>` : ''}
-    <div class="card table-card">
-      ${d.assessments.length ? `
+    ${assessments.length ? `<div class="card flat toolbar-card assessor-toolbar">
+      <div class="toolbar-label"><span class="toolbar-icon">⌕</span><span>Find work</span></div>
+      <input id="assessor-search" type="search" placeholder="Search candidate or role…" autocomplete="off" aria-label="Search assessments">
+      <select id="assessor-status" aria-label="Filter assessments by status"><option value="">All statuses</option>
+        ${state.meta.assessmentStatuses.map((s) => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('')}</select>
+      <span class="toolbar-hint" id="assessor-result-count"></span>
+    </div>` : ''}
+    <div class="card table-card" id="assessor-results">
+      ${assessments.length ? `
       <table class="data"><thead><tr><th>Candidate</th><th>Role</th><th>Status</th><th>Submitted</th><th>Outcome</th><th></th></tr></thead><tbody>
-      ${d.assessments.map((a) => `<tr>
+      ${assessments.map((a) => `<tr data-assessment-row data-status="${esc(a.status)}" data-search="${esc(`${a.candidate?.name || ''} ${a.role_name || ''}`.toLowerCase())}">
         <td><b>${esc(a.candidate?.name || '—')}</b><div class="small muted">${esc(a.candidate?.current_title || '')}${a.candidate?.years_experience != null ? ` · ${a.candidate.years_experience} yrs` : ''}</div></td>
         <td>${esc(a.role_name)}</td>
         <td>${assessmentStatusBadge(state.meta.assessmentStatuses, a.status)}</td>
@@ -37,6 +49,27 @@ export async function workspaceView(view) {
       </tr>`).join('')}</tbody></table>`
       : emptyState('No assignments yet', 'Assessments allocated to you will appear here.', '🧭')}
     </div>`;
+
+  const search = view.querySelector('#assessor-search');
+  const status = view.querySelector('#assessor-status');
+  const count = view.querySelector('#assessor-result-count');
+  if (search && status && count) {
+    const rows = [...view.querySelectorAll('[data-assessment-row]')];
+    const applyFilters = () => {
+      const term = search.value.trim().toLowerCase();
+      let visible = 0;
+      for (const row of rows) {
+        const match = (!term || row.dataset.search.includes(term))
+          && (!status.value || row.dataset.status === status.value);
+        row.hidden = !match;
+        if (match) visible += 1;
+      }
+      count.textContent = `${visible} of ${rows.length} assessments`;
+    };
+    search.oninput = applyFilters;
+    status.onchange = applyFilters;
+    applyFilters();
+  }
 }
 
 /* ============================== Assessment (score / report) ============================== */
