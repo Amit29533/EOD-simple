@@ -706,7 +706,7 @@ async function runExamSession(view, id, payload) {
         // wins via the refetch — so only a failed refetch is worth a toast.
         nextBtn.disabled = true;
         const switched = await api(`/candidate/assessments/${id}/phase`, {
-          method: 'POST', body: { phase: 'answer' }, timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
+          method: 'POST', body: { phase: 'answer', question_id: q.id }, timeoutMs: EXAM_REQUEST_TIMEOUT_MS,
         }).catch(() => null);
         try {
           // The transition carries the answer screen; a refetch is only for
@@ -997,7 +997,7 @@ async function runExamSession(view, id, payload) {
             // Automatic, so failures stay silent: a 409 just means the candidate
             // clicked through first (or the server already advanced) — either
             // way the refetch repaints whatever the server says is current.
-            api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer' } })
+            api(`/candidate/assessments/${id}/phase`, { method: 'POST', body: { phase: 'answer', question_id: q.id } })
               .catch(() => null)
               .then(async (switched) => {
                 if (unmounted) return;

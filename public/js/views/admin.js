@@ -840,6 +840,7 @@ export async function rolesView(view) {
         { label: 'Role', render: (r) => `<a href="#/roles/${r.id}"><b>${esc(r.name)}</b></a><div class="small muted">${esc(r.key)} · ${esc(r.technology)}</div>` },
         { label: 'Competencies', render: (r) => esc(r.competency_count) },
         { label: 'Questions', render: (r) => esc(r.question_count) },
+        { label: 'Auto allocation', render: (r) => `${esc(r.default_question_count)} questions` },
         { label: 'Assessments', render: (r) => esc(r.assessment_count) },
         { label: 'Status', render: (r) => r.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
         { label: '', cls: 'actions', render: (r) => `<a class="btn ghost sm" href="#/roles/${r.id}">Configure</a>
@@ -881,6 +882,7 @@ export async function rolesView(view) {
         { name: 'name', label: 'Role name', required: true, placeholder: 'e.g. Resident Solutions Architect (RSA)' },
         { name: 'key', label: 'Key (slug)', required: true, placeholder: 'e.g. databricks-rsa', help: 'Lowercase letters, numbers, dashes.' },
         { name: 'technology', label: 'Technology', required: true, placeholder: 'e.g. Databricks' },
+        { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50, value: 50, help: 'Used when candidate users are created individually or imported by CSV.' },
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
       ],
       onSubmit: (vals) => api('/admin/roles', { method: 'POST', body: vals }),
@@ -907,6 +909,7 @@ export async function roleDetailView(view, { id }) {
         <div class="row">${role.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey')}<button class="btn secondary sm" id="edit-role">Edit</button><button class="btn ghost sm" id="del-role" style="color:var(--red)">Delete</button></div>
       </div>
       ${role.description ? `<p class="small muted" style="margin-top:8px">${esc(role.description)}</p>` : ''}
+      <div class="small" style="margin-top:10px"><b>Default automatic allocation:</b> ${esc(role.default_question_count)} questions</div>
     </div>
     <div class="card">
       <div class="row between">
@@ -970,6 +973,7 @@ export async function roleDetailView(view, { id }) {
       fields: [
         { name: 'name', label: 'Role name', required: true },
         { name: 'technology', label: 'Technology', required: true },
+        { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50, help: 'Used for new candidate-user and CSV auto allocations. Existing assessments keep their saved paper.' },
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
         { name: 'active', label: 'Active', type: 'checkbox' },
       ],
@@ -1257,12 +1261,12 @@ export async function usersView(view) {
       required: values?.role === 'candidate',
       help: values ? 'Candidate portal users must stay linked to exactly one candidate record.' : 'Required only when Role is candidate; ignored for other roles.',
     }]),
-    // New candidate users are auto-allocated the default 50-question
+    // New candidate users are auto-allocated the selected track's default
     // assessment — this is the switch that turns that off for one user.
     // Create-only: editing an account never (re-)allocates.
     ...(!values ? [{
-      name: 'auto_allocate', label: 'Auto-allocate a 50-question assessment', type: 'checkbox', value: true,
-      help: 'Candidate users get their assessment automatically — no manual Allocate step. Ignored for other roles.',
+      name: 'auto_allocate', label: 'Auto-allocate the role’s default assessment', type: 'checkbox', value: true,
+      help: 'The question count comes from the candidate’s role under Roles & frameworks. Ignored for other roles.',
     }, {
       name: 'assessor_id', label: 'Assessor for the auto-allocated assessment', type: 'select',
       options: assessors.map((u) => ({ value: u.id, label: u.name })),
@@ -2242,8 +2246,8 @@ function importCandidatesModal(onDone) {
     </label>
     <label class="import-toggle" id="ic-alloc-row">
       <input type="checkbox" id="ic-alloc" checked />
-      <span><b>Auto-allocate a 50-question assessment</b>
-        <small>Each new portal user gets their assessment automatically — no manual Allocate step per candidate.</small></span>
+      <span><b>Auto-allocate each role’s default assessment</b>
+        <small>Each new portal user gets the question count configured for their target role under Roles & frameworks.</small></span>
     </label>
     <label class="f" id="ic-assessor-row" style="margin:10px 0 0">
       <span class="lbl">Assessor for imported candidates</span>
@@ -2278,7 +2282,7 @@ function importCandidatesModal(onDone) {
       ${r.create_users ? `<p class="small muted" style="margin:8px 0 0">${
         r.auto_allocate
           ? (r.would_auto_allocate
-            ? `↳ <b>${r.would_auto_allocate}</b> assessment${r.would_auto_allocate === 1 ? '' : 's'} will be auto-allocated (50 questions each)${r.auto_skipped ? ` — ${r.auto_skipped} row${r.auto_skipped === 1 ? '' : 's'} skipped (no track or empty bank)` : ''}.`
+            ? `↳ <b>${r.would_auto_allocate}</b> assessment${r.would_auto_allocate === 1 ? '' : 's'} will be auto-allocated using each target role’s configured default${r.auto_skipped ? ` — ${r.auto_skipped} row${r.auto_skipped === 1 ? '' : 's'} skipped (no track or empty bank)` : ''}.`
             : '↳ No assessments can be auto-allocated yet (no track with questions) — allocate manually after importing.')
           : '↳ Automatic allocation is off — allocate manually after importing.'}</p>` : ''}
       ${r.preview.length ? `

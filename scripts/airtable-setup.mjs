@@ -42,7 +42,7 @@ export const SCHEMA = {
   candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }]),
   roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
-                .concat([{ name: 'description', ...long }, { name: 'active', ...chk }]),
+                .concat([{ name: 'description', ...long }, { name: 'default_question_count', ...num }, { name: 'active', ...chk }]),
   competencies: ['role_id', 'key', 'name', 'category', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'enrichment_hint', ...long },
                          { name: 'weight', ...num }, { name: 'target_level', ...num }, { name: 'order', ...num }, { name: 'active', ...chk }]),
@@ -126,7 +126,7 @@ async function main() {
     // keeps its old columns: name the fields that must exist for the current
     // app to write to it.
     console.log('\n[airtable] existing tables were left untouched. If this base was created by an older');
-    console.log('[airtable] run, add any missing columns manually: candidates.assessor_id (text), questions.question_set,');
+    console.log('[airtable] run, add any missing columns manually: roles.default_question_count (number), candidates.assessor_id (text), questions.question_set,');
     console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
     console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
     console.log('[airtable] responses.locked, assessments.retention_json (what the retention cleanup removed),');

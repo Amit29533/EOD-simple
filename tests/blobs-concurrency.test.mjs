@@ -179,6 +179,24 @@ test('a mutation that changes nothing writes nothing, so it cannot conflict', as
   assert.equal(be.stats.writes, writes, 'no blob write for a no-op');
 });
 
+test('a malformed table fails closed and the original blob is never replaced', async () => {
+  const be = blobBackend();
+  be.data.set('sessions', { json: ['not', 'a', 'table'], etag: '"broken"' });
+  const store = await createBlobsStore({ blobsModule: be.module });
+  await assert.rejects(store.list('sessions'), (err) => err.code === 'STORE_CORRUPT' && err.table === 'sessions');
+  await assert.rejects(store.insert('sessions', { token: 'x', user_id: 'u' }), (err) => err.code === 'STORE_CORRUPT');
+  assert.deepEqual(be.table('sessions'), ['not', 'a', 'table'], 'the corrupt bytes remain available for explicit recovery');
+  assert.equal([...be.data.keys()].some((key) => key.startsWith('sessions.corrupt-')), false, 'no unawaited best-effort copy is launched');
+
+  const app = await createApp(store);
+  const res = await app({
+    method: 'GET', path: '/admin/roles', body: {},
+    headers: { authorization: `Bearer ${'a'.repeat(64)}` },
+  });
+  assert.equal(res.status, 503);
+  assert.match(res.body.error, /integrity check/i);
+});
+
 test('degrades to the pre-CAS behaviour when the SDK gives no ETag (local BlobsServer, older SDKs, simple doubles)', async () => {
   // (a) reads without an ETag → unconditional writes, still correct in one process
   const noEtag = blobBackend({ etagsOnRead: false });
@@ -373,6 +391,48 @@ test('a duplicate Lock & continue cannot restart the next question’s clock or 
   assert.equal(after.question_started_at, advanced.question_started_at, 'the new question keeps its original deadline');
   assert.equal(after.integrity.copy, 1);
   assert.equal(after.events.filter((e) => e.event === 'copy').length, 1);
+});
+
+test('an integrity beacon from a stale instance cannot move the exam cursor backwards', async () => {
+  const be = blobBackend({ latency: 2 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  const { role, assessor, cands } = await seedWorld(first);
+  const app1 = await createApp(first);
+  const app2 = await createApp(second);
+  const call = (app, method, path, token, body) => app({ method, path, body, headers: { authorization: `Bearer ${token}` } });
+  const admin = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'admin', password: 'admin-pass-x' } })).body.token;
+  const alloc = await call(app1, 'POST', '/admin/assessments', admin,
+    { candidate_id: cands[0].id, role_id: role.id, assessor_id: assessor.id });
+  const id = alloc.body.id;
+  const token = (await app1({ method: 'POST', path: '/auth/login', body: { username: 'one', password: 'one-pass-x' } })).body.token;
+  const opened = await call(app1, 'GET', `/candidate/assessments/${id}`, token);
+  const firstQuestion = opened.body.current_question.id;
+  const stale = await second.get('assessments', id);
+
+  const advanced = await call(app1, 'POST', `/candidate/assessments/${id}/next`, token,
+    { question_id: firstQuestion, answer: 'b' });
+  assert.equal(advanced.status, 200);
+  assert.equal(advanced.body.index, 1);
+
+  // Instance two began from its Q1 read. Its route-level read is stale, but
+  // the conditional mutation must merge against the current Q2 row.
+  const get = second.get.bind(second);
+  let suppliedStale = false;
+  second.get = (table, recordId) => {
+    if (!suppliedStale && table === 'assessments' && recordId === id) {
+      suppliedStale = true;
+      return Promise.resolve(stale);
+    }
+    return get(table, recordId);
+  };
+  const beacon = await call(app2, 'POST', `/candidate/assessments/${id}/integrity`, token,
+    { event: 'blur', detail: 'late beacon' });
+  assert.equal(beacon.status, 200, JSON.stringify(beacon.body));
+  const after = await first.get('assessments', id);
+  assert.equal(after.quiz_state.index, 1, 'the committed cursor never regresses to Q1');
+  const event = after.quiz_state.events.find((row) => row.detail === 'late beacon');
+  assert.equal(event.question_index, 1, 'the event is attached to the current question at commit time');
 });
 
 test('two instances CAS a draft and a lock for the same question: one locked row, no 409 or late overwrite', async () => {

@@ -114,8 +114,8 @@ python3 tests/features.py     # 216 checks: every feature — CRUD, validation, 
 
 - **Candidate database** — intake fields, pipeline stage, target role, internal notes, timeline. Deletion is admin-password-gated and cascades the linked portal login, its sessions and any open assessments (finalized reports protect the candidate).
 - **Bulk onboarding from Excel** — Admin → *Candidates* (or *Users & access*) → *Import from Excel* takes an `.xlsx` or `.csv` and creates all the candidate records **and**, in the same pass, their linked candidate-role portal logins. Same dry-run-first contract as the question import (ready / rejected / duplicate with reasons), blank usernames derived from email and made collision-free, blank passwords generated and shown once. The commit runs in pages of 100 rows with a progress bar (a portal login costs a password hash, so a 2000-row file is ~45 s of server work — far past a serverless function's timeout as one request); if a page fails, the dialog shows what was imported and re-uploading the same file continues from there.
-- **Role/competency configuration** — roles (tracks), competencies with weights/target levels/enrichment hints, scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
-- **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks. New candidate portal users skip the manual step entirely: each is **auto-allocated a 50-question assessment** on creation (their target track, or the workspace default when none is set; the full bank when it holds fewer than 50), scored by the **assessor set on the candidate record** (the Assessor field of the Add/Edit candidate form, the `Assessor` column of the Excel import, or the import dialog's default selector) — only when none is chosen is the paper left unassigned. Changing a candidate's assessor from Edit moves their open papers too (scored reports keep their scorer), and the import dialog can set one assessor on every candidate it just imported. Single provisioning and bulk Excel onboarding both do this by default — switch it off per user with `auto_allocate: false`.
+- **Role/competency configuration** — roles (tracks), their **default automatic question count**, competencies with weights/target levels/enrichment hints, and scoring framework (readiness bands, level thresholds, gap severity) — all CRUD in the Admin UI.
+- **Assessor allocation** — admin allocates an assessment (role) for a candidate to a specific assessor; reassignment until scoring locks. New candidate portal users skip the manual step entirely: each is auto-allocated the question count configured on its target track under **Roles & frameworks** (or the workspace default track when none is set; the full bank when it is smaller). RSA and AI/BI ship at 50; SAMA ships at 30 and enforces its authored 25 MCQ + 5 open, three-per-module blueprint. The paper is scored by the **assessor set on the candidate record** (the Assessor field of the Add/Edit candidate form, the `Assessor` column of the Excel import, or the import dialog's default selector) — only when none is chosen is the paper left unassigned. Changing a candidate's assessor from Edit moves their open papers too (scored reports keep their scorer), and the import dialog can set one assessor on every candidate it just imported. Single provisioning and bulk Excel onboarding both resolve the setting per role — switch allocation off per user with `auto_allocate: false`.
 - **Configurable assessment length** — at allocation the admin serves either the full question
   bank or **1–50 questions**. The X are apportioned across competencies *in proportion to their
   weight* (largest-remainder, capped per competency), so a shorter sitting still covers every
@@ -316,15 +316,12 @@ closest module, so it stays visible in the same tree without diluting the curate
 families. Optional questions are **never** served while a family can fill its
 module's quota — they are drawn only to cover a shortfall.
 
-> **Not yet wired to allocation.** The 50-question generator currently backs the admin
-> *Preview a test* screen only. Allocating a real assessment
-> (`POST /admin/assessments`) still builds its snapshot from the legacy
-> competency-weighted bank via `core/question-selection.mjs`, so a candidate today sits
-> the **110-question** legacy paper, not the 50-question module paper. Switching the
-> candidate journey over means pointing `buildSnapshot` at `generateTest` and teaching
-> `core/scoring.mjs` to weight by module instead of `competency_id` — the report card
-> still apportions marks per competency, which the fixed per-module structure does not
-> supply. Tracked as the next step rather than silently half-done.
+Automatic onboarding uses the role's configured count. SAMA's shipped 30-question
+default is also wired to its module blueprint through the stable competency keys, so a
+real automatic paper contains 25 MCQs and 5 open questions with three questions from
+each module. If active bank content cannot fill that contract, allocation is skipped
+with an explicit reason instead of issuing a malformed paper. Manual allocation remains
+the general full-bank or 1–50 competency-weighted path.
 
 ### Question order: MCQ and open are interleaved, not shuffled into luck
 

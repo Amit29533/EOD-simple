@@ -6,9 +6,7 @@
   command = "echo 'ECOD: no client build required'"
 
 [build.environment]
-  NODE_VERSION = "20"
-  # Keep the optional Netlify Blobs adapter available when STORAGE=blobs is used.
-  NPM_FLAGS = "--include=optional"
+  NODE_VERSION = "24"
 
 [functions]
   node_bundler = "esbuild"

@@ -5,7 +5,7 @@
   "description": "ECOD - Enterprise Capability on Demand. Config-driven assessment, gap mapping and enterprise-ready talent platform.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24 <25"
   },
   "scripts": {
     "start": "node server.mjs",
@@ -27,8 +27,10 @@
     "test:features": "python3 tests/features.py",
     "test:gauntlet": "python3 tests/final-gauntlet.py"
   },
-  "optionalDependencies": {
-    "@netlify/blobs": "^10.7.12",
+  "dependencies": {
+    "@netlify/blobs": "^10.7.12"
+  },
+  "devDependencies": {
     "jsdom": "^29.1.1"
   }
 }

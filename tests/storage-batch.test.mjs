@@ -269,13 +269,19 @@ test('bulkRemove uses removeMany when present and loops otherwise', async () => 
 
 /* ------------------------------------------------- a failed persist never leaves phantom rows */
 
-test('json-file: a mutation whose persist fails is rolled back in memory, not served until restart', async () => {
+const permissionTestSkip = process.platform === 'win32'
+  ? 'Windows chmod does not remove directory write permission'
+  : typeof process.getuid === 'function' && process.getuid() === 0
+    ? 'root ignores directory modes'
+    : false;
+
+test('json-file: a mutation whose persist fails is rolled back in memory, not served until restart',
+  { skip: permissionTestSkip }, async () => {
   // The table used to be edited first and persisted second. When the write
   // threw (disk full, read-only volume, EACCES) the caller got the error but
   // the process kept serving the un-persisted change — an insert that never
   // reached disk was listed, an update read back as applied, a delete read as
   // gone — until the next restart quietly reverted all of it.
-  if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root ignores directory modes
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecod-persist-fail-'));
   const file = path.join(dir, 'db.json');
   const store = createJsonStore(file);
@@ -302,7 +308,7 @@ test('json-file: a mutation whose persist fails is rolled back in memory, not se
   await store.update('users', 'u1', { n: 5 });
   const reopened = createJsonStore(file);
   assert.deepEqual((await reopened.list('users')).map((r) => [r.id, r.n]).sort(), [['u1', 5], ['u2', 2]]);
-});
+  });
 
 test('json-file: a second process\'s write is picked up, never overwritten by this one\'s next persist', async () => {
   // The store keeps the whole database in memory and rewrites the file on

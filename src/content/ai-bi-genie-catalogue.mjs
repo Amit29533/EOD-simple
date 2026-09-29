@@ -16,6 +16,7 @@ import { MODULES, QUESTIONS } from './ai-bi-genie-question-bank.mjs';
 
 export const AIBI_ROLE = {
   key: 'databricks-ai-bi-genie',
+  default_question_count: 50,
   name: 'Senior Databricks AI/BI & Genie Consultant',
   technology: 'Databricks',
   description:

@@ -125,6 +125,14 @@ keep the legacy grouping — re-ordering a paper someone is halfway through woul
 questions out from under their cursor. `GET /admin/roles/:id/question-plan?limit=X`
 runs the same quota code so the admin UI previews the split that allocation will use.
 
+Automatic onboarding adds one policy layer before the snapshot is frozen. Each role
+stores `default_question_count` (1–50); older rows are migration-safe by stable key:
+RSA and AI/BI resolve to 50 and SAMA resolves to 30. Single candidate-user creation and
+CSV import both call the same allocator, so a mixed-role spreadsheet resolves the count
+row by row. At SAMA's 30-question setting, selection also enforces the published module
+contract: 25 objective and 5 open questions, three per competency/module. A bank that
+cannot fill every blueprint seat is refused rather than silently changing the paper.
+
 The effective ceiling is always `min(cap, active bank size)`: a 21-question bank can
 never serve a 50-question assessment. Because a workspace can lag the published
 catalogue (an older seed, or a deployment with no CLI), the published bank is also

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createAirtableStore, AIRTABLE_TEXT_CELL_LIMIT } from '../src/storage/airtable.mjs';
 import { readRetentionSettings, saveRetentionSettings } from '../src/api/retention-service.mjs';
 import { TABLES, overflowColumns } from '../src/storage/schema.mjs';
@@ -277,7 +278,7 @@ test('airtable adapter: every provisioned table carries the columns the adapter 
       else if (entry.name.endsWith('.mjs')) sources.push(fs.readFileSync(full, 'utf8'));
     }
   };
-  walk(new URL('../src', import.meta.url).pathname);
+  walk(fileURLToPath(new URL('../src', import.meta.url)));
   const text = sources.join('\n');
   const updated = (table) => new RegExp(`(?:store\.)?(?:update|updateMany|bulkUpdate)\\(\\s*(?:store,)?\\s*'${table}'|updateMany\\(\\s*'${table}'`).test(text)
     || new RegExp(`SETTINGS_TABLE`).test(text) && table === 'settings';

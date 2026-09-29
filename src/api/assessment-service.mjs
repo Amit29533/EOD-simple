@@ -1,6 +1,7 @@
 import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS, MAX_ASSESSMENT_QUESTIONS } from '../core/constants.mjs';
 import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
-import { selectQuestions, dedupeQuestions } from '../core/question-selection.mjs';
+import { selectQuestions, selectQuestionsByCompetencyQuota, dedupeQuestions } from '../core/question-selection.mjs';
+import { automaticQuestionCount, automaticAllocationBlueprint } from '../core/allocation-policy.mjs';
 import { sortedQuestions } from './quiz-session.mjs';
 import { applySpokenContract } from './catalogue-service.mjs';
 import { bulkUpdate } from './helpers.mjs';
@@ -74,7 +75,7 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
  * cached copy, so a 2000-row onboarding does not re-read the bank 2000 times.
  * Both paths freeze identical papers because they share this function.
  */
-export function snapshotFromBank(bank, questionLimit = null) {
+export function snapshotFromBank(bank, questionLimit = null, { blueprint = null } = {}) {
   // The HTTP handler validates this input, but keep the service boundary safe
   // for other callers too. A direct snapshot build can never freeze more than
   // the supported capped-allocation size into an assessment.
@@ -82,7 +83,14 @@ export function snapshotFromBank(bank, questionLimit = null) {
   const normalizedLimit = Number.isInteger(requested) && requested > 0
     ? Math.min(requested, MAX_ASSESSMENT_QUESTIONS)
     : null;
-  const served = selectQuestions(bank.questions, bank.competencies, normalizedLimit, {
+  const planned = blueprint
+    ? selectQuestionsByCompetencyQuota(bank.questions, bank.competencies, blueprint)
+    : null;
+  // A published blueprint is a contract, not a preference. If an admin has
+  // deactivated too many questions in one SAMA module, do not silently issue
+  // a 30-question paper with the wrong objective/open composition.
+  if (blueprint && !planned) return null;
+  const served = planned || selectQuestions(bank.questions, bank.competencies, normalizedLimit, {
     randomize: normalizedLimit !== null && normalizedLimit < bank.questions.length,
   });
   return JSON.parse(JSON.stringify({
@@ -153,6 +161,14 @@ export function autoQuestionLimit(bankTotal, questionCount = MAX_ASSESSMENT_QUES
   return n < bankTotal ? n : null;
 }
 
+/** Freeze an automatic paper using the role setting and any published shape. */
+export function automaticSnapshotFromBank(bank, questionCount = null) {
+  const count = automaticQuestionCount(bank.role, questionCount);
+  const limit = autoQuestionLimit(bank.questions.length, count);
+  const blueprint = automaticAllocationBlueprint(bank.role, count);
+  return snapshotFromBank(bank, limit, { blueprint });
+}
+
 /**
  * Which track an automatic allocation serves: an explicit role id first, then
  * the candidate's own target track, then the workspace default — the first
@@ -196,8 +212,8 @@ export async function resolveAssessorId(store, assessorId = null) {
 /**
  * Allocate the default assessment for a freshly provisioned candidate user.
  *
- * Every user created with the candidate role gets a 50-question assessment
- * (or the track's full bank when it holds fewer than 50) without an admin
+ * Every user created with the candidate role gets that track's configured
+ * default assessment (or its full bank when smaller) without an admin
  * having to open the Allocate dialog per candidate. The assessor is the one
  * passed in (`assessorId`), else the candidate record's default
  * `assessor_id` (set on the Add/Edit candidate form or by the spreadsheet's
@@ -210,7 +226,7 @@ export async function resolveAssessorId(store, assessorId = null) {
  * open assessment already exists for that candidate and track).
  */
 export async function autoAllocateAssessment(store, candidate, {
-  actor = null, roleId = null, assessorId = null, questionCount = MAX_ASSESSMENT_QUESTIONS,
+  actor = null, roleId = null, assessorId = null, questionCount = null,
   auditFn = null,
 } = {}) {
   const fail = (reason, extra = {}) => ({ allocated: false, reason, ...extra });
@@ -233,9 +249,9 @@ export async function autoAllocateAssessment(store, candidate, {
     if (!bank?.questions.length) {
       return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
     }
-    const snapshot = snapshotFromBank(bank, autoQuestionLimit(bank.questions.length, questionCount));
-    if (!snapshot.questions.length) {
-      return fail(`“${role.name}” has no active questions yet — add questions, then allocate manually.`, { role });
+    const snapshot = automaticSnapshotFromBank(bank, questionCount);
+    if (!snapshot?.questions.length) {
+      return fail(`“${role.name}” cannot fill its configured automatic-allocation blueprint with the active questions.`, { role });
     }
 
     const rec = await store.insert('assessments', {
@@ -272,7 +288,7 @@ export async function autoAllocateAssessment(store, candidate, {
  * by index: `{ ok, role, snapshot, question_count }` or `{ ok: false, reason }`.
  * Track banks are loaded once and shared across every row on that track.
  */
-export async function planBulkAutoAllocation(store, accepted = [], { roles = [], questionCount = MAX_ASSESSMENT_QUESTIONS } = {}) {
+export async function planBulkAutoAllocation(store, accepted = [], { roles = [], questionCount = null } = {}) {
   const byId = new Map((roles || []).map((r) => [r.id, r]));
   const fallback = [...(roles || [])]
     .filter((r) => r.active !== false)
@@ -302,9 +318,9 @@ export async function planBulkAutoAllocation(store, accepted = [], { roles = [],
       plans.push({ ok: false, role, reason: `“${role.name}” has no active questions yet.` });
       continue;
     }
-    const snapshot = snapshotFromBank(bank, autoQuestionLimit(bank.questions.length, questionCount));
-    if (!snapshot.questions.length) {
-      plans.push({ ok: false, role, reason: `“${role.name}” has no active questions yet.` });
+    const snapshot = automaticSnapshotFromBank(bank, questionCount);
+    if (!snapshot?.questions.length) {
+      plans.push({ ok: false, role, reason: `“${role.name}” cannot fill its configured automatic-allocation blueprint with the active questions.` });
       continue;
     }
     plans.push({ ok: true, role, snapshot, question_count: snapshot.questions.length });

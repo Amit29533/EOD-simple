@@ -13,6 +13,7 @@
 
 export const RSA_ROLE = {
   key: 'databricks-rsa',
+  default_question_count: 50,
   name: 'Resident Solutions Architect (RSA)',
   technology: 'Databricks',
   description:

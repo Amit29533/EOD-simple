@@ -17,6 +17,7 @@ import { MODULES, QUESTIONS } from './sama-question-bank.mjs';
 
 export const SAMA_ROLE = {
   key: 'technology-risk-sama',
+  default_question_count: 30,
   name: 'Technology Risk Consultant - SAMA',
   technology: 'Technology Risk',
   description:

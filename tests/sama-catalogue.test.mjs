@@ -14,6 +14,7 @@ import { MODULES as SAMA_MODULES, QUESTIONS as SAMA_BANK } from '../src/content/
 import { PUBLISHED_CATALOGUES, catalogueForRoleKey, installCatalogue } from '../src/api/catalogue-service.mjs';
 import { sortedQuestions } from '../src/api/quiz-session.mjs';
 import { promptKey } from '../src/core/prompt-key.mjs';
+import { maxRunLength } from '../src/core/paper-order.mjs';
 
 /**
  * The published Technology Risk Consultant - SAMA catalogue: the same
@@ -229,14 +230,19 @@ test('a 50-question SAMA allocation covers every module competency', async () =>
   assert.ok(snap.questions.every((q) => q.pin_first !== true));
 
   // No prompt is asked twice in one paper, and the paper is position-stamped
-  // and interleaved: no two open questions back to back.
+  // and interleaved with the shortest runs the randomly selected mix permits.
+  // A legacy/custom 50-question sample does not prescribe an objective/open
+  // quota and can randomly contain more opens than objective questions; in
+  // that case two adjacent opens are mathematically unavoidable.
   const prompts = snap.questions.map((q) => q.prompt);
   assert.equal(new Set(prompts).size, prompts.length);
   const ordered = sortedQuestions(snap);
   assert.ok(ordered.every((q) => Number.isInteger(q.position)));
-  for (let i = 0; i < ordered.length - 1; i += 1) {
-    assert.ok(!(ordered[i].type === 'text' && ordered[i + 1].type === 'text'), `no adjacent open questions at ${i}`);
-  }
+  const types = ordered.map((q) => q.type === 'text' ? 'open' : 'objective');
+  const openCount = types.filter((type) => type === 'open').length;
+  const objectiveCount = types.length - openCount;
+  const optimalLongestRun = Math.ceil(Math.max(openCount, objectiveCount) / (Math.min(openCount, objectiveCount) + 1));
+  assert.equal(maxRunLength(types), optimalLongestRun);
 });
 
 test('SAMA end to end: allocate → candidate sits the timed exam → assessor scores → report', async () => {

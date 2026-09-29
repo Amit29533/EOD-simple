@@ -327,26 +327,32 @@ export function candidateHandlers(route) {
     if (!a) return notFound('Assessment not found.');
     const snap = a.snapshot_json;
     const questions = sortedQuestions(snap);
-    const patch = {};
-    if (a.status === 'assigned') {
-      patch.status = 'in_progress';
-      patch.started_at = new Date().toISOString();
-      a.status = 'in_progress';
-      a.started_at = patch.started_at;
-    }
-    const quiz = ensureQuizState(a, questions);
-    // Persist the state whenever ensureQuizState had to create or heal it. A
-    // legacy/corrupt state whose clock was backfilled used to be returned but
-    // never written, so every reload minted a fresh `question_started_at` and
-    // the server-side budget for that question could never run out.
-    if (!a.quiz_state || quiz.question_started_at !== a.quiz_state.question_started_at) patch.quiz_state = quiz;
-    // A row allocated before the listing facts existed gains them on its
-    // first open (this write also moves its inline paper out of the table).
-    if (a.role_name === undefined || a.total_points === undefined) Object.assign(patch, paperSummary(snap));
-    if (Object.keys(patch).length) await store.update('assessments', a.id, patch);
+    // Decide from the row that is current at write time. On Netlify another
+    // function can advance this paper after `ownAssessment` reads it; applying
+    // the patch computed from `a` would put the old cursor back.
+    const opened = await changeAssessment(store, a.id, (current) => {
+      if (!current) return undefined;
+      const patch = {};
+      const candidate = { ...current };
+      if (current.status === 'assigned') {
+        patch.status = 'in_progress';
+        patch.started_at = new Date().toISOString();
+        Object.assign(candidate, patch);
+      }
+      const currentQuiz = ensureQuizState(candidate, questions);
+      // Persist the state whenever ensureQuizState had to create or heal it.
+      if (!current.quiz_state || currentQuiz.question_started_at !== current.quiz_state.question_started_at)
+        patch.quiz_state = currentQuiz;
+      // A row allocated before the listing facts existed gains them on open.
+      if (current.role_name === undefined || current.total_points === undefined) Object.assign(patch, paperSummary(snap));
+      return Object.keys(patch).length ? patch : undefined;
+    });
+    if (!opened.row) return notFound('Assessment not found.');
+    const current = { ...a, ...opened.row, snapshot_json: snap };
+    const quiz = ensureQuizState(current, questions);
 
     const responses = await store.list('responses', { assessment_id: a.id });
-    return ok(examScreen(a, questions, quiz, responses));
+    return ok(examScreen(current, questions, quiz, responses));
   }));
 
   route('PUT', '/candidate/assessments/:id/answers', R, locked(async ({ store, auth, params, body }) => {
@@ -441,19 +447,29 @@ export function candidateHandlers(route) {
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
     const questions = sortedQuestions(a.snapshot_json);
-    const base = ensureQuizState(a, questions);
-    const q = questions[base.index];
     const detail = typeof body?.detail === 'string'
       ? body.detail.slice(0, 500)
       : body?.detail && typeof body.detail === 'object'
         ? JSON.stringify(body.detail).slice(0, 500)
         : '';
-    const quiz = integrityPatch(base, eventName, detail, {
-      question_index: base.index,
-      question_id: q?.id || '',
-      question_prompt: q?.prompt || '',
+    // Merge the event into the latest state inside the storage CAS. A beacon
+    // that started on Q1 must never overwrite a /next that already moved the
+    // paper to Q2; it is attributed to whichever question is current when it
+    // commits.
+    const changed = await changeAssessment(store, a.id, (current) => {
+      if (!current || !['assigned', 'in_progress'].includes(current.status)) return undefined;
+      const base = ensureQuizState(current, questions);
+      const q = questions[base.index];
+      return { quiz_state: integrityPatch(base, eventName, detail, {
+        question_index: base.index,
+        question_id: q?.id || '',
+        question_prompt: q?.prompt || '',
+      }) };
     });
-    await store.update('assessments', a.id, { quiz_state: quiz });
+    if (!changed.row) return notFound('Assessment not found.');
+    if (!['assigned', 'in_progress'].includes(changed.row.status)) return conflict('This assessment is no longer in progress.');
+    const quiz = ensureQuizState(changed.row, questions);
+    const q = questions[quiz.index];
     // The exam's own trail keeps every counter and the last MAX_INTEGRITY_EVENTS
     // events; the audit log mirrors those events one row each. That mirror is
     // capped at the same ring size per assessment: the audit table rotates at
@@ -471,39 +487,52 @@ export function candidateHandlers(route) {
       `integrity_${event.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`,
       'assessments',
       a.id,
-      `"${candidate?.name || 'Candidate'}" · ${event}${detail ? ` — ${detail}` : ''} · Q${base.index + 1}`,
-      { event, detail, question_index: base.index, question_id: q?.id || '', question_prompt: q?.prompt || '' },
+      `"${candidate?.name || 'Candidate'}" · ${event}${detail ? ` — ${detail}` : ''} · Q${quiz.index + 1}`,
+      { event, detail, question_index: quiz.index, question_id: q?.id || '', question_prompt: q?.prompt || '' },
     );
     return ok({ integrity: quiz.integrity, events: quiz.events });
   }));
 
   route('POST', '/candidate/assessments/:id/phase', R, locked(async ({ store, auth, params, body }) => {
+    if (body?.phase !== 'answer') return bad('phase must be "answer".');
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status)) return conflict('This assessment is no longer in progress.');
     const questions = sortedQuestions(a.snapshot_json);
-    const quiz = ensureQuizState(a, questions);
-    const q = questions[quiz.index];
-    if (!q || !isOpenQuestion(q)) return unprocessable('This question has no review phase.');
-    if (body?.phase !== 'answer') return bad('phase must be "answer".');
-    if ((quiz.phase || 'answer') !== 'review')
+    const first = ensureQuizState(a, questions);
+    const expectedQuestionId = typeof body?.question_id === 'string' && body.question_id
+      ? body.question_id : questions[first.index]?.id;
+    let outcome = 'unchanged';
+    const transitioned = await changeAssessment(store, a.id, (current) => {
+      if (!current) { outcome = 'missing'; return undefined; }
+      if (!['assigned', 'in_progress'].includes(current.status)) { outcome = 'closed'; return undefined; }
+      const quiz = ensureQuizState(current, questions);
+      const q = questions[quiz.index];
+      if (!q || q.id !== expectedQuestionId) { outcome = 'moved'; return undefined; }
+      if (!isOpenQuestion(q)) { outcome = 'not-open'; return undefined; }
+      if ((quiz.phase || 'answer') !== 'review') { outcome = 'already-answer'; return undefined; }
+      // Re-evaluate expiry on every CAS retry, then start this question's one
+      // answer clock exactly once.
+      let base = quiz;
+      if (remainingTimeMs(q, quiz, Date.now()) < -EXAM_GRACE_MS) {
+        base = integrityPatch(
+          base,
+          'time_expired',
+          `Q${quiz.index + 1} review window expired before the candidate started answering.`,
+          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
+        );
+      }
+      outcome = 'changed';
+      return { quiz_state: { ...base, phase: 'answer', question_started_at: new Date().toISOString() } };
+    });
+    if (!transitioned.row || outcome === 'missing') return notFound('Assessment not found.');
+    if (outcome === 'closed') return conflict('This assessment is no longer in progress.');
+    if (outcome === 'moved') return conflict('The current question changed. Refresh the assessment and try again.');
+    if (outcome === 'not-open') return unprocessable('This question has no review phase.');
+    if (outcome === 'already-answer')
       return conflict('The answer phase for this question has already started; its timer cannot be reset.');
-    // The transition itself grants a fresh answer budget, so a candidate who
-    // sleeps through review (a backgrounded tab, a dead network) must not get
-    // that window silently: past the same grace the /next path allows, the
-    // overrun is recorded in the integrity trail — mirroring the automatic
-    // review-expiry advance, which logs before transitioning.
-    let base = quiz;
-    if (remainingTimeMs(q, quiz, Date.now()) < -EXAM_GRACE_MS) {
-      base = integrityPatch(
-        base,
-        'time_expired',
-        `Q${quiz.index + 1} review window expired before the candidate started answering.`,
-        { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-      );
-    }
-    const next = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
-    await store.update('assessments', a.id, { quiz_state: next });
+    const next = ensureQuizState(transitioned.row, questions);
+    const q = questions[next.index];
     // The answer screen rides along, as it does with /next (see examScreen),
     // so the hall paints it without a second round trip.
     const responses = await store.list('responses', { assessment_id: a.id });
@@ -535,20 +564,33 @@ export function candidateHandlers(route) {
     const timeExpired = raw <= 0;
     const hardExpired = raw < -EXAM_GRACE_MS;
 
-    let base = quiz;
-
     // Review timer expired: auto-advance to answer phase (soft expiry returns phase_advanced)
     if (isOpenQuestion(q) && (quiz.phase || 'answer') === 'review' && timeExpired) {
-      if (hardExpired) {
-        base = integrityPatch(
-          base,
-          'time_expired',
-          `Q${quiz.index + 1} review expired - auto-advanced to answer.`,
-          { question_index: quiz.index, question_id: q.id, question_prompt: q.prompt },
-        );
+      const phased = await changeAssessment(store, a.id, (current) => {
+        if (!current || !['assigned', 'in_progress'].includes(current.status)) return undefined;
+        const latest = ensureQuizState(current, questions);
+        const latestQ = questions[latest.index];
+        // A delayed timer request for Q1 must not switch Q2 to its answer
+        // phase or restart Q2's clock after another instance advanced first.
+        if (latest.index !== quiz.index || latestQ?.id !== q.id
+          || (latest.phase || 'answer') !== 'review') return undefined;
+        let state = latest;
+        if (remainingTimeMs(latestQ, latest, Date.now()) < -EXAM_GRACE_MS) {
+          state = integrityPatch(
+            state,
+            'time_expired',
+            `Q${latest.index + 1} review expired - auto-advanced to answer.`,
+            { question_index: latest.index, question_id: latestQ.id, question_prompt: latestQ.prompt },
+          );
+        }
+        return { quiz_state: { ...state, phase: 'answer', question_started_at: new Date().toISOString() } };
+      });
+      if (!phased.row) return notFound('Assessment not found.');
+      if (!phased.changed) {
+        const latest = ensureQuizState(phased.row, questions);
+        return ok({ complete: latest.index >= questions.length, index: latest.index,
+          total: questions.length, duplicate: true });
       }
-      const nextQuiz = { ...base, phase: 'answer', question_started_at: new Date().toISOString() };
-      await store.update('assessments', a.id, { quiz_state: nextQuiz });
       return ok({
         complete: false,
         index: quiz.index,

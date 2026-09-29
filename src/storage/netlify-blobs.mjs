@@ -108,21 +108,20 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
    * scalar someone pasted into the Netlify UI — is not a table: inserting into
    * an array "succeeds" and the row vanishes on serialisation (string keys are
    * dropped), and a scalar throws on every write. Mirror the json-file
-   * adapter: keep the foreign value under a `.corrupt-*` key and start the
-   * table empty, loudly.
+   * adapter used to start the table empty after launching an unawaited backup.
+   * The next successful mutation then replaced the corrupt blob with a table
+   * containing only the new row. Fail closed instead: the original blob stays
+   * untouched for an explicit recovery, and no request can turn corruption
+   * into silent data loss.
    */
-  const corruptSaved = new Set();
   const asTable = (t, value) => {
     if (value === null || value === undefined) return {};
     if (typeof value === 'object' && !Array.isArray(value)) return value;
     if (Array.isArray(value) && !value.length) return {};
-    if (!corruptSaved.has(t)) {
-      corruptSaved.add(t);
-      const backup = `${t}.corrupt-${Date.now()}`;
-      console.error(`[storage] blob "${t}" is not a table object (${Array.isArray(value) ? 'array' : typeof value}); keeping a copy as "${backup}" and starting empty`);
-      store.setJSON(backup, value).catch(() => {});
-    }
-    return {};
+    const err = new Error(`Blob table "${t}" is corrupt: expected an id-keyed object, received ${Array.isArray(value) ? 'an array' : typeof value}.`);
+    err.code = 'STORE_CORRUPT';
+    err.table = t;
+    throw err;
   };
   const readTable = async (t) => {
     if (UNCACHED.has(t)) return readFresh(t, { strong: true });

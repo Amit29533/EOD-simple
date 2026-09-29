@@ -89,6 +89,13 @@ export async function createApp(store) {
         console.warn(`[api] ${method} ${path}: ${err.message}`);
         return { status: 503, body: { error: 'The data store is being updated by another process. Please try again in a moment.' } };
       }
+      // A malformed persisted table is an operational incident. Refuse every
+      // read and mutation without exposing its contents or replacing it with
+      // an empty table; an operator can then recover the original blob.
+      if (err?.code === 'STORE_CORRUPT') {
+        console.error(`[api] ${method} ${path}: ${err.message}`);
+        return { status: 503, body: { error: 'The data store failed an integrity check. Please contact the administrator.' } };
+      }
       // Never leak internal details to client
       console.error(`[api] ${method} ${path} failed:`, err.message, err.stack?.slice(0, 500));
       return { status: 500, body: { error: 'Internal error. Please try again.' } };

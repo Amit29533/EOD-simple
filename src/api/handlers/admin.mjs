@@ -11,6 +11,7 @@ import {
 } from '../../core/constants.mjs';
 import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
+import { defaultQuestionCountForRole } from '../../core/allocation-policy.mjs';
 import {
   buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
   allocationLockKey, resolveAssessorId,
@@ -458,7 +459,7 @@ export function adminHandlers(route) {
       existingUsernames: existingUsers.map((u) => u.username),
     });
 
-    // Bulk imports auto-allocate the same default 50-question assessment each
+    // Bulk imports auto-allocate the same per-role default assessment each
     // single candidate user gets — the whole point is that onboarding 2000
     // candidates must not need 2000 manual Allocate clicks. The plan is built
     // before anything is written, so the dry run previews exactly what the
@@ -493,7 +494,7 @@ export function adminHandlers(route) {
     // run plans the whole file, which is what its preview reports).
     const plans = autoAllocate && windowAccepted.length
       ? await planBulkAutoAllocation(store, windowAccepted, {
-        roles, questionCount: body.question_count ?? MAX_ASSESSMENT_QUESTIONS,
+        roles, questionCount: body.question_count ?? null,
       })
       : [];
     const plannedCount = plans.filter((p) => p.ok).length;
@@ -920,7 +921,7 @@ export function adminHandlers(route) {
     });
     await audit(store, auth.user, 'user_created', 'users', rec.id, `User "${username}" (${body.role}) created`);
 
-    // Every candidate-role user is auto-allocated the default 50-question
+    // Every candidate-role user is auto-allocated the configured default
     // assessment for their track, so onboarding never needs a manual Allocate
     // step per candidate. Best-effort: a skip (no track, empty bank, or an
     // open assessment already on that track) is reported in the response, and
@@ -941,7 +942,7 @@ export function adminHandlers(route) {
             actor: auth.user,
             roleId: body.role_id || null,
             assessorId: body.assessor_id || null,
-            questionCount: body.question_count ?? MAX_ASSESSMENT_QUESTIONS,
+            questionCount: body.question_count ?? null,
             auditFn: (action, entity, entity_id, message) => audit(store, auth.user, action, entity, entity_id, message),
           });
           auto_allocation = result.allocated
@@ -1036,6 +1037,7 @@ export function adminHandlers(route) {
     return ok({
       roles: roles.map((r) => ({
         ...r,
+        default_question_count: defaultQuestionCountForRole(r),
         competency_count: comps.filter((c) => c.role_id === r.id).length,
         question_count: questions.filter((q) => q.role_id === r.id).length,
         assessment_count: assessments.filter((a) => a.role_id === r.id).length,
@@ -1048,6 +1050,8 @@ export function adminHandlers(route) {
     if (miss.length) return bad(`Missing: ${miss.join(', ')}`);
     const structured = textField(body, ['name', 'technology', 'description']);
     if (structured) return bad(`Role ${structured} must be plain text.`);
+    const defaultCountProblem = questionCountError(body.default_question_count);
+    if (defaultCountProblem) return bad(defaultCountProblem.replace('Number of questions', 'Default allocation'));
     const key = str(body.key, 60).toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(key)) return bad('Key must be a slug like databricks-rsa.');
     // The uniqueness check and the insert are one step per key (shared with
@@ -1056,7 +1060,10 @@ export function adminHandlers(route) {
       if ((await store.list('roles', { key })).length) return conflict('A role with this key already exists.');
       const rec = await store.insert('roles', {
         key, name: str(body.name, 120), technology: str(body.technology, 120),
-        description: str(body.description, 2000), active: true,
+        description: str(body.description, 2000),
+        default_question_count: body.default_question_count === undefined || body.default_question_count === null || body.default_question_count === ''
+          ? MAX_ASSESSMENT_QUESTIONS : Number(body.default_question_count),
+        active: true,
       });
       await store.insert('frameworks', {
         role_id: rec.id, name: 'ECOD Readiness Framework v1', config: DEFAULT_FRAMEWORK_CONFIG, active: true,
@@ -1071,11 +1078,14 @@ export function adminHandlers(route) {
     if (!r) return notFound('Role not found.');
     const structured = textField(body, ['name', 'technology', 'description']);
     if (structured) return bad(`Role ${structured} must be plain text.`);
+    const defaultCountProblem = questionCountError(body.default_question_count);
+    if (defaultCountProblem) return bad(defaultCountProblem.replace('Number of questions', 'Default allocation'));
     // Creation requires a name; an edit must not be able to blank it (the role
     // then renders as an unnamed track everywhere it is listed).
     if (body.name !== undefined && !str(body.name)) return bad('Role name is required.');
     const patch = {};
     for (const f of ['name', 'technology', 'description']) if (body[f] !== undefined) patch[f] = str(body[f], f === 'description' ? 2000 : 120);
+    if (body.default_question_count !== undefined && body.default_question_count !== null && body.default_question_count !== '') patch.default_question_count = Number(body.default_question_count);
     if (body.active !== undefined) patch.active = bool(body.active);
     const updated = await store.update('roles', params.id, patch);
     await audit(store, auth.user, 'role_updated', 'roles', params.id, `Role "${updated.name}" updated`);
@@ -1111,7 +1121,7 @@ export function adminHandlers(route) {
     ]);
     comps.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     questions.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    return ok({ role, competencies: comps, questions, framework: frameworks.find((f) => f.active !== false) || null });
+    return ok({ role: { ...role, default_question_count: defaultQuestionCountForRole(role) }, competencies: comps, questions, framework: frameworks.find((f) => f.active !== false) || null });
   });
 
   // ------------------------------------------------ competencies

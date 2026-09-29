@@ -244,6 +244,31 @@ export function dedupeQuestions(questions = []) {
   return uniqueBy(questions);
 }
 
+/**
+ * Select an exact objective/open quota for each competency in a published
+ * blueprint. Returns null when the active served bank cannot fill every seat,
+ * allowing the automatic allocator to refuse a malformed paper. The returned
+ * paper uses the same ordering and immutable position contract as every other
+ * allocation.
+ */
+export function selectQuestionsByCompetencyQuota(
+  questions = [], competencies = [], quotas = [], { rng = Math.random } = {},
+) {
+  const pool = uniqueBy(questions);
+  const competencyByKey = new Map(competencies.map((c) => [c.key, c]));
+  const selected = [];
+  for (const quota of quotas) {
+    const competency = competencyByKey.get(quota.competency_key);
+    if (!competency) return null;
+    const rows = pool.filter((q) => q.competency_id === competency.id);
+    const objective = rows.filter((q) => !isOpenQuestion(q));
+    const open = rows.filter(isOpenQuestion);
+    if (objective.length < quota.objective || open.length < quota.open) return null;
+    selected.push(...sample(objective, quota.objective, rng), ...sample(open, quota.open, rng));
+  }
+  return arrange(selected, { shuffle: true, rng });
+}
+
 export function selectQuestions(questions = [], competencies = [], limit = null, { randomize = false, rng = Math.random, shuffle = true } = {}) {
   const pool = uniqueBy(questions);
   const requested = Number(limit);
