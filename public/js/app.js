@@ -126,27 +126,7 @@ function renderShell() {
           <span class="ico">${NAV_ICONS[navKey(h)] || NAV_ICONS.home}</span><span>${esc(text)}</span>
         </a>`).join('')}
       </div>`).join('')}
-    </nav>
-    <div class="side-user">
-      <div class="side-user-card">
-        <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span class="who-copy"><b>${esc(u.name)}</b><small>${esc(u.email || `${u.role} account`)}</small></span></div>
-        <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
-      </div>
-      <button class="btn secondary sm signout" id="change-password-btn">Change password</button>
-      <button class="btn secondary sm signout" id="authenticator-btn">Authenticator protection</button>
-      <button class="btn secondary sm signout" id="logout-btn">Sign out</button>
-    </div>`;
-
-  document.getElementById('change-password-btn').onclick = changePassword;
-  document.getElementById('authenticator-btn').onclick = authenticatorSettings;
-  document.getElementById('logout-btn').onclick = async () => {
-    const { logout } = await import('./api.js');
-    try { await logout(); }
-    catch (err) { toast(`Sign out failed: ${err.message}. Please try again.`, 'error'); return; }
-    session.token = null;
-    closeMobileNav();
-    boot();
-  };
+    </nav>`;
 
   document.getElementById('topbar').innerHTML = `
     <div class="topbar-left">
@@ -156,8 +136,37 @@ function renderShell() {
     <div class="topbar-right">
       ${themeToggleHtml()}
       <span class="topbar-role">${esc(u.role)}</span>
-      <span class="topbar-avatar">${esc(initials(u.name))}</span>
+      <div class="profile-control">
+      <button class="topbar-avatar" id="profile-toggle" type="button" aria-label="Account options" aria-expanded="false" aria-controls="profile-panel" title="Account options">${esc(initials(u.name))}</button>
+      <div class="profile-panel" id="profile-panel" aria-label="Account options" hidden>
+      <div class="side-user-card">
+        <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span class="who-copy"><b>${esc(u.name)}</b><small>${esc(u.email || `${u.role} account`)}</small></span></div>
+        <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
+      </div>
+      <button class="btn secondary sm signout" id="change-password-btn">Change password</button>
+      <button class="btn secondary sm signout" id="authenticator-btn">Authenticator protection</button>
+      <button class="btn secondary sm signout" id="logout-btn">Sign out</button>
+      </div>
+      </div>
     </div>`;
+
+  document.getElementById('profile-toggle').onclick = () => {
+    const panel = document.getElementById('profile-panel');
+    panel.hidden = !panel.hidden;
+    document.getElementById('profile-toggle').setAttribute('aria-expanded', String(!panel.hidden));
+  };
+  document.getElementById('change-password-btn').onclick = () => { closeProfileMenu(); changePassword(); };
+  document.getElementById('authenticator-btn').onclick = () => { closeProfileMenu(); authenticatorSettings(); };
+  document.getElementById('logout-btn').onclick = async () => {
+    closeProfileMenu();
+    const { logout } = await import('./api.js');
+    try { await logout(); }
+    catch (err) { toast(`Sign out failed: ${err.message}. Please try again.`, 'error'); return; }
+    session.token = null;
+    closeMobileNav();
+    boot();
+  };
+
   const themeBtn = document.getElementById('theme-toggle');
   themeBtn.onclick = () => {
     const next = toggleTheme();
@@ -172,6 +181,25 @@ function renderShell() {
   };
   document.getElementById('nav-scrim').onclick = closeMobileNav;
 }
+
+function closeProfileMenu(restoreFocus = false) {
+  const panel = document.getElementById('profile-panel');
+  const button = document.getElementById('profile-toggle');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  button?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) button?.focus();
+}
+
+// Register once: rebuilding the shell on navigation must not accumulate handlers.
+document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('.profile-control')) closeProfileMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && document.getElementById('profile-panel')?.hidden === false) {
+    closeProfileMenu(true);
+  }
+});
 
 let rendering = false;
 let rerenderQueued = false;
