@@ -170,6 +170,10 @@ export function loginView(view, onSuccess) {
                 </span>
               </label>
 
+              <label class="f login-field">
+                <span class="lbl">Authenticator or backup code (if enabled)</span>
+                <input name="otp" type="text" autocomplete="one-time-code" spellcheck="false" maxlength="20" />
+              </label>
               <button class="btn block login-submit" type="submit">
                 <span class="btn-label">Sign in to Anthroprime ECOD</span>
                 <span class="btn-arrow" aria-hidden="true">${ICON.arrow}</span>
@@ -277,7 +281,7 @@ export function loginView(view, onSuccess) {
     showError('');
     setBusy(true);
     try {
-      const res = await login(username, password);
+      const res = await login(username, password, form.elements.otp?.value.trim());
       submitBtn.disabled = true;
       submitBtn.classList.remove('is-busy');
       submitBtn.classList.add('is-success');

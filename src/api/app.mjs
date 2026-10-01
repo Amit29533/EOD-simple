@@ -22,6 +22,7 @@ export async function createApp(store) {
     const sessions = await store.list('sessions', { token });
     const session = sessions[0];
     if (!session) return null;
+    if (session.purpose && session.purpose !== 'login') return null;
     const expires = new Date(session.expires_at).getTime();
     if (!Number.isFinite(expires) || expires <= Date.now()) {
       await store.remove('sessions', session.id).catch(() => {});
@@ -98,6 +99,7 @@ export async function createApp(store) {
         console.error(`[api] ${method} ${path}: ${err.message}`);
         return { status: 503, body: { error: 'The data store failed an integrity check. Please contact the administrator.' } };
       }
+      if (err?.code === 'SECURITY_CONFIG') return { status: 503, body: { error: 'Authenticator security is not configured. An administrator must set SECURITY_ENCRYPTION_KEY and redeploy.' } };
       // Never leak internal details to client
       console.error(`[api] ${method} ${path} failed:`, err.message, err.stack?.slice(0, 500));
       return { status: 500, body: { error: 'Internal error. Please try again.' } };

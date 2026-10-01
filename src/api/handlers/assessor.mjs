@@ -3,7 +3,7 @@ import {
 } from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
-import { finalizeScoring, paperFacts } from '../assessment-service.mjs';
+import { finalizeScoring, paperFacts, advanceStage } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
 import { withLock } from '../mutex.mjs';
 import {
@@ -139,9 +139,11 @@ export function assessorHandlers(route) {
     if (['assigned', 'in_progress'].includes(a.status))
       return conflict('The candidate has not submitted this assessment yet.');
     const qid = String(params.question_id || '');
-    const [rec] = await store.list('recordings', { assessment_id: a.id, question_id: qid });
-    if (rec?.audio?.b64) return ok({ question_id: qid, audio_b64: rec.audio.b64, audio_mime: rec.audio.mime || 'audio/webm' });
     const [row] = await store.list('responses', { assessment_id: a.id, question_id: qid });
+    const ref = row?.answer?.audio_ref;
+    const rec = ref ? await store.get('recordings', ref) : (await store.list('recordings', { assessment_id: a.id, question_id: qid })).find((r) => !r.revision);
+    if (rec?.assessment_id === a.id && rec.question_id === qid && rec.audio?.b64)
+      return ok({ question_id: qid, audio_b64: rec.audio.b64, audio_mime: rec.audio.mime || 'audio/webm' });
     const inline = row?.answer && typeof row.answer === 'object' ? row.answer : null;
     if (inline?.audio_b64) return ok({ question_id: qid, audio_b64: inline.audio_b64, audio_mime: inline.audio_mime || 'audio/webm' });
     return notFound('No recording for this question.');
@@ -236,9 +238,14 @@ export function assessorHandlers(route) {
     return ok({ ok: true });
   }));
 
-  route('POST', '/assessor/assessments/:id/finalize', R, locked(async ({ store, auth, params }) => {
+  route('POST', '/assessor/assessments/:id/finalize', R, locked(async ({ store, auth, params, body }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
+    if (body.retry_safe === true && ['scored', 'validated'].includes(a.status) && a.report_json) {
+      await advanceStage(store, a.candidate_id, 'gap_mapping');
+      const candidate = await store.get('candidates', a.candidate_id);
+      return ok({ report: a.report_json, assessment_id: a.id, status: a.status, candidate: candidateForAssessor(candidate), already: true });
+    }
     if (a.status !== 'submitted') return conflict('Assessment is not awaiting scoring.');
     const result = await finalizeScoring(store, a);
     if (result.missing) return unprocessable('Some open questions have not been scored yet.', { missing: result.missing });

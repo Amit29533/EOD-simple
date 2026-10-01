@@ -573,13 +573,13 @@ test('a new clip replaces the kept one; a draft without clip or keep drops it (t
 
   const again = Buffer.from('efgh').toString('base64');
   await w.put({ [open.id]: { text: '', transcript: '', source: 'audio', audio_b64: again, audio_mime: 'audio/webm', audio_keep: true } });
-  const [rec] = await w.recordings(open.id);
-  assert.equal((await w.recordings(open.id)).length, 1, 'one recording per question');
-  assert.equal(rec.audio.b64, again, 'the new clip replaced the old one');
-  assert.equal((await w.row(open.id)).answer.audio_ref, before, 'replaced in place');
+  const after = (await w.row(open.id)).answer.audio_ref;
+  assert.equal((await w.recordings(open.id)).length, 2, 'recording versions are immutable');
+  assert.equal((await w.store.get('recordings', after)).audio.b64, again, 'the new clip is selected by the committed reference');
+  assert.notEqual(after, before);
 
   await w.put({ [open.id]: { text: 'typed instead', transcript: '', source: 'typed' } });
-  assert.equal((await w.recordings(open.id)).length, 0, 'no clip and no keep: the recording is dropped');
+  assert.equal((await w.recordings(open.id)).length, 2, 'abandoned revisions await retention or cleanup');
   assert.equal((await w.row(open.id)).answer.audio_missing, true);
 });
 

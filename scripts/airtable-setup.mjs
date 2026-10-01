@@ -37,8 +37,8 @@ const num = N, txt = { type: T }, long = { type: L }, chk = { type: C, options: 
  * tests can pin the coverage.
  */
 export const SCHEMA = {
-  users:        ['username', 'name', 'email', 'role', 'password_hash', 'session_generation', 'candidate_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }]),
-  sessions:     ['token', 'user_id', 'session_generation', 'expires_at', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })),
+  users:        ['username', 'name', 'email', 'role', 'password_hash', 'session_generation', 'candidate_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }, { name: 'creation_request', ...long }, { name: 'mfa_json', ...long }]),
+  sessions:     ['token', 'user_id', 'purpose', 'session_generation', 'expires_at', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })),
   candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }, { name: 'deleting', ...chk }]),
   roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
@@ -69,6 +69,7 @@ export const SCHEMA = {
                 .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'quiz_state', ...long },
                          // what the retention cleanup removed from this paper (src/core/retention.mjs)
                          { name: 'retention_json', ...long },
+                         { name: 'creation_request', ...long },
                          { name: 'overall_pct', ...num }, { name: 'question_count', ...num },
                          // listing facts kept beside the paper (src/api/assessment-service.mjs paperSummary)
                          { name: 'total_points', ...num }, { name: 'question_limit', ...num }, { name: 'bank_total', ...num }])
@@ -78,7 +79,7 @@ export const SCHEMA = {
                          { name: 'auto_score', ...num }, { name: 'assessor_score', ...num }, { name: 'final_score', ...num },
                          { name: 'locked', ...chk }])
                 .concat(overflowColumns('responses').map((f) => ({ name: f, ...long }))),
-  recordings:   ['assessment_id', 'question_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  recordings:   ['assessment_id', 'question_id', 'revision', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'audio', ...long }])
                 .concat(overflowColumns('recordings').map((f) => ({ name: f, ...long }))),
   // Platform settings, one row per `key`. The answer-sheet / recording cleanup

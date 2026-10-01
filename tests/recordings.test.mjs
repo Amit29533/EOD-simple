@@ -106,8 +106,8 @@ for (const kind of ['json-file', 'netlify-blobs']) {
       const keyed = fake.ops.length;
       await store.list('recordings', { assessment_id: 'asm1', question_id: 'q1' });
       const since = fake.ops.slice(keyed);
-      assert.deepEqual(since.map(([op]) => op), ['get'], 'shard + key resolves to ONE object read, no listing');
-      assert.equal(since[0][2], 'strong', 'row reads are strongly consistent (the lock that wrote it is followed by a read)');
+      assert.equal(since[0][0], 'list', 'question lookup includes legacy and immutable revisions');
+      assert.ok(since.filter(([op]) => op === 'get').every((op) => op[2] === 'strong'), 'recording reads are strongly consistent');
     }
 
     // filters that could name a path outside the table are inert
@@ -294,11 +294,12 @@ test('a spoken answer is stored as a reference plus one recording row, never inl
   const r1 = await w.row(id, w.open1.id);
   assert.equal(r1.locked, true);
   assert.equal(r1.answer.audio_b64, undefined, 'no clip on the response row');
-  assert.equal(r1.answer.audio_ref, `${id}/${w.open1.id}`);
+  assert.ok(r1.answer.audio_ref.startsWith(`${id}/${w.open1.id}--`));
   assert.equal(r1.answer.audio_mime, 'audio/webm');
   assert.equal(r1.answer.audio_missing, undefined, 'a referenced recording satisfies the spoken-answer contract');
   const recs = await w.recordings(id);
-  assert.deepEqual(recs.map((r) => r.id).sort(), [`${id}/${w.open1.id}`, `${id}/${w.open2.id}`].sort());
+  assert.equal(recs.length, 2);
+  assert.ok(recs.some((r) => r.id === r1.answer.audio_ref));
   assert.deepEqual(recs.find((r) => r.question_id === w.open1.id).audio, { b64: B64, mime: 'audio/webm' });
   const dbAfter = fs.statSync(path.join(w.tmp, 'db.json')).size;
   assert.ok(dbAfter - dbBefore < 4000, `the database file grows by the answers, not the audio (${dbAfter - dbBefore} bytes)`);
@@ -310,11 +311,11 @@ test('a spoken answer is stored as a reference plus one recording row, never inl
 
   // submit keeps the reference and the row, and writes nothing new for it
   assert.equal((await w.call('POST', `/candidate/assessments/${id}/submit`, { token: tok, body: { answers: {} } })).status, 200);
-  assert.equal((await w.row(id, w.open1.id)).answer.audio_ref, `${id}/${w.open1.id}`);
+  assert.equal((await w.row(id, w.open1.id)).answer.audio_ref, r1.answer.audio_ref);
   assert.equal((await w.recordings(id)).length, 2);
 });
 
-test('re-recording replaces the row in place; clearing the draft removes it; a typed-only draft keeps no recording', async () => {
+test('re-recording creates immutable versions; clearing detaches audio without deleting concurrent evidence', async () => {
   const w = await makeWorld();
   const { id } = await w.allocate();
   const tok = w.tokens.candidate;
@@ -325,9 +326,10 @@ test('re-recording replaces the row in place; clearing the draft removes it; a t
   assert.equal((await put({ [q.id]: { text: '', transcript: 'take one', source: 'audio', audio_b64: B64, audio_mime: 'audio/webm' } })).status, 200);
   assert.equal((await put({ [q.id]: { text: '', transcript: 'take two', source: 'audio', audio_b64: B64_2, audio_mime: 'audio/webm' } })).status, 200);
   let recs = await w.recordings(id);
-  assert.equal(recs.length, 1, 'one row per (assessment, question), replaced in place');
-  assert.equal(recs[0].audio.b64, B64_2);
-  assert.ok(recs[0].updated_at, 'the second take is an update of the first row');
+  assert.equal(recs.length, 2, 'each distinct recording has its own immutable object');
+  const current = await w.row(id, q.id);
+  assert.equal((await w.store.get('recordings', current.answer.audio_ref)).audio.b64, B64_2);
+  assert.ok(recs.some((r) => r.audio.b64 === B64), 'the old take is unchanged');
 
   // a re-save without a clip but with typed notes keeps the answer as typed notes only
   assert.equal((await put({ [q.id]: { text: 'typed instead', transcript: '', source: 'typed' } })).status, 200);
@@ -335,7 +337,7 @@ test('re-recording replaces the row in place; clearing the draft removes it; a t
   assert.equal(typed.answer.text, 'typed instead');
   assert.equal(typed.answer.audio_ref, undefined, 'the candidate cannot keep a clip by omitting it from the draft');
   assert.equal(typed.answer.audio_missing, requiresAudio);
-  assert.deepEqual(await w.recordings(id), [], 'and the superseded recording is gone');
+  assert.equal((await w.recordings(id)).length, 2, 'unreferenced versions await retention cleanup');
 
   // the candidate cannot point an answer at someone else's recording
   await w.store.insert('recordings', { assessment_id: 'other', question_id: 'x', audio: { b64: 'c3RvbGVu', mime: 'audio/webm' } });
@@ -344,10 +346,10 @@ test('re-recording replaces the row in place; clearing the draft removes it; a t
 
   // clearing the draft entirely removes both the row and the recording
   assert.equal((await put({ [q.id]: { text: '', transcript: 'again', source: 'audio', audio_b64: B64, audio_mime: 'audio/webm' } })).status, 200);
-  assert.equal((await w.recordings(id)).length, 1);
+  assert.equal((await w.recordings(id)).length, 2);
   assert.equal((await put({ [q.id]: { text: '', transcript: '' } })).status, 200);
   assert.equal(await w.row(id, q.id), undefined);
-  assert.deepEqual(await w.recordings(id), []);
+  assert.equal((await w.recordings(id)).length, 2);
 });
 
 test('the mime type is kept to what a recorder reports; anything else falls back to audio/webm', async () => {
@@ -446,9 +448,9 @@ test('a paper stored before the recordings table (clip inline on the row) is sti
   assert.equal((await w.call('POST', `/candidate/assessments/${live.id}/submit`, { token: tok, body: { answers: {} } })).status, 200);
   const migrated = await w.row(live.id, w.open1.id);
   assert.equal(migrated.answer.audio_b64, undefined, 'the clip left the response row');
-  assert.equal(migrated.answer.audio_ref, `${live.id}/${w.open1.id}`);
+  assert.ok(migrated.answer.audio_ref.startsWith(`${live.id}/${w.open1.id}--`));
   assert.equal(migrated.answer.transcript, 'inline era');
-  assert.equal((await w.store.get('recordings', `${live.id}/${w.open1.id}`)).audio.b64, B64);
+  assert.equal((await w.store.get('recordings', migrated.answer.audio_ref)).audio.b64, B64);
   assert.equal((await w.call('GET', `/assessor/assessments/${live.id}/recordings/${w.open1.id}`, { token: w.tokens.assessor })).body.audio_b64, B64);
 });
 

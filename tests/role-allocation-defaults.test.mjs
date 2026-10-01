@@ -53,6 +53,26 @@ function assertSamaPaper(paper) {
   ]);
 }
 
+test('default assessment preview honors all published role sizes and SAMA composition without creating papers', async () => {
+  const before = (await store.list('assessments')).length;
+  for (const [role_key, count] of [['databricks-rsa', 50], ['databricks-ai-bi-genie', 50], ['technology-risk-sama', 30]]) {
+    const preview = await call('POST', '/admin/question-bank/preview', { body: { role_key, mode: 'allocation' } });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.equal(preview.body.counts.total, count);
+    assert.equal(preview.body.questions.length, count);
+    assert.equal(new Set(preview.body.questions.map((q) => q.id)).size, count);
+    if (role_key === 'technology-risk-sama') {
+      assert.equal(preview.body.questions.filter((q) => q.type === 'open').length, 5);
+      assert.equal(preview.body.questions.filter((q) => q.type === 'objective').length, 25);
+      const modules = new Map();
+      for (const q of preview.body.questions) modules.set(q.module, (modules.get(q.module) || 0) + 1);
+      assert.equal(modules.size, 10);
+      assert.ok([...modules.values()].every((n) => n === 3));
+    }
+  }
+  assert.equal((await store.list('assessments')).length, before);
+});
+
 test('published and legacy roles expose the correct effective automatic defaults', async () => {
   const byKey = Object.fromEntries(roles.map((role) => [role.key, role]));
   assert.equal(byKey['databricks-rsa'].default_question_count, 50);

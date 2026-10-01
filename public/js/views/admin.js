@@ -1,6 +1,6 @@
 import { deletePersonFlow } from '../person-delete.js';
 import { wireAccountForm } from '../account-form.js';
-import { api, apiAll } from '../api.js';
+import { api, apiAll, newRequestId } from '../api.js';
 import { state } from '../app.js';
 import {
   esc, fmtDate, fmtDateTime, badge, dataTable, loading, emptyState, toast, attempt,
@@ -442,7 +442,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
   });
 
   if (!vals) return;
-  const body = { candidate_id: c.id, role_id: vals.role_id, assessor_id: vals.assessor_id || null };
+  const body = { candidate_id: c.id, role_id: vals.role_id, assessor_id: vals.assessor_id || null, request_id: newRequestId() };
   if (vals.question_count) body.question_count = vals.question_count;
   await attempt(() => api('/admin/assessments', { method: 'POST', body }),
     { okMessage: vals.question_count ? `Assessment allocated · ${vals.question_count} questions` : 'Assessment allocated' });
@@ -1256,6 +1256,7 @@ export async function usersView(view) {
         { label: '', cls: 'actions', render: (u) => `
             <button class="btn ghost sm" data-edit="${u.id}">Edit</button>
             <button class="btn ghost sm" data-pw="${u.id}">Reset password</button>
+            ${u.active !== false ? `<button class="btn ghost sm" data-recovery="${u.id}">Recovery link</button>` : ''}
             ${u.id !== state.user?.id && u.username !== 'admin' ? `<button class="btn ghost sm" style="color:var(--red)" data-purge-user="${u.id}">Delete all data</button>` : ''}
             ${u.active === false ? `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`
     // The signed-in admin cannot deactivate their own login (the API refuses
@@ -1316,6 +1317,7 @@ export async function usersView(view) {
 
   view.querySelector('#import-users').onclick = () => importCandidatesModal(() => usersView(view));
   view.querySelector('#add-user').onclick = async () => {
+    const requestId = newRequestId();
     // A refusal (username taken, candidate already linked, weak password)
     // keeps the dialog open with everything typed, the message on its field.
     const fieldOrder = ['role', 'candidate_id', 'name', 'email', 'username', 'password', 'auto_allocate', 'assessor_id'];
@@ -1327,7 +1329,7 @@ export async function usersView(view) {
         if (vals.role === 'candidate' && !vals.candidate_id) {
           throw Object.assign(new Error('Choose the linked candidate before creating a candidate portal user.'), { field: 'candidate_id' });
         }
-        const body = { ...vals };
+        const body = { ...vals, request_id: requestId };
         if (body.role !== 'candidate') { delete body.candidate_id; delete body.assessor_id; }
         if (!body.assessor_id) delete body.assessor_id;
         return api('/admin/users', { method: 'POST', body });
@@ -1380,6 +1382,20 @@ export async function usersView(view) {
     }
     usersView(view);
   };
+  view.querySelectorAll('[data-recovery]').forEach((button) => { button.onclick = async () => {
+    const result = await formModal({
+      title: 'Create password recovery link',
+      intro: 'This revokes the user’s other sessions and older recovery links. Share the new link securely; it expires in 15 minutes.',
+      submitLabel: 'Create link', fields: [{ name: 'password', label: 'Your admin password', type: 'password', required: true, autocomplete: 'current-password' }],
+      onSubmit: (values) => api(`/admin/users/${button.dataset.recovery}/recovery-link`, { method: 'POST', body: values }),
+    });
+    if (!result) return;
+    await formModal({ title: 'Recovery link created', submitLabel: 'Close',
+      intro: 'Copy this link and share it directly with the user. The portal does not send email.',
+      fields: [{ name: 'link', label: 'One-time recovery link', type: 'textarea', value: `${location.origin}${location.pathname}#/recover/${result.token}`, rows: 3 },
+        { name: 'expiry', label: 'Expires', type: 'static', value: fmtDateTime(result.expires_at) }],
+    });
+  }; });
   view.querySelectorAll('[data-off]').forEach((b) => (b.onclick = () => toggle(b.dataset.off, false)));
   view.querySelectorAll('[data-on]').forEach((b) => (b.onclick = () => toggle(b.dataset.on, true)));
 }
@@ -1535,7 +1551,7 @@ export async function modulesView(view) {
         </label>` : ''}
         <button class="btn secondary" id="mv-import">Import (.xlsx / .csv)</button>
         <button class="btn secondary" id="mv-add">Add question</button>
-        <button class="btn" id="mv-preview">Preview a test</button>
+        <button class="btn" id="mv-preview">Preview default assessment</button>
       </div>
     </div>
 
@@ -1697,7 +1713,7 @@ export async function modulesView(view) {
   };
 
   view.querySelector('#mv-preview').onclick = async () => {
-    const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: { role_key: roleKey } }));
+    const out = await attempt(() => api('/admin/question-bank/preview', { method: 'POST', body: { role_key: roleKey, mode: 'allocation' } }));
     if (out) previewModal(out);
   };
   view.querySelector('#mv-add').onclick = () => addQuestionModal(bank, {}, refresh);
@@ -1915,9 +1931,10 @@ function previewModal(result) {
     </tr>`).join('');
 
   modal({
-    title: 'Sample generated test',
+    title: result.mode === 'allocation' ? `${result.role_name}: default assessment` : 'Sample generated test · module template',
     wide: true,
     bodyHtml: `
+      <p class="small muted">${result.mode === 'allocation' ? 'Uses the same saved role default and selection logic as account and CSV automatic allocation. Actual exams randomize their question selection.' : 'This module template is separate from the role’s automatic allocation settings.'}</p>
       <p class="small muted">${c.total} questions — ${c.technical_objective} technical objective,
         ${c.non_technical_objective ? `${c.non_technical_objective} consulting objective, ` : ''}${c.technical_open} technical open,
         ${c.non_technical_open} non-technical open${c.from_optional

@@ -288,7 +288,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
     if (!(await saves.flush())) { toast('Save failed. Retry saving before finalizing.', 'error'); return; }
     const controls = [...view.querySelectorAll('input, textarea, #finalize-btn, #retry-scores')];
     controls.forEach((el) => { el.disabled = true; });
-    const out = await attempt(() => api(`/assessor/assessments/${id}/finalize`, { method: 'POST' }));
+    const out = await attempt(() => api(`/assessor/assessments/${id}/finalize`, { method: 'POST', body: { retry_safe: true } }));
     if (out) {
       toast(`Report generated: ${out.report.band.label} at ${out.report.overall_pct}%`, 'success', 5000);
       renderReport(view, { candidate: out.candidate, report: out.report, assessor_name: 'You', audience: 'assessor' });

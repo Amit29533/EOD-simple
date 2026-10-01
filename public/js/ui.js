@@ -231,6 +231,7 @@ export function formModal({
       const describedBy = [f.help ? `fm-help-${f.name}` : '', errId(f.name)].filter(Boolean).join(' ');
       const common = `name="${esc(f.name)}" id="${id(f.name)}" aria-describedby="${describedBy}"`
         + `${f.required ? ' required aria-required="true"' : ''}`
+        + `${f.readonly ? ' readonly' : ''}`
         + `${f.autocomplete ? ` autocomplete="${esc(f.autocomplete)}"` : ''}`;
       const help = f.help ? `<div class="help" id="fm-help-${esc(f.name)}">${esc(f.help)}</div>` : '';
       const err = `<div class="field-err" id="${errId(f.name)}" role="alert" hidden></div>`;

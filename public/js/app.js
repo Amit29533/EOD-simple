@@ -2,7 +2,8 @@ import { session, me, bootstrap, setUnauthorizedHandler } from './api.js';
 import { initTheme, toggleTheme, resolvedTheme } from './theme.js';
 import { esc, initials, enhanceTables, toast } from './ui.js';
 import { logoSvg } from './logo.js';
-import { changePassword } from './account-security.js';
+import { changePassword, authenticatorSettings } from './account-security.js';
+import { recoveryView } from './views/recovery.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -132,10 +133,12 @@ function renderShell() {
         <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
       </div>
       <button class="btn secondary sm signout" id="change-password-btn">Change password</button>
+      <button class="btn secondary sm signout" id="authenticator-btn">Authenticator protection</button>
       <button class="btn secondary sm signout" id="logout-btn">Sign out</button>
     </div>`;
 
   document.getElementById('change-password-btn').onclick = changePassword;
+  document.getElementById('authenticator-btn').onclick = authenticatorSettings;
   document.getElementById('logout-btn').onclick = async () => {
     const { logout } = await import('./api.js');
     try { await logout(); }
@@ -201,6 +204,17 @@ async function renderOnce() {
   // `document.defaultView.Event` rather than the bare global: a jsdom
   // document rejects Node's own Event class.
   document.dispatchEvent(new (document.defaultView?.Event || Event)(VIEW_UNMOUNT_EVENT));
+  const recovery = location.hash.match(/^#\/recover\/([a-f0-9]{64})$/i);
+  if (recovery) {
+    document.body.classList.remove('app-body', 'exam-lock');
+    closeMobileNav();
+    recoveryView(view, recovery[1], () => {
+      session.token = null; state.user = null; state.candidate = null;
+      window.history.replaceState(null, '', '#/');
+      boot();
+    });
+    return;
+  }
   if (!state.user) {
     document.body.classList.remove('app-body');
     // Signing out mid-exam must not leave exam paddings behind either.
@@ -299,6 +313,7 @@ function onSignedIn({ token, user, candidate: c }) {
 }
 
 async function boot() {
+  if (/^#\/recover\/[a-f0-9]{64}$/i.test(location.hash)) { render(); return; }
   document.getElementById('sidebar').innerHTML = '';
   document.getElementById('topbar').innerHTML = '';
   document.getElementById('nav-scrim')?.classList.remove('visible');

@@ -403,14 +403,14 @@ test('open-response answers persist transcript + audio clip; oversized audio is 
   assert.equal(stored.answer.transcript, 'Lakehouse with Unity Catalog.');
   assert.equal(stored.answer.audio_b64, undefined, 'the clip never sits on the response row');
   assert.equal(stored.answer.audio_mime, 'audio/webm');
-  assert.equal(stored.answer.audio_ref, `${aid}/${textQ.id}`, 'the answer points at its recording row');
+  assert.ok(stored.answer.audio_ref.startsWith(`${aid}/${textQ.id}--`), 'the answer points at its immutable recording row');
   const [rec] = await store.list('recordings', { assessment_id: aid, question_id: textQ.id });
   assert.deepEqual(rec.audio, { b64: clip, mime: 'audio/webm' });
 
   const sub = await call('POST', `/candidate/assessments/${aid}/submit`, { token: tok, body: { answers: {} } });
   assert.equal(sub.status, 200, JSON.stringify(sub.body));
   const after = (await store.list('responses', { assessment_id: aid })).find((r) => r.question_id === textQ.id);
-  assert.equal(after.answer.audio_ref, `${aid}/${textQ.id}`, 'submit merge must keep the recorded clip');
+  assert.equal(after.answer.audio_ref, stored.answer.audio_ref, 'submit merge must keep the recorded clip');
   assert.equal((await store.list('recordings', { assessment_id: aid, question_id: textQ.id }))[0]?.audio?.b64, clip);
 
   const huge = await call('PUT', `/candidate/assessments/${aid}/answers`, {

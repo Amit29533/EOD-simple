@@ -274,7 +274,7 @@ export function createJsonStore(file = 'data/ecod.json') {
     /** Conditional change of a response shard or the assessment cursor. */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (t !== 'assessments') throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return withLock(async () => {
         const prior = rowOf(table(t), id);
@@ -412,14 +412,16 @@ export function createJsonStore(file = 'data/ecod.json') {
     async remove(t, id) {
       if (isRowTable(t)) return rowTable(t).remove(id);
       if (isShardTable(t)) return shardTable(t).remove(id);
-      const removed = await withLock(() => {
+      const removed = await withLock(async () => {
         if (!rowOf(table(t), id)) return false;
+        // Keep the parent discoverable when detached cleanup fails, so a
+        // permanent-deletion retry can finish removing every version.
+        await detacher(t).drop(id);
         return mutate(t, [id], () => {
           delete table(t)[id];
           return true;
         });
       });
-      if (removed) await detacher(t).drop(id);
       return removed;
     },
     /**
@@ -431,9 +433,10 @@ export function createJsonStore(file = 'data/ecod.json') {
       if (isRowTable(t)) return rowTable(t).removeMany(ids);
       if (isShardTable(t)) return shardTable(t).removeMany(ids);
       const gone = [];
-      const removed = await withLock(() => {
+      const removed = await withLock(async () => {
         const present = ids.filter((id) => rowOf(table(t), id));
         if (!present.length) return 0;
+        for (const id of present) await detacher(t).drop(id);
         return mutate(t, present, () => {
           const rows = table(t);
           for (const id of present) {
@@ -444,7 +447,6 @@ export function createJsonStore(file = 'data/ecod.json') {
           return gone.length;
         });
       });
-      for (const id of gone) await detacher(t).drop(id);
       return removed;
     },
   };

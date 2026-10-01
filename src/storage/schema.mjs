@@ -4,7 +4,7 @@
  * JSON strings in long-text fields; the file/blobs adapters keep them native.
  */
 export const TABLES = {
-  users:        { json: [], flags: ['active'] },
+  users:        { json: ['creation_request', 'mfa_json'], flags: ['active'] },
   sessions:     { json: [], flags: [] },
   candidates:   { json: [], flags: ['deleting'] },
   roles:        { json: [], flags: ['active'] },
@@ -27,7 +27,7 @@ export const TABLES = {
   // the row itself is small and is rewritten on every exam step. Listings
   // read the paper facts kept beside it (question_count, total_points,
   // question_limit, bank_total, role_name — assessment-service paperSummary).
-  assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state', 'retention_json'], flags: [],
+  assessments:  { json: ['snapshot_json', 'report_json', 'quiz_state', 'retention_json', 'creation_request'], flags: [],
                   overflow: { snapshot_json: 3, report_json: 1, quiz_state: 1 } },
   // One object per assessment in the file and blob adapters (SHARD_TABLES):
   // every read filters by assessment_id, and the exam step that writes it

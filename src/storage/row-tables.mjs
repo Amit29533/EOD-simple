@@ -1,4 +1,5 @@
 import { newId } from '../core/ids.mjs';
+import { createHash } from 'node:crypto';
 
 /**
  * Tables stored ONE ROW PER OBJECT instead of one object per table.
@@ -169,7 +170,7 @@ export function createRowTable(t, io) {
       // Shard + natural key both given and path-safe: the row can only live
       // under its deterministic id, so fetch that one object.
       const byKey = natural ? pairs.find(([k]) => k === natural) : null;
-      if (byShard && byKey && SAFE.test(String(byKey[1]))) {
+      if (byShard && byKey && SAFE.test(String(byKey[1])) && t !== 'recordings') {
         const row = await io.read(keyOf(`${byShard[1]}/${byKey[1]}`));
         return row && matches(row, pairs) ? [{ ...row }] : [];
       }
@@ -490,6 +491,8 @@ export const isDetachedMarker = (v) => v !== null && typeof v === 'object' && !A
 export function createDetacher(t, io) {
   const cols = DETACHED_COLUMNS[t] || [];
   const keyOf = (id, col) => `${KEY_ROOTS.column}/${t}/${id}/${col}`;
+  const versionKey = (id, col, marker) => marker?.revision && /^[a-f0-9]{64}$/.test(marker.revision)
+    ? `${keyOf(id, col)}--${marker.revision}` : keyOf(id, col);
   // Write-once values by key, bounded: the paper a candidate is sitting is
   // attached on every GET/next of that exam and never changes.
   const cache = new Map();
@@ -509,11 +512,12 @@ export function createDetacher(t, io) {
       for (const col of cols) {
         const v = row[col];
         if (v === undefined || v === null || isDetachedMarker(v)) continue;
-        const k = keyOf(row.id, col);
-        await io.write(k, { value: v });
+        const revision = createHash('sha256').update(JSON.stringify(v)).digest('hex');
+        const k = versionKey(row.id, col, { revision });
+        await io.write(k, { value: v, created_at: new Date().toISOString() });
         remember(k, v);
         if (out === row) out = { ...row };
-        out[col] = { [MARK]: true };
+        out[col] = { [MARK]: true, revision };
       }
       return out;
     },
@@ -523,13 +527,13 @@ export function createDetacher(t, io) {
       let out = row;
       for (const col of cols) {
         if (!isDetachedMarker(row[col])) continue;
-        const k = keyOf(row.id, col);
+        const k = versionKey(row.id, col, row[col]);
         let v;
-        if (cache.has(k)) v = cache.get(k);
+        if (row[col].revision && cache.has(k)) v = cache.get(k);
         else {
           const stored = await io.read(k);
           v = stored && typeof stored === 'object' && 'value' in stored ? stored.value : null;
-          if (stored) remember(k, v);
+          if (stored && row[col].revision) remember(k, v);
         }
         if (out === row) out = { ...row };
         out[col] = v;
@@ -554,12 +558,14 @@ export function createDetacher(t, io) {
     /** Remove the detached objects of a deleted row. */
     async drop(id) {
       if (!cols.length || !SAFE.test(String(id))) return;
-      for (const col of cols) {
-        const k = keyOf(id, col);
+      const prefix = `${KEY_ROOTS.column}/${t}/${id}/`;
+      const keys = new Set([
+        ...cols.map((col) => keyOf(id, col)),
+        ...(typeof io.keys === 'function' ? await io.keys(prefix) : []),
+      ]);
+      for (const k of keys) {
         cache.delete(k);
-        try { await io.remove(k); } catch (err) {
-          console.warn(`[storage] could not remove ${k}: ${err.message}`);
-        }
+        await io.remove(k);
       }
     },
   };

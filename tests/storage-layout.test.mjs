@@ -26,6 +26,10 @@ import { paperSummary, paperFacts } from '../src/api/assessment-service.mjs';
  */
 
 const tmpFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ecod-layout-')), 'db.json');
+const columnName = (row, col) => `${col}--${row[col].revision}`;
+const columnFile = (file, id, col) => path.join(file.replace(/\.json$/, '.rows'), KEY_ROOTS.column, 'assessments', id,
+  `${columnName(JSON.parse(fs.readFileSync(file, 'utf8')).tables.assessments[id], col)}.json`);
+const blobColumn = (be, id, col) => `${KEY_ROOTS.column}/assessments/${id}/${columnName(be.json('assessments')[id], col)}`;
 const paper = (n = 2) => ({
   role: { id: 'r1', name: 'RSA' },
   framework: {}, competencies: [],
@@ -56,6 +60,58 @@ function blobBackend() {
   return { data, reads, module: { getStore: () => store }, json: (k) => (data.has(k) ? clone(data.get(k).json) : null) };
 }
 
+test('strict production storage refuses weaker reads and missing conditional-write metadata', async () => {
+  await assert.rejects(createBlobsStore({ requireConsistency: true, blobsModule: { getStore: () => ({ get: async () => null }) } }), { code: 'STORE_CONFLICT' });
+  const be = blobBackend();
+  const backend = be.module.getStore();
+  const store = await createBlobsStore({ blobsModule: be.module, requireConsistency: true });
+  await store.insert('users', { id: 'strict-user', username: 'strict' });
+  backend.getWithMetadata = async () => ({ data: {}, metadata: {} });
+  await assert.rejects(store.update('users', 'strict-user', { active: false }), { code: 'STORE_CONFLICT' });
+  backend.get = async () => { throw Object.assign(new Error('strong unavailable'), { name: 'BlobsConsistencyError' }); };
+  await assert.rejects(store.get('users', 'strict-user'), { code: 'STORE_CONFLICT' });
+});
+
+test('detached deletion failures keep the assessment discoverable for a complete retry', async () => {
+  const be = blobBackend();
+  const store = await createBlobsStore({ blobsModule: be.module });
+  await store.insert('assessments', { id: 'delete-retry', snapshot_json: paper(), report_json: { overall_pct: 50 } });
+  const backend = be.module.getStore();
+  const remove = backend.delete.bind(backend);
+  backend.delete = async (key) => {
+    if (key.startsWith('columns/assessments/delete-retry/report_json--')) throw new Error('cleanup unavailable');
+    return remove(key);
+  };
+  await assert.rejects(store.remove('assessments', 'delete-retry'), /cleanup unavailable/);
+  assert.ok(be.json('assessments')['delete-retry'], 'failed cleanup cannot remove its durable parent');
+  backend.delete = remove;
+  assert.equal(await store.remove('assessments', 'delete-retry'), true);
+  assert.equal([...be.data.keys()].filter((k) => k.startsWith('columns/assessments/delete-retry/')).length, 0);
+  assert.equal(await store.get('assessments', 'delete-retry'), null);
+});
+
+test('a failed parent commit cannot replace the report or paper visible to another warm instance', async () => {
+  const be = blobBackend();
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  await first.insert('assessments', { id: 'immutable', snapshot_json: paper(), report_json: { overall_pct: 50 } });
+  assert.equal((await second.get('assessments', 'immutable')).report_json.overall_pct, 50);
+  const backend = be.module.getStore();
+  const originalWrite = backend.setJSON.bind(backend);
+  backend.setJSON = async (key, value, opts) => {
+    if (key === 'assessments') throw new Error('parent commit failed');
+    return originalWrite(key, value, opts);
+  };
+  await assert.rejects(first.update('assessments', 'immutable', { snapshot_json: paper(3), report_json: { overall_pct: 99 } }), /parent commit failed/);
+  assert.deepEqual((await second.get('assessments', 'immutable')).snapshot_json, paper());
+  assert.equal((await second.get('assessments', 'immutable')).report_json.overall_pct, 50);
+  backend.setJSON = originalWrite;
+  await first.update('assessments', 'immutable', { report_json: { overall_pct: 80 } });
+  assert.equal((await second.get('assessments', 'immutable')).report_json.overall_pct, 80, 'warm cache follows the committed revision');
+  await first.remove('assessments', 'immutable');
+  assert.equal([...be.data.keys()].filter((k) => k.startsWith('columns/assessments/immutable/')).length, 0, 'deletion removes committed and abandoned versions');
+});
+
 /* --------------------------------------------------------------- json-file */
 
 test('json-file: the paper, the report and the answers live outside the database file; the row keeps markers', async () => {
@@ -64,7 +120,7 @@ test('json-file: the paper, the report and the answers live outside the database
   const a = await store.insert('assessments', { id: 'asm1', candidate_id: 'c1', status: 'assigned', snapshot_json: paper(), report_json: null, quiz_state: { index: 0 } });
   assert.deepEqual(a.snapshot_json, paper(), 'insert returns the full row');
   const rowsDir = file.replace(/\.json$/, '.rows');
-  assert.ok(fs.existsSync(path.join(rowsDir, KEY_ROOTS.column, 'assessments', 'asm1', 'snapshot_json.json')), 'the paper has its own file');
+  assert.ok(fs.existsSync(columnFile(file, 'asm1', 'snapshot_json')), 'the paper has its own versioned file');
   assert.ok(!fs.existsSync(path.join(rowsDir, KEY_ROOTS.column, 'assessments', 'asm1', 'report_json.json')), 'a null column is not detached');
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8')).tables.assessments.asm1;
   assert.ok(isDetachedMarker(onDisk.snapshot_json), 'the database file holds a marker, not the paper');
@@ -79,7 +135,7 @@ test('json-file: the paper, the report and the answers live outside the database
   assert.equal(lean[0].status, 'assigned');
 
   // a small update does not touch the paper file
-  const paperFile = path.join(rowsDir, KEY_ROOTS.column, 'assessments', 'asm1', 'snapshot_json.json');
+  const paperFile = columnFile(file, 'asm1', 'snapshot_json');
   const before = fs.statSync(paperFile).mtimeMs;
   await new Promise((r) => setTimeout(r, 20));
   const updated = await store.update('assessments', 'asm1', { quiz_state: { index: 1 } });
@@ -89,7 +145,7 @@ test('json-file: the paper, the report and the answers live outside the database
 
   // the report is detached when it arrives
   await store.update('assessments', 'asm1', { status: 'scored', report_json: { overall_pct: 50 } });
-  assert.ok(fs.existsSync(path.join(rowsDir, KEY_ROOTS.column, 'assessments', 'asm1', 'report_json.json')));
+  assert.ok(fs.existsSync(columnFile(file, 'asm1', 'report_json')));
   assert.deepEqual((await store.get('assessments', 'asm1')).report_json, { overall_pct: 50 });
 
   // answers: one file per assessment, ids `<assessment>/<question>`
@@ -152,7 +208,7 @@ test('json-file: the database file no longer grows with the papers and answers',
   }
   const growth = size() - one;
   assert.ok(growth < 20 * 600, `20 more papers with 40 answers each added ${growth} bytes to the database file (rows only)`);
-  assert.ok(fs.statSync(path.join(file.replace(/\.json$/, '.rows'), KEY_ROOTS.column, 'assessments', 'asm7', 'snapshot_json.json')).size > 20_000);
+  assert.ok(fs.statSync(columnFile(file, 'asm7', 'snapshot_json')).size > 20_000);
 });
 
 test('json-file: a database written by the previous version (papers inline, answers in the file) is read as is and moved out on first use', async () => {
@@ -203,13 +259,13 @@ test('netlify-blobs: one blob per paper, per report and per assessment of answer
   const be = blobBackend();
   const store = await createBlobsStore({ blobsModule: be.module });
   await store.insert('assessments', { id: 'asm1', candidate_id: 'c1', status: 'assigned', snapshot_json: paper(), report_json: null });
-  assert.deepEqual(be.json(`${KEY_ROOTS.column}/assessments/asm1/snapshot_json`), { value: paper() });
+  assert.deepEqual(be.json(blobColumn(be, 'asm1', 'snapshot_json')).value, paper());
   assert.ok(isDetachedMarker(be.json('assessments').asm1.snapshot_json));
   assert.ok(!be.data.has(`${KEY_ROOTS.column}/assessments/asm1/report_json`));
   assert.deepEqual((await store.get('assessments', 'asm1')).snapshot_json, paper());
 
   // the paper is read once per instance, then served from memory (write-once)
-  const paperReads = () => be.reads.filter((k) => k === `${KEY_ROOTS.column}/assessments/asm1/snapshot_json`).length;
+  const paperReads = () => be.reads.filter((k) => k === blobColumn(be, 'asm1', 'snapshot_json')).length;
   const n = paperReads();
   await store.get('assessments', 'asm1');
   await store.update('assessments', 'asm1', { quiz_state: { index: 1 } });
@@ -225,7 +281,7 @@ test('netlify-blobs: one blob per paper, per report and per assessment of answer
   assert.deepEqual((await other.list('responses', { assessment_id: 'asm1' })).map((r) => r.answer), ['a', 'b']);
 
   await store.update('assessments', 'asm1', { status: 'scored', report_json: { overall_pct: 80 } });
-  assert.deepEqual(be.json(`${KEY_ROOTS.column}/assessments/asm1/report_json`), { value: { overall_pct: 80 } });
+  assert.deepEqual(be.json(blobColumn(be, 'asm1', 'report_json')).value, { overall_pct: 80 });
   assert.deepEqual((await other.get('assessments', 'asm1')).report_json, { overall_pct: 80 });
 
   assert.equal(await store.remove('assessments', 'asm1'), true);

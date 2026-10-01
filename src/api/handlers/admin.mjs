@@ -1,6 +1,8 @@
 import { purgePreview, purgePerson } from '../person-purge.mjs';
 import { newToken } from '../../core/ids.mjs';
 import { expireExam } from '../exam-expiry.mjs';
+import { creationRequest, sameCreation, creationId } from '../creation-request.mjs';
+import { issueRecoveryLink } from '../recovery-service.mjs';
 import { hashPasswordAsync, hashPasswordsAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
@@ -16,7 +18,7 @@ import { validateFrameworkConfig } from '../../core/scoring.mjs';
 import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 import { defaultQuestionCountForRole } from '../../core/allocation-policy.mjs';
 import {
-  buildSnapshot, roleBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
+  buildSnapshot, roleBank, automaticSnapshotFromBank, advanceStage, autoAllocateAssessment, planBulkAutoAllocation, paperSummary, paperFacts,
   allocationLockKey, resolveAssessorId,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
@@ -914,20 +916,28 @@ export function adminHandlers(route) {
     // (and two portal users for one candidate). User creation is rare enough
     // that one lock for the whole route is the simplest correct answer.
     return withLock('users:create', async () => {
-    if ((await store.list('users', { username })).length) return conflict('Username already exists.');
+    const request = creationRequest(body, auth.user.id);
+    if (request?.error) return bad(request.error);
+    if (request && (await store.list('users')).some((u) => u.creation_request?.key === request.key
+      && u.creation_request.actor_id === auth.user.id && !sameCreation(u, request)))
+      return conflict('This request id was already used with different account details.');
+    const existing = (await store.list('users', { username }))[0];
+    if (existing && (!sameCreation(existing, request) || existing.active === false
+      || !await verifyPasswordAsync(body.password, existing.password_hash))) return conflict('Username already exists.');
     let candidate_id = null;
     if (body.role === 'candidate') {
       if (!body.candidate_id) return bad('A candidate record must be linked for candidate users.');
       const c = await store.get('candidates', body.candidate_id);
       if (!c || c.deleting) return bad('Linked candidate not found or being deleted.');
-      if ((await store.list('users', { candidate_id: c.id })).length) return conflict('That candidate already has a portal user.');
+      if ((await store.list('users', { candidate_id: c.id })).some((u) => u.id !== existing?.id)) return conflict('That candidate already has a portal user.');
       candidate_id = c.id;
     }
-    const rec = await store.insert('users', {
+    const rec = existing || await store.insert('users', {
+      ...(request ? { id: creationId(request, 'user'), creation_request: request } : {}),
       username, name: str(body.name, 120), email: str(body.email, 200), role: body.role,
       password_hash: await hashPasswordAsync(body.password), candidate_id, active: true, created_by: auth.user.id,
     });
-    await audit(store, auth.user, 'user_created', 'users', rec.id, `User "${username}" (${body.role}) created`);
+    if (!existing) await audit(store, auth.user, 'user_created', 'users', rec.id, `User "${username}" (${body.role}) created`);
 
     // Every candidate-role user is auto-allocated the configured default
     // assessment for their track, so onboarding never needs a manual Allocate
@@ -1045,6 +1055,18 @@ export function adminHandlers(route) {
       + (stranded ? ` (${stranded} open assessment(s) still assigned to this deactivated assessor)` : ''));
     return ok(stranded !== undefined ? { ...publicUser(updated), open_assessments: stranded } : publicUser(updated));
   })));
+
+  route('POST', '/admin/users/:id/recovery-link', A, async ({ store, params, body, auth }) => withLock(`identity:${params.id}`, async () => {
+    if (typeof body.password !== 'string' || !body.password) return bad('Admin password is required.');
+    const actor = await store.get('users', auth.user.id);
+    if (typeof body.password !== 'string' || !actor || actor.active === false
+      || !await verifyPasswordAsync(body.password, actor.password_hash)) return forbidden('Admin password is required and must be correct.');
+    const user = await store.get('users', params.id);
+    if (!user || user.active === false) return bad('The user must exist and be active.');
+    const result = await issueRecoveryLink(store, user, user.id === actor.id ? auth.session : null);
+    await audit(store, actor, 'recovery_link_created', 'users', user.id, '15-minute recovery link created; previous links and other sessions revoked.');
+    return ok(result);
+  }));
 
   // ------------------------------------------------ roles (assessment tracks)
   route('GET', '/admin/roles', A, async ({ store }) => {
@@ -1608,6 +1630,24 @@ export function adminHandlers(route) {
   // on it. Never persisted - allocation builds its own paper.
   route('POST', '/admin/question-bank/preview', A, async ({ store, body }) => {
     const roleKey = roleKeyOf(body);
+    if (body.mode === 'allocation') {
+      const role = (await store.list('roles', { key: roleKey })).find((r) => r.active !== false);
+      if (!role) return bad('Install and activate this role before previewing its allocated assessment.');
+      const bank = await roleBank(store, role.id);
+      const snapshot = automaticSnapshotFromBank(bank);
+      if (!snapshot?.questions.length) return unprocessable('The active question bank cannot fill this role’s default assessment.');
+      const counts = { total: snapshot.questions.length, technical_objective: 0, technical_open: 0, non_technical_objective: 0, non_technical_open: 0, from_optional: 0 };
+      const comps = new Map(bank.competencies.map((c) => [c.id, c]));
+      const questions = snapshot.questions.map((q) => {
+        const comp = comps.get(q.competency_id);
+        const nonTechnical = ['advisory', 'behavioral'].includes(comp?.category);
+        counts[`${nonTechnical ? 'non_technical' : 'technical'}_${q.type === 'text' ? 'open' : 'objective'}`]++;
+        return { id: q.id, module: comp?.name || '', family: q.type === 'scale' ? 'Scale' : '', type: q.type === 'text' ? 'open' : 'objective', prompt: q.prompt };
+      });
+      const requested = defaultQuestionCountForRole(role);
+      return ok({ mode: 'allocation', role_name: role.name, requested, counts, blueprint: counts, sections: [], questions,
+        warnings: counts.total < requested ? [`Only ${counts.total} eligible questions are available for the configured ${requested}-question assessment.`] : [] });
+    }
     const bank = requireBank(roleKey);
     if (!bank) return bad(`No published module bank for role key "${roleKey}".`);
     const { questions } = await bankContext(store, roleKey);
@@ -1617,6 +1657,7 @@ export function adminHandlers(route) {
       questions: [...questions, ...optionalQuestions],
     });
     return ok({
+      mode: 'module-template',
       counts: result.counts,
       blueprint: result.blueprint,
       warnings: result.warnings,
@@ -1890,6 +1931,13 @@ export function adminHandlers(route) {
     }
     const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
       .find((a) => a.role_id === body.role_id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
+    const request = creationRequest(body, auth.user.id);
+    if (request?.error) return bad(request.error);
+    if (open && sameCreation(open, request)) {
+      await store.update('candidates', candidate.id, { target_role_id: candidate.target_role_id || body.role_id });
+      await advanceStage(store, candidate.id, 'assessment');
+      return created(await store.get('assessments', open.id));
+    }
     if (open) return conflict('This candidate already has an open assessment for that role.');
     const snapshot = await buildSnapshot(store, body.role_id, { questionLimit });
     if (!snapshot) return bad('Role not found or inactive.');
@@ -1898,6 +1946,7 @@ export function adminHandlers(route) {
       return bad(`That role only has ${snapshot.bank_total} active question(s). Choose ${snapshot.bank_total} or fewer.`);
     if (!snapshot.questions.length) return bad('That role has no active questions yet. Add questions first.');
     const rec = await store.insert('assessments', {
+      ...(request ? { id: creationId(request, 'assessment'), creation_request: request } : {}),
       candidate_id: candidate.id, role_id: body.role_id, assessor_id,
       status: 'assigned', snapshot_json: snapshot, report_json: null,
       ...paperSummary(snapshot),

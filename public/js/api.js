@@ -88,7 +88,8 @@ export async function apiAll(path, key, { limit = 500 } = {}) {
   return rows;
 }
 
-export const login = (username, password) => api('/auth/login', { method: 'POST', body: { username, password } });
+export const login = (username, password, otp) => api('/auth/login', { method: 'POST', body: { username, password, ...(otp ? { otp } : {}) } });
 export const logout = () => api('/auth/logout', { method: 'POST' });
 export const me = () => api('/auth/me');
 export const bootstrap = () => api('/meta/bootstrap');
+export const newRequestId = () => crypto.randomUUID();

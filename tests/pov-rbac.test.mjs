@@ -14,8 +14,8 @@ import { registerRoutes } from '../src/api/router.mjs';
 import { makeWorld } from './helpers/world.mjs';
 
 const ROUTES = registerRoutes();
-const PUBLIC = ['POST /auth/login', 'GET /meta/bootstrap', 'GET /health'];
-const ANY_SIGNED_IN = ['POST /auth/logout', 'POST /auth/password', 'GET /auth/me'];
+const PUBLIC = ['POST /auth/login', 'POST /auth/recover', 'GET /meta/bootstrap', 'GET /health'];
+const ANY_SIGNED_IN = ['POST /auth/logout', 'POST /auth/password', 'GET /auth/me', 'GET /auth/security', 'POST /auth/mfa/setup', 'POST /auth/mfa/enable', 'POST /auth/mfa/disable'];
 const sig = (r) => `${r.method} ${r.pattern}`;
 const concrete = (pattern) => pattern.replace(/:[a-z_]+/g, 'rec_doesnotexist0000');
 

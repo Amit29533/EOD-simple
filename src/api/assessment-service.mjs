@@ -243,6 +243,8 @@ export async function autoAllocateAssessment(store, candidate, {
     const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
       .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
     if (open) {
+      // Recover a prior insert whose response/stage update was interrupted.
+      if (candidate.stage !== 'assessment') await advanceStage(store, candidate.id, 'assessment');
       return fail(`“${candidate.name}” already has an open ${role.name} assessment.`,
         { role, assessment_id: open.id });
     }

@@ -1,5 +1,7 @@
 # ECOD fixing strategy
 
+Implementation progress and rollout requirements: [Reliability implementation](RELIABILITY-IMPLEMENTATION.md). The continuous expiry fix is shipped; the next implementation adds immutable evidence, retry support, allocation previews, account recovery, optional MFA, and storage isolation. The implementation report explicitly lists the remaining portions of stages 2–6.
+
 ## Delivery order
 
 1. **Continuous two-hour exam window — implemented in this change.** Enforce expiry in the API using the first exam-hall entry time; preserve saved responses and close the attempt for review. Show the rule before entry, remaining exam time during the exam, and a clear expired state on return. Validate boundary conditions, reopening, direct API calls, and assessor access.

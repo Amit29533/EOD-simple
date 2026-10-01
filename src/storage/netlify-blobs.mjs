@@ -7,17 +7,21 @@ import { createRowTable, isRowTable, createShardTable, isShardTable, SHARD_TABLE
  * One blob per table. Suitable for the MVP scale; swap STORAGE=airtable or a
  * future SQL adapter as you grow - the rest of the app does not change.
  */
-export async function createBlobsStore({ blobsModule = null } = {}) {
+export async function createBlobsStore({ blobsModule = null, requireConsistency = process.env.BLOBS_REQUIRE_CONSISTENCY === 'true' || process.env.CONTEXT === 'production' } = {}) {
   let blobs = blobsModule;
   if (!blobs) {
     try { blobs = await import('@netlify/blobs'); }
     catch { throw new Error('STORAGE=blobs requires the @netlify/blobs package inside the Netlify runtime.'); }
   }
+  const storeName = process.env.BLOBS_STORE_NAME || (['deploy-preview', 'branch-deploy'].includes(process.env.CONTEXT)
+    ? `ecod-preview-${String(process.env.REVIEW_ID || process.env.BRANCH || 'default').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80)}` : 'ecod');
+  const consistencyError = () => Object.assign(new Error('Production storage requires strong reads and conditional writes.'), { code: 'STORE_CONFLICT' });
   const store = blobs.getStore(
   process.env.NETLIFY_SITE_ID && process.env.NETLIFY_AUTH_TOKEN
-    ? { name: 'ecod', siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_AUTH_TOKEN }
-    : 'ecod'
+    ? { name: storeName, siteID: process.env.NETLIFY_SITE_ID, token: process.env.NETLIFY_AUTH_TOKEN }
+    : storeName
 );
+  if (requireConsistency && typeof store.getWithMetadata !== 'function') throw consistencyError();
   const cache = new Map(); // table -> { rows, at }
   /**
    * Tables that are NEVER served from the cache or from an eventual read:
@@ -65,6 +69,7 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
       return await store.get(t, opts);
     } catch (err) {
       if (opts.consistency === 'strong' && err?.name === 'BlobsConsistencyError') {
+        if (requireConsistency) throw consistencyError();
         strongReads = false;
         return store.get(t, { type: 'json' });
       }
@@ -86,11 +91,13 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
       res = await store.getWithMetadata(t, opts);
     } catch (err) {
       if (opts.consistency === 'strong' && err?.name === 'BlobsConsistencyError') {
+        if (requireConsistency) throw consistencyError();
         strongReads = false;
         res = await store.getWithMetadata(t, { type: 'json' });
       } else throw err;
     }
     if (!res) return { value: null, etag: null };
+    if (requireConsistency && (typeof res.etag !== 'string' || !res.etag)) throw consistencyError();
     return { value: res.data, etag: typeof res.etag === 'string' && res.etag ? res.etag : undefined };
   };
   /**
@@ -303,7 +310,7 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
      */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (t !== 'assessments') throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return mutate(t, async (rows) => {
         const prior = rowOf(rows, id);
@@ -410,12 +417,12 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
     async remove(t, id) {
       if (isRowTable(t)) return rowTable(t).remove(id);
       if (isShardTable(t)) return shardTable(t).remove(id);
-      const removed = await mutate(t, (rows) => {
+      const removed = await mutate(t, async (rows) => {
         if (!rowOf(rows, id)) return { result: false, write: false };
+        await detacher(t).drop(id);
         delete rows[id];
         return { result: true, write: true };
       });
-      if (removed) await detacher(t).drop(id);
       return removed;
     },
     /** Batch delete in one blob write; see the json-file adapter for the contract. */
@@ -423,16 +430,16 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
       if (isRowTable(t)) return rowTable(t).removeMany(ids);
       if (isShardTable(t)) return shardTable(t).removeMany(ids);
       const gone = [];
-      const removed = await mutate(t, (rows) => {
+      const removed = await mutate(t, async (rows) => {
         gone.length = 0;
         for (const id of ids) {
           if (!rowOf(rows, id)) continue;
+          await detacher(t).drop(id);
           delete rows[id];
           gone.push(id);
         }
         return { result: gone.length, write: gone.length > 0 };
       });
-      for (const id of gone) await detacher(t).drop(id);
       return removed;
     },
   };

@@ -3,6 +3,10 @@ import { verifyPasswordAsync, hashPasswordAsync } from '../../core/passwords.mjs
 import { createGate } from '../../core/gate.mjs';
 import { ok, bad, forbidden, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
+import { redeemRecoveryLink } from '../recovery-service.mjs';
+import { consumeMfa, beginMfa, enableMfa } from '../mfa-service.mjs';
+import { mfaConfigured } from '../../core/mfa.mjs';
+import { newToken } from '../../core/ids.mjs';
 
 /**
  * Failed-login throttle.
@@ -158,6 +162,10 @@ export function authHandlers(route) {
     if (!fresh || fresh.active === false || fresh.password_hash !== user.password_hash)
       return unauthorized('Invalid username or password.');
     user = fresh;
+    if (!await consumeMfa(store, user, body.otp)) {
+      recordFailure(username, address);
+      return unauthorized('Authenticator code or backup code is required and must be valid.');
+    }
     recordSuccess(username, address);
 
     // Session hygiene is scoped to THIS user, never a full-table scan on the
@@ -168,6 +176,7 @@ export function authHandlers(route) {
     const mine = await store.list('sessions', { user_id: user.id });
     const live = mine
       .filter((s) => new Date(s.expires_at).getTime() >= now)
+      .filter((s) => !s.purpose || s.purpose === 'login')
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
     const drop = [
       ...mine.filter((s) => new Date(s.expires_at).getTime() < now),
@@ -192,6 +201,20 @@ export function authHandlers(route) {
 
   route('POST', '/auth/logout', null, async ({ store, auth }) => {
     await store.remove('sessions', auth.session.id);
+    return ok({ ok: true });
+  });
+
+  route('POST', '/auth/recover', 'public', async ({ store, body }) => {
+    if (typeof body.token !== 'string' || !/^[a-f0-9]{64}$/i.test(body.token)) return forbidden('The recovery link is invalid or expired.');
+    if (typeof body.password !== 'string' || body.password.length < 12 || body.password.length > 200)
+      return bad('Password must contain 12 to 200 characters.');
+    try {
+      if (!await redeemRecoveryLink(store, body.token, body.password)) return forbidden('The recovery link is invalid, expired or already used.');
+    } catch (err) {
+      if (err?.code === 'GATE_FULL') return tooMany('Password recovery is busy. Please try again shortly.');
+      throw err;
+    }
+    await audit(store, null, 'password_recovered', 'users', null, 'Password recovered; existing sessions revoked.');
     return ok({ ok: true });
   });
 
@@ -231,4 +254,41 @@ export function authHandlers(route) {
       candidate: candidate ? { id: candidate.id, name: candidate.name, stage: candidate.stage } : null,
     });
   });
+
+  route('GET', '/auth/security', null, async ({ auth }) => ok({ mfa_enabled: Boolean(auth.user.mfa_json?.enabled), setup_available: mfaConfigured() }));
+  route('POST', '/auth/mfa/setup', null, async ({ store, auth, body }) => withLock(`identity:${auth.user.id}`, async () => {
+    if (typeof body.password !== 'string' || !body.password) return bad('Current password is required.');
+    const user = await store.get('users', auth.user.id);
+    if (!user || user.active === false || user.session_generation !== auth.user.session_generation) return unauthorized();
+    if (!await verifyPasswordAsync(body.password, user.password_hash)) return forbidden('Current password is incorrect.');
+    if (user.mfa_json?.enabled) return bad('Authenticator protection is already enabled. Disable it before replacing it.');
+      const result = await beginMfa(store, user);
+      return result ? ok(result) : bad('Your account changed during setup. Reload and try again.');
+  }));
+  route('POST', '/auth/mfa/enable', null, async ({ store, auth, body }) => withLock(`identity:${auth.user.id}`, async () => {
+    const user = await store.get('users', auth.user.id);
+    if (!user || user.active === false || user.session_generation !== auth.user.session_generation) return unauthorized();
+    const result = await enableMfa(store, user, auth.session, body.otp);
+    if (!result) return bad('Authenticator code is invalid or setup expired. Start setup again.');
+    await audit(store, user, 'mfa_enabled', 'users', user.id, 'Authenticator protection enabled; other sessions revoked.');
+    return ok(result);
+  }));
+  route('POST', '/auth/mfa/disable', null, async ({ store, auth, body }) => withLock(`identity:${auth.user.id}`, async () => {
+    if (typeof body.password !== 'string' || !body.password) return bad('Current password is required.');
+    const user = await store.get('users', auth.user.id);
+    if (!user || user.active === false || user.session_generation !== auth.user.session_generation) return unauthorized();
+    if (!await verifyPasswordAsync(body.password, user.password_hash) || !await consumeMfa(store, user, body.otp)) return forbidden('Current password and a fresh authenticator or unused backup code are required.');
+    const generation = newToken();
+    await store.update('sessions', auth.session.id, { session_generation: generation });
+      const patch = { mfa_json: null, session_generation: generation };
+      if (typeof store.changeRow === 'function') {
+        const result = await store.changeRow('users', { id: user.id }, (current) =>
+          current?.active !== false && current?.password_hash === user.password_hash
+          && current?.session_generation === user.session_generation
+          && JSON.stringify(current?.mfa_json?.secret) === JSON.stringify(user.mfa_json?.secret) ? patch : undefined);
+        if (!result.changed) return unauthorized();
+      } else await store.update('users', user.id, patch);
+    await audit(store, user, 'mfa_disabled', 'users', user.id, 'Authenticator protection disabled; other sessions revoked.');
+    return ok({ ok: true });
+  }));
 }

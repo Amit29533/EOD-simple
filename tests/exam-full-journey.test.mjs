@@ -802,11 +802,11 @@ test('F2 · an audio-only open answer is stored and locked, never treated as bla
   assert.ok(drafted, 'an audio-only draft is not discarded as blank');
   assert.ok(drafted.answer.audio_ref, 'and it is not stripped down to an empty answer');
   assert.equal(await clipOf(w.store, alloc.id, w.ids.open), B64);
-  // clearing the draft removes the recording with it
+  // Clearing the draft removes its reference; immutable media is retained for safe cleanup.
   assert.equal((await w.call('PUT', `/candidate/assessments/${alloc.id}/answers`, {
     token: tok, body: { answers: { [w.ids.open]: { text: '', transcript: '' } } },
   })).status, 200);
-  assert.equal(await clipOf(w.store, alloc.id, w.ids.open), null, 'a cleared draft leaves no orphan recording');
+  assert.equal(await clipOf(w.store, alloc.id, w.ids.open), B64, 'abandoned immutable versions remain until safe cleanup');
   assert.equal((await w.store.list('responses', { assessment_id: alloc.id })).find((x) => x.question_id === w.ids.open), undefined);
 
   // the recording must also survive the final submit, which re-walks every answer

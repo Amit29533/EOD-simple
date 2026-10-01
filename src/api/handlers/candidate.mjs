@@ -12,6 +12,7 @@ import {
 import { withLock } from '../mutex.mjs';
 import { paperFacts, paperSummary } from '../assessment-service.mjs';
 import { examDeadline, examHasExpired, expireExam } from '../exam-expiry.mjs';
+import { createHash } from 'node:crypto';
 
 const R = ['candidate'];
 
@@ -184,22 +185,19 @@ function splitAnswer(q, value, { trusted = false, keep = null } = {}) {
   return { answer: out, audio, kept };
 }
 
-/** The one recording row for (assessment, question): replaced in place. */
+/** Content-addressed recording: attaching it cannot alter any earlier answer. */
 async function saveRecording(store, assessmentId, questionId, audio) {
-  const rows = await store.list('recordings', { assessment_id: assessmentId, question_id: questionId });
-  if (rows.length) {
-    const [keep, ...extra] = rows;
-    await store.update('recordings', keep.id, { audio });
-    if (extra.length) await bulkRemove(store, 'recordings', extra.map((r) => r.id));
-    return keep.id;
+  const revision = createHash('sha256').update(JSON.stringify(audio)).digest('hex');
+  const id = `${assessmentId}/${questionId}--${revision}`;
+  const prior = await store.get('recordings', id);
+  if (prior) return prior.id;
+  try {
+    const rec = await store.insert('recordings', { id, assessment_id: assessmentId, question_id: questionId, revision, audio });
+    return rec.id;
+  } catch (err) {
+    if (err?.code === 'DUPLICATE_ID' && await store.get('recordings', id)) return id;
+    throw err;
   }
-  const rec = await store.insert('recordings', { assessment_id: assessmentId, question_id: questionId, audio });
-  return rec.id;
-}
-
-async function dropRecordings(store, assessmentId, questionId) {
-  const rows = await store.list('recordings', { assessment_id: assessmentId, question_id: questionId });
-  if (rows.length) await bulkRemove(store, 'recordings', rows.map((r) => r.id));
 }
 
 /** Submit-time migration for older response rows that still carry inline audio. */
@@ -436,10 +434,8 @@ export function candidateHandlers(route) {
       if (result.row?.locked) ignored.push(qid);
       else {
         accepted.push(qid);
-        // Deleting the old recording before the CAS could delete a clip that
-        // a concurrent /next just locked; only remove it after our change.
-        if (result.changed && q.type === 'text' && !result.row?.answer?.audio_ref)
-          await dropRecordings(store, a.id, qid);
+        // Unreferenced versions remain until retention/deletion. Immediate
+        // cleanup could delete a concurrent lock's not-yet-attached version.
       }
     }
     if (examHasExpired(a)) {
@@ -696,7 +692,6 @@ export function candidateHandlers(route) {
     if (locked.changed) {
       const stored = locked.row.answer;
       const draftUsed = !posted && !isBlank(q, stored);
-      if (q.type === 'text' && !stored?.audio_ref) await dropRecordings(store, a.id, q.id);
       await noteMissingSpoken(stored);
       if (hardExpired) {
         pendingEvents.unshift({
