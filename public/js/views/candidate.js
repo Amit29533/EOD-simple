@@ -2,7 +2,7 @@ import { wireMicrophoneCheck } from '../microphone-check.js';
 import { api, session } from '../api.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
-  esc, fmtDate, loading, emptyState, toast, attempt,
+  esc, fmtDate, fmtDateTime, loading, emptyState, toast, attempt,
   pipelineStepper, assessmentStatusBadge, readinessBadge,
 } from '../ui.js';
 import { renderReport } from './report.js';
@@ -48,8 +48,8 @@ export async function portalView(view) {
               <span>${a.question_count} questions</span><span>Allocated ${esc(fmtDate(a.created_at))}</span>
             </div>
             <p class="small candidate-next-step">${a.status === 'assigned' ? 'Review the exam rules and device checks before you begin.'
-              : a.status === 'in_progress' ? 'Your saved exam is waiting. Continue from the next question.'
-                : a.status === 'submitted' ? 'Under assessor review. The report will appear here when scoring is complete.'
+              : a.status === 'in_progress' ? `Continue your saved exam. The two-hour window ends ${esc(fmtDateTime(a.expires_at))}; closing the browser does not pause it.`
+                : a.status === 'submitted' ? (a.exam_expired ? 'The two-hour exam window expired. Your saved answers are available for assessor review.' : 'Under assessor review. The report will appear here when scoring is complete.')
                   : 'Your assessment has been scored. Open the report for results and development guidance.'}</p>
           </div>
           <div class="candidate-assessment-action">
@@ -72,9 +72,9 @@ export async function portalView(view) {
 }
 
 /* ================================ Secure exam ================================ */
-function renderSubmitted(view) {
+function renderSubmitted(view, expired = false) {
   document.body.classList.remove('exam-lock');
-  view.innerHTML = `<div class="card">${emptyState('Assessment submitted', 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
+  view.innerHTML = `<div class="card">${emptyState(expired ? 'Exam time limit reached' : 'Assessment submitted', expired ? 'The two-hour window has expired. You cannot continue this exam. Saved answers are preserved for assessor review; contact your administrator if you need a new attempt.' : 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', expired ? '⏱' : '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
 }
 
 export async function quizView(view, { id }) {
@@ -89,7 +89,7 @@ export async function quizView(view, { id }) {
     // the rules on their own time — nothing ticks until they press enter.
     const list = await api('/candidate/assessments');
     const a = (list.assessments || []).find((x) => x.id === id);
-    if (a && a.status === 'submitted') { renderSubmitted(view); return; }
+    if (a && a.status === 'submitted') { renderSubmitted(view, a.exam_expired); return; }
     if (a && ['scored', 'validated'].includes(a.status)) { location.hash = `#/assessments/${id}/report`; return; }
     if (!a) {
       document.body.classList.remove('exam-lock');
@@ -112,7 +112,7 @@ export async function quizView(view, { id }) {
   // "Loading workspace" spinner that never resolves.
   const d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
 
-  if (d.assessment.status === 'submitted') { renderSubmitted(view); return; }
+  if (d.assessment.status === 'submitted') { renderSubmitted(view, d.assessment.exam_expired); return; }
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
 
   // An exam whose cursor is already complete (the last lock landed, then the
@@ -136,6 +136,7 @@ function renderExamGate(view, d, onStart) {
         <p class="muted">You are about to start a timed, proctored-style assessment for <b>${esc(d.assessment.role?.name || 'this role')}</b>. ${total} question${total === 1 ? '' : 's'} will be presented one at a time. You cannot return to a question once it has passed.</p>
         <ul class="exam-rules">
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
+          <li><b>Two-hour exam window.</b> It starts when you enter the exam hall and runs continuously, including when you close the browser or sign out. After two hours the exam closes and saved answers remain available for review.</li>
           <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer. Multi-select items score only on an exact match — any incorrect choice scores the question at zero, with no partial credit.</li>
           <li><b>Open / scenario:</b> 60 seconds to review the scenario, then 2 minutes to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
           <li><b>Microphone.</b> An open question cannot be locked without a recording, so allow the browser's microphone prompt. Granting access on the review screen keeps the dialog from eating your answer time.</li>
@@ -540,6 +541,10 @@ async function runExamSession(view, id, payload) {
         // time. Other conflicts (submitted/scored, invalid input) are real.
         if (!unmounted && err?.status === 409 && /record was created by another request/i.test(err.message || ''))
           return sendLock();
+        if (!unmounted && err?.status === 409) {
+          const latest = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+          if (latest.assessment?.exam_expired) return { complete: true, screen: latest };
+        }
         throw err;
       }
     });
@@ -563,6 +568,7 @@ async function runExamSession(view, id, payload) {
       // journey reload — happens behind the handover panel.
       finished = true;
       teardown();
+      if (out.screen?.assessment?.exam_expired) { renderSubmitted(view, true); return; }
       renderSubmitHandover(view);
       await finalizeExam(id);
       return;
@@ -618,6 +624,9 @@ async function runExamSession(view, id, payload) {
 
   function paint() {
     if (!stillHere()) { teardown(); return; }
+    if (d.assessment?.status === 'submitted') {
+      finished = true; teardown(); renderSubmitted(view, d.assessment.exam_expired); return;
+    }
     const q = d.current_question;
     const exam = d.exam;
     if (!q || exam.complete) {
@@ -638,6 +647,7 @@ async function runExamSession(view, id, payload) {
     const n = exam.index + 1;
     const pctFill = exam.total ? Math.round((exam.index / exam.total) * 100) : 0;
     const deadline = Date.now() + (exam.remaining_ms || 0);
+    const sessionDeadline = exam.session_remaining_ms == null ? Infinity : Date.now() + exam.session_remaining_ms;
     deadlineAt = deadline;
     // A fresh question (or a repaint of this one) starts with nothing to save;
     // `currentAnswer` below is whatever draft the server already holds.
@@ -660,6 +670,7 @@ async function runExamSession(view, id, payload) {
           <div class="exam-clock ${exam.remaining_ms < 8000 ? 'urgent' : ''}" id="exam-clock" role="timer" aria-label="Time remaining">
             <span class="exam-clock-label">Time left</span>
             <strong class="exam-timer" id="exam-timer">${fmtMs(exam.remaining_ms)}</strong>
+            <span class="small muted" id="exam-session-timer">Exam window: ${exam.session_remaining_ms == null ? '2 hours' : fmtStopwatch(exam.session_remaining_ms)}</span>
           </div>
         </div>
         ${d.competency ? `<div class="exam-comp">${esc(d.competency.name)}</div>` : ''}
@@ -1006,6 +1017,16 @@ async function runExamSession(view, id, payload) {
     const startClock = () => {
       if (ticking) clearInterval(ticking);
       ticking = setInterval(() => {
+        const sessionLeft = sessionDeadline - Date.now();
+        const sessionTimer = view.querySelector('#exam-session-timer');
+        if (sessionTimer && Number.isFinite(sessionLeft)) sessionTimer.textContent = `Exam window: ${fmtStopwatch(sessionLeft)}`;
+        if (sessionLeft <= 0) {
+          finished = true;
+          teardown();
+          renderSubmitted(view, true);
+          api(`/candidate/assessments/${id}`).catch(() => toast('Time limit reached. The server will confirm closure when your connection returns.', 'error'));
+          return;
+        }
         const left = deadline - Date.now();
         const el = view.querySelector('#exam-timer');
         if (el) {

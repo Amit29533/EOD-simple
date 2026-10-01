@@ -11,6 +11,7 @@ import {
 } from '../../core/spoken-answer.mjs';
 import { withLock } from '../mutex.mjs';
 import { paperFacts, paperSummary } from '../assessment-service.mjs';
+import { examDeadline, examHasExpired, expireExam } from '../exam-expiry.mjs';
 
 const R = ['candidate'];
 
@@ -33,7 +34,7 @@ async function myCandidate(store, user) {
 }
 async function ownAssessment(store, user, id) {
   const a = await store.get('assessments', id);
-  return a && a.candidate_id === user.candidate_id ? a : null;
+  return a && a.candidate_id === user.candidate_id ? expireExam(store, a) : null;
 }
 
 function textValue(value) {
@@ -73,7 +74,7 @@ function examScreen(a, questions, quiz, responses) {
   const snap = a.snapshot_json;
   const answers = Object.fromEntries(responses.map((r) => [r.question_id, r.answer]));
   const idx = Math.min(quiz.index, questions.length);
-  const current = questions[idx] || null;
+  const current = a.status === 'in_progress' ? questions[idx] || null : null;
   const now = Date.now();
   const remaining = current ? remainingMs(current, quiz, now) : 0;
   const budgets = current ? budgetsFor(current) : null;
@@ -83,6 +84,8 @@ function examScreen(a, questions, quiz, responses) {
   return {
     assessment: {
       id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at,
+      expires_at: examDeadline(a) ? new Date(examDeadline(a)).toISOString() : null,
+      exam_expired: Boolean(quiz.exam_expired),
       role: snap.role ? { name: snap.role.name, description: snap.role.description } : null,
     },
     exam: {
@@ -91,9 +94,10 @@ function examScreen(a, questions, quiz, responses) {
       phase: quiz.phase || 'answer',
       remaining_ms: remaining,
       server_now: new Date(now).toISOString(),
+      session_remaining_ms: examDeadline(a) === null ? null : Math.max(0, examDeadline(a) - now),
       budgets,
       integrity: quiz.integrity || {},
-      complete: idx >= questions.length,
+      complete: a.status !== 'in_progress' || idx >= questions.length,
     },
     current_question: current ? questionForCandidate(current) : null,
     current_answer: current ? (answers[current.id] ?? null) : null,
@@ -300,7 +304,8 @@ export function candidateHandlers(route) {
   route('GET', '/candidate/assessments', R, async ({ store, auth }) => {
     const candidate = await myCandidate(store, auth.user);
     if (!candidate) return conflict('No candidate record is linked to your login. Contact your administrator.');
-    const rows = await store.list('assessments', { candidate_id: candidate.id }, { detached: false });
+    const listed = await store.list('assessments', { candidate_id: candidate.id }, { detached: false });
+    const rows = await Promise.all(listed.map((a) => expireExam(store, a)));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const facts = await paperFacts(store, rows);
     return ok({
@@ -308,6 +313,8 @@ export function candidateHandlers(route) {
       assessments: rows.map((a, i) => ({
         id: a.id, status: a.status, created_at: a.created_at, started_at: a.started_at,
         submitted_at: a.submitted_at, scored_at: a.scored_at,
+        expires_at: examDeadline(a) ? new Date(examDeadline(a)).toISOString() : null,
+        exam_expired: Boolean(a.quiz_state?.exam_expired),
         overall_pct: ['scored', 'validated'].includes(a.status) ? a.overall_pct : null,
         readiness_label: ['scored', 'validated'].includes(a.status) ? a.readiness_label : null,
         readiness_key: ['scored', 'validated'].includes(a.status) ? a.readiness_key : null,
@@ -339,6 +346,12 @@ export function candidateHandlers(route) {
         patch.started_at = new Date().toISOString();
         Object.assign(candidate, patch);
       }
+      // Repair only legacy exams with no usable start; a valid start never resets.
+      if (current.status === 'in_progress' && examDeadline(current) === null) {
+        patch.started_at = current.quiz_state?.question_started_at && Number.isFinite(Date.parse(current.quiz_state.question_started_at))
+          ? current.quiz_state.question_started_at : new Date().toISOString();
+        Object.assign(candidate, patch);
+      }
       const currentQuiz = ensureQuizState(candidate, questions);
       // Persist the state whenever ensureQuizState had to create or heal it.
       if (!current.quiz_state || currentQuiz.question_started_at !== current.quiz_state.question_started_at)
@@ -348,7 +361,7 @@ export function candidateHandlers(route) {
       return Object.keys(patch).length ? patch : undefined;
     });
     if (!opened.row) return notFound('Assessment not found.');
-    const current = { ...a, ...opened.row, snapshot_json: snap };
+    const current = await expireExam(store, { ...a, ...opened.row, snapshot_json: snap });
     const quiz = ensureQuizState(current, questions);
 
     const responses = await store.list('responses', { assessment_id: a.id });
@@ -411,6 +424,7 @@ export function candidateHandlers(route) {
       }
       const audioRef = audio ? await saveRecording(store, a.id, qid, audio) : null;
       const result = await changeResponse(store, a.id, qid, (current) => {
+        if (examHasExpired(a)) return undefined;
         if (current?.locked) return undefined;
         if (clearing || (q.type === 'text' && !openAnswerHasContent(value) && !keepsRecording(q, value, current)))
           return current ? null : undefined;
@@ -427,6 +441,10 @@ export function candidateHandlers(route) {
         if (result.changed && q.type === 'text' && !result.row?.answer?.audio_ref)
           await dropRecordings(store, a.id, qid);
       }
+    }
+    if (examHasExpired(a)) {
+      await expireExam(store, a);
+      return conflict('The two-hour exam window has expired.');
     }
     if (a.status === 'assigned')
       await changeAssessment(store, a.id, (current) => current.status === 'assigned'
@@ -506,7 +524,7 @@ export function candidateHandlers(route) {
     let outcome = 'unchanged';
     const transitioned = await changeAssessment(store, a.id, (current) => {
       if (!current) { outcome = 'missing'; return undefined; }
-      if (!['assigned', 'in_progress'].includes(current.status)) { outcome = 'closed'; return undefined; }
+      if (!['assigned', 'in_progress'].includes(current.status) || examHasExpired(current)) { outcome = 'closed'; return undefined; }
       const quiz = ensureQuizState(current, questions);
       const q = questions[quiz.index];
       if (!q || q.id !== expectedQuestionId) { outcome = 'moved'; return undefined; }
@@ -527,7 +545,7 @@ export function candidateHandlers(route) {
       return { quiz_state: { ...base, phase: 'answer', question_started_at: new Date().toISOString() } };
     });
     if (!transitioned.row || outcome === 'missing') return notFound('Assessment not found.');
-    if (outcome === 'closed') return conflict('This assessment is no longer in progress.');
+    if (outcome === 'closed') { await expireExam(store, transitioned.row); return conflict('This assessment is no longer in progress.'); }
     if (outcome === 'moved') return conflict('The current question changed. Refresh the assessment and try again.');
     if (outcome === 'not-open') return unprocessable('This question has no review phase.');
     if (outcome === 'already-answer')
@@ -655,6 +673,7 @@ export function candidateHandlers(route) {
     const audio = posted && q.type === 'text' && !r?.locked ? splitAnswer(q, answerToLock).audio : null;
     const audioRef = audio ? await saveRecording(store, a.id, q.id, audio) : null;
     const locked = await changeResponse(store, a.id, q.id, (current) => {
+      if (examHasExpired(a)) return undefined;
       if (current?.locked) return undefined; // another /next already took this answer
       const usable = posted || (answerToLock !== null && answerToLock !== undefined
         && keepsRecording(q, answerToLock, current));
@@ -670,6 +689,10 @@ export function candidateHandlers(route) {
       }
       return { answer, locked: true };
     });
+    if (examHasExpired(a)) {
+      await expireExam(store, a);
+      return conflict('The two-hour exam window has expired.');
+    }
     if (locked.changed) {
       const stored = locked.row.answer;
       const draftUsed = !posted && !isBlank(q, stored);
@@ -700,6 +723,7 @@ export function candidateHandlers(route) {
     // integrity beacon that arrived meanwhile is kept too.
     const moved = await changeAssessment(store, a.id, (current) => {
       if (!current || !['assigned', 'in_progress'].includes(current.status)) return undefined;
+      if (examHasExpired(current)) return undefined;
       const latest = ensureQuizState(current, questions);
       if (latest.index !== quiz.index) return undefined;
       let state = latest;
@@ -713,6 +737,10 @@ export function candidateHandlers(route) {
       } };
     });
     if (!moved.row) return notFound('Assessment not found.');
+    if (examHasExpired(moved.row)) {
+      await expireExam(store, moved.row);
+      return conflict('The two-hour exam window has expired.');
+    }
     const index = moved.row.quiz_state?.index ?? quiz.index;
     const complete = index >= questions.length;
     // The next screen rides along with a successful advance (see examScreen).

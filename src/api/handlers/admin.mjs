@@ -1,5 +1,6 @@
 import { purgePreview, purgePerson } from '../person-purge.mjs';
 import { newToken } from '../../core/ids.mjs';
+import { expireExam } from '../exam-expiry.mjs';
 import { hashPasswordAsync, hashPasswordsAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
@@ -1415,6 +1416,7 @@ export function adminHandlers(route) {
     // Small columns only: the papers stay in their own objects (one fetch per
     // row would make this listing cost every paper ever allocated).
     let rows = await store.list('assessments', {}, { detached: false });
+    rows = await Promise.all(rows.map((a) => expireExam(store, a)));
     // Opportunistic cleanup (no scheduler in this deployment): the listing the
     // admin is looking at is exactly the set the policy applies to. Never
     // awaited — the response is already built from the rows below.

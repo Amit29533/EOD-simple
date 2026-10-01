@@ -10,6 +10,7 @@ import {
   getRetentionSettings, paperRetention, deleteAssessmentRecording, sweepInBackground,
 } from '../retention-service.mjs';
 import { answerRetention } from '../../core/retention.mjs';
+import { expireExam } from '../exam-expiry.mjs';
 
 const R = ['assessor'];
 
@@ -21,7 +22,7 @@ const locked = (fn) => async (ctx) => withLock(`assessment:${ctx.params.id}`, ()
 /** Load an assessment only if it belongs to the signed-in assessor (404 hides existence). */
 async function own(store, assessorId, assessmentId) {
   const a = await store.get('assessments', assessmentId);
-  return a && a.assessor_id === assessorId ? a : null;
+  return a && a.assessor_id === assessorId ? expireExam(store, a) : null;
 }
 
 /**
@@ -57,7 +58,8 @@ function answerForDetail(answer) {
 
 export function assessorHandlers(route) {
   route('GET', '/assessor/assessments', R, async ({ store, auth }) => {
-    const rows = await store.list('assessments', { assessor_id: auth.user.id }, { detached: false });
+    const listed = await store.list('assessments', { assessor_id: auth.user.id }, { detached: false });
+    const rows = await Promise.all(listed.map((a) => expireExam(store, a)));
     // The cleanup runs from the screens either role opens; this one is the
     // assessor's landing page (see src/api/retention-service.mjs). A full
     // sweep needs every paper, not only this assessor's, so no rows are passed.
@@ -95,6 +97,7 @@ export function assessorHandlers(route) {
     return ok({
       assessment: {
         id: a.id, status: a.status, submitted_at: a.submitted_at, scored_at: a.scored_at,
+        exam_expired: Boolean(a.quiz_state?.exam_expired),
         overall_pct: a.overall_pct, readiness_key: a.readiness_key, readiness_label: a.readiness_label,
         role: a.snapshot_json.role,
       },
