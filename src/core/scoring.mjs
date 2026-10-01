@@ -7,6 +7,14 @@
 export const isManualQuestion = (q) => q.type === 'text';
 export const isAutoQuestion = (q) => !isManualQuestion(q);
 
+/** Shared by scoring progress and finalization: only usable marks count. */
+export function isValidManualScore(question, score) {
+  const numeric = typeof score === 'number'
+    || (typeof score === 'string' && /^\d+(\.\d+)?$/.test(score.trim()));
+  return numeric && Number.isFinite(Number(score))
+    && Number(score) >= 0 && Number(score) <= Number(question.points ?? 1);
+}
+
 /** Unique, stringified option ids (empty strings dropped). */
 function optionIdSet(ids) {
   return new Set((ids || []).map(String).filter(Boolean));

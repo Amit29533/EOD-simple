@@ -4,6 +4,7 @@ import { createBlobsStore } from '../src/storage/netlify-blobs.mjs';
 import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
+import { advanceStage } from '../src/api/assessment-service.mjs';
 
 /**
  * Netlify Blobs across function instances.
@@ -62,6 +63,19 @@ function blobBackend({ latency = 0, jitter = 0, etagsOnRead = true, conditional 
   };
   return { data, log, stats, module: { getStore: () => store }, table: (t) => (data.has(t) ? clone(data.get(t).json) : null) };
 }
+
+test('candidate stages converge forwards across independent Blobs adapters under write conflicts', async () => {
+  const be = blobBackend({ latency: 5, jitter: 5 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  await first.insert('candidates', { id: 'stage-race', stage: 'intake' });
+  // Warm the second adapter before the first commits an update.
+  await second.get('candidates', 'stage-race');
+  await Promise.all([advanceStage(first, 'stage-race', 'gap_mapping'), advanceStage(second, 'stage-race', 'assessment')]);
+  assert.equal((await first.get('candidates', 'stage-race')).stage, 'gap_mapping');
+  assert.equal((await second.get('candidates', 'stage-race')).stage, 'gap_mapping');
+  assert.ok(be.stats.conflicts > 0);
+});
 
 test('two instances updating different rows of one table at the same moment: both updates survive', async () => {
   const be = blobBackend({ latency: 15, jitter: 10 });

@@ -2,7 +2,7 @@ import {
   ok, bad, notFound, conflict, unprocessable, audit, num, str, isTextish, bulkInsert, bulkUpdate,
 } from '../helpers.mjs';
 import { candidateForAssessor } from '../projections.mjs';
-import { isManualQuestion, isAutoQuestion, autoScore } from '../../core/scoring.mjs';
+import { isManualQuestion, isAutoQuestion, isValidManualScore, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring, paperFacts, advanceStage } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
 import { withLock } from '../mutex.mjs';
@@ -92,7 +92,9 @@ export function assessorHandlers(route) {
     // exactly as scoring does, and in O(1) per response rather than O(n²).
     const qById = new Map(questions.map((q) => [q.id, q]));
     const manualTotal = questions.filter(isManualQuestion).length;
-    const manualScored = responses.filter((r) => r.assessor_score !== undefined && r.assessor_score !== null).length;
+    const responsesById = new Map(responses.map((r) => [r.question_id, r]));
+    const manualScored = questions.filter((q) => isManualQuestion(q)
+      && isValidManualScore(q, responsesById.get(q.id)?.assessor_score)).length;
     const retention = paperRetention(a, await getRetentionSettings(store));
     return ok({
       assessment: {

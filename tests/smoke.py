@@ -59,17 +59,21 @@ check('NO assessor identity in quiz payload', 'riya' not in blob)
 check('exam issues one live question', len(quiz.get('questions') or []) == 1 and quiz.get('current_question'))
 check('exam.total is the full snapshot', quiz['exam']['total'] >= 1)
 DATA_FILE = os.environ.get('DATA_FILE', 'data/ecod.json')
-db = json.load(open(DATA_FILE))
+db = json.load(open(DATA_FILE, encoding='utf-8'))
 qbank = {q['id']: q for q in db['tables']['questions'].values()}
 asmt = db['tables']['assessments'][aid]
 snap = asmt['snapshot_json']
 if isinstance(snap, dict) and snap.get('$detached'):
     # the file store keeps the paper in its own file (src/storage/row-tables.mjs)
-    with open(os.path.join(DATA_FILE[:-5] + '.rows', 'columns', 'assessments', aid, 'snapshot_json.json')) as f:
+    suffix = '--' + snap['revision'] if snap.get('revision') else ''
+    with open(os.path.join(DATA_FILE[:-5] + '.rows', 'columns', 'assessments', aid, 'snapshot_json' + suffix + '.json'), encoding='utf-8') as f:
         snap = json.load(f)['value']
 qs = snap['questions']
+# The served module snapshot is authoritative; its IDs differ from the retired
+# competency catalogue. Do not look up module answers in the old catalogue.
+qbank.update({q['id']: q for q in qs})
 quiz_role = asmt.get('role_id') or (qbank[qs[0]['id']]['role_id'] if qs else None)
-bank_total = len([q for q in qbank.values() if q.get('active', True) and q['role_id'] == quiz_role])
+bank_total = asmt.get('bank_total', len(qs))
 check('exam.total matches the seeded snapshot', quiz['exam']['total'] == len(qs))
 answers = {}
 for q in qs:
@@ -128,7 +132,7 @@ st, early = call('POST', f'/assessor/assessments/{aid}/finalize', pt)
 check('finalize blocked until all scored', st == 422)
 scores = []
 for q in manual:
-    weak = 'incident' in q['prompt'].lower() or 'friday' in q['prompt'].lower()
+    weak = q['competency_id'] == devops_comp
     scores.append({'question_id': q['id'], 'score': 1 if weak else 5, 'comment': 'Thin - missing RCA and prevention' if weak else 'Clear and complete'})
 st, sv = call('PUT', f'/assessor/assessments/{aid}/scores', pt, {'scores': scores})
 check('scores saved', st == 200)

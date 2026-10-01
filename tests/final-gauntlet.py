@@ -280,7 +280,7 @@ st, quiz = call('GET', f'/candidate/assessments/{ASMB}', TB)
 check('6 racing advances land the cursor exactly once (index 1)',
       st == 200 and quiz['exam']['index'] == 1)
 DATA_FILE = os.environ.get('DATA_FILE', 'data/ecod.json')
-db = json.load(open(DATA_FILE))
+db = json.load(open(DATA_FILE, encoding='utf-8'))
 # answers are one file per assessment in the file store (src/storage/row-tables.mjs);
 # rows written by an older version may still sit in the database file
 shard = os.path.join(DATA_FILE[:-5] + '.rows', 'shards', 'responses', ASMB + '.json')

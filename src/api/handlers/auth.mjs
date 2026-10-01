@@ -238,7 +238,18 @@ export function authHandlers(route) {
     const password_hash = await hashPasswordAsync(body.new_password);
     const session_generation = helpers.newToken();
     await store.update('sessions', auth.session.id, { session_generation });
-    await store.update('users', user.id, { password_hash, session_generation });
+    const decide = (current) => current && current.active !== false
+      && current.password_hash === user.password_hash
+      && (current.session_generation || '') === (user.session_generation || '')
+      ? { password_hash, session_generation } : undefined;
+    if (typeof store.changeRow === 'function') {
+      const result = await store.changeRow('users', { id: user.id }, decide);
+      if (!result.changed) return unauthorized('Your account changed during this request. Please sign in again.');
+    } else {
+      const patch = decide(await store.get('users', user.id));
+      if (!patch) return unauthorized('Your account changed during this request. Please sign in again.');
+      await store.update('users', user.id, patch);
+    }
     const sessions = await store.list('sessions', { user_id: user.id });
     await Promise.all(sessions.filter((s) => s.id !== auth.session.id)
       .map((s) => store.remove('sessions', s.id).catch(() => {})));

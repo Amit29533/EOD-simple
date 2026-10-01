@@ -1,5 +1,5 @@
 import { DEFAULT_FRAMEWORK_CONFIG, STAGE_KEYS, MAX_ASSESSMENT_QUESTIONS } from '../core/constants.mjs';
-import { autoScore, isAutoQuestion, computeReport } from '../core/scoring.mjs';
+import { autoScore, isAutoQuestion, isValidManualScore, computeReport } from '../core/scoring.mjs';
 import { selectQuestions, selectQuestionsByCompetencyQuota, dedupeQuestions } from '../core/question-selection.mjs';
 import { automaticQuestionCount, automaticAllocationBlueprint } from '../core/allocation-policy.mjs';
 import { sortedQuestions } from './quiz-session.mjs';
@@ -344,13 +344,21 @@ export async function planBulkAutoAllocation(store, accepted = [], { roles = [],
 
 /** Move a candidate's pipeline stage forward, never backwards. */
 export async function advanceStage(store, candidateId, targetStage) {
-  const candidate = await store.get('candidates', candidateId);
-  if (!candidate) return;
-  // An unknown current stage indexes to -1, which every real stage beats, so a
-  // single forward-only comparison covers both cases.
-  const cur = STAGE_KEYS.indexOf(candidate.stage || 'intake');
   const next = STAGE_KEYS.indexOf(targetStage);
-  if (next > cur) await store.update('candidates', candidateId, { stage: targetStage });
+  if (next < 0) return;
+  const decide = (candidate) => candidate && !candidate.deleting
+    && next > STAGE_KEYS.indexOf(candidate.stage || 'intake')
+    ? { stage: targetStage } : undefined;
+  // Re-evaluate against the current row on every storage conflict. A stale
+  // allocation read must never move a finalized candidate back to assessment.
+  if (typeof store.changeRow === 'function') {
+    await store.changeRow('candidates', { id: candidateId }, decide);
+  } else {
+    await withLock(`stage:${candidateId}`, async () => {
+      const patch = decide(await store.get('candidates', candidateId));
+      if (patch) await store.update('candidates', candidateId, patch);
+    });
+  }
 }
 
 /**
@@ -379,8 +387,7 @@ export async function finalizeScoring(store, assessment) {
       if (r) updates.push({ id: r.id, patch: { auto_score: score, final_score: score } });
     } else {
       const score = r?.assessor_score;
-      const numeric = typeof score === 'number' || (typeof score === 'string' && /^\d+(\.\d+)?$/.test(score.trim()));
-      if (!numeric || !Number.isFinite(Number(score)) || Number(score) < 0 || Number(score) > q.points) {
+      if (!isValidManualScore(q, score)) {
         missingScores.push({ question_id: q.id, prompt: q.prompt });
       } else {
         finalByQid[q.id] = { ...r, final_score: Number(score) };

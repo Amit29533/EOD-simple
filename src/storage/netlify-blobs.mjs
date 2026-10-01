@@ -38,7 +38,7 @@ export async function createBlobsStore({ blobsModule = null, requireConsistency 
    * multi-instance deployments converge within a few seconds.
    */
   const CACHE_TTL_MS = 5000;
-  const UNCACHED = new Set(['sessions', 'users', 'assessments', 'responses']);
+  const UNCACHED = new Set(['sessions', 'users', 'candidates', 'assessments', 'responses']);
 
   // Per-table write lock to avoid concurrent read-modify-write races
   const locks = new Map();
@@ -310,7 +310,7 @@ export async function createBlobsStore({ blobsModule = null, requireConsistency 
      */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (!['assessments', 'users'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users', 'candidates'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return mutate(t, async (rows) => {
         const prior = rowOf(rows, id);

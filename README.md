@@ -28,14 +28,14 @@ New technologies, roles, competencies, questions, weights and scoring frameworks
 
 ---
 
-## Quickstart (local, zero dependencies)
+## Quickstart (local)
 
-Requires Node.js ≥ 20. No `npm install` needed for local development.
+Use Node.js 24. Run `npm ci` to install the locked dependencies before testing or deployment.
 
 ```bash
 npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
 npm start           # serves the app on http://localhost:3000
-npm test            # 655 tests: scoring engine, question apportionment, API/RBAC journey,
+npm test            # scoring engine, question apportionment, API/RBAC journey,
                     #           a route x role guard matrix read from the live router,
                     #           candidate / assessor / admin point-of-view suites (API, and
                     #           the real screens in jsdom against the real in-process API:
@@ -60,17 +60,28 @@ npm test            # 655 tests: scoring engine, question apportionment, API/RBA
                     #           module bank, install, timed exam journey and its screens),
                     #           the seed's worked example and
                     #           the health probe
-                    #           (jsdom is optional; `npm install` pulls a release that runs
-                    #           on Node 20 and 22 — without it the UI suites skip, with an
+                    #           (jsdom is a development dependency pinned for Node 24;
+                    #           without it the UI suites skip, with an
                     #           unloadable one they fail loudly rather than skip)
 ```
 
-Two black-box suites run against a **live server** and are not part of `npm test`:
+Run all three black-box suites against isolated, freshly seeded local servers:
+
+```bash
+npm run test:http  # smoke, features, final gauntlet; requires Python 3
+```
+
+This runner uses temporary JSON stores and cleans them up. It ignores your configured
+storage backend and site URL. Set `PYTHON` to your Python executable if needed.
+GitHub CI runs the Node suite, bank audit and HTTP suites on Windows and Linux.
+See [the final audit](docs/FINAL-CODE-AUDIT.md) for verification and remaining risks.
+
+Individual black-box suites can also run against a **live local server**:
 
 ```bash
 npm run seed:fresh && npm start   # in one shell (restart the server after reseeding)
 npm run test:smoke                # candidate -> assessor -> report lifecycle + compartmentalization
-npm run test:features             # 216 checks across every admin/candidate/assessor feature
+npm run test:features             # admin/candidate/assessor feature checks
 ```
 
 Both consume seeded records as they go (submitting, scoring, deleting a demo candidate), so

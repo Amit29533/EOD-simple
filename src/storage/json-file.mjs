@@ -274,7 +274,7 @@ export function createJsonStore(file = 'data/ecod.json') {
     /** Conditional change of a response shard or the assessment cursor. */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (!['assessments', 'users'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users', 'candidates'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return withLock(async () => {
         const prior = rowOf(table(t), id);

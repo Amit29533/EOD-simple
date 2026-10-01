@@ -269,14 +269,8 @@ test('bulkRemove uses removeMany when present and loops otherwise', async () => 
 
 /* ------------------------------------------------- a failed persist never leaves phantom rows */
 
-const permissionTestSkip = process.platform === 'win32'
-  ? 'Windows chmod does not remove directory write permission'
-  : typeof process.getuid === 'function' && process.getuid() === 0
-    ? 'root ignores directory modes'
-    : false;
-
 test('json-file: a mutation whose persist fails is rolled back in memory, not served until restart',
-  { skip: permissionTestSkip }, async () => {
+  async (t) => {
   // The table used to be edited first and persisted second. When the write
   // threw (disk full, read-only volume, EACCES) the caller got the error but
   // the process kept serving the un-persisted change — an insert that never
@@ -288,7 +282,15 @@ test('json-file: a mutation whose persist fails is rolled back in memory, not se
   await store.insert('users', { id: 'u1', n: 1 });
   await store.insert('users', { id: 'u2', n: 2 });
   await store.insert('audit_log', { id: 'l1', action: 'x' });
-  fs.chmodSync(dir, 0o500); // the store can no longer write its temp file
+  // Inject a write failure instead of chmod, whose behavior depends on OS and
+  // privileges. The real store rollback now runs on Windows and root CI too.
+  const writeFile = fs.writeFileSync;
+  t.mock.method(fs, 'writeFileSync', (target, ...args) => {
+    if (path.dirname(String(target)) === dir) {
+      throw Object.assign(new Error('EACCES: injected persistence failure'), { code: 'EACCES' });
+    }
+    return writeFile(target, ...args);
+  });
   try {
     await assert.rejects(store.insert('users', { id: 'u3', n: 3 }), /EACCES|EPERM/);
     await assert.rejects(store.insertMany('users', [{ id: 'u4' }, { id: 'u5' }]), /EACCES|EPERM/);
@@ -302,7 +304,7 @@ test('json-file: a mutation whose persist fails is rolled back in memory, not se
     assert.equal((await store.get('users', 'u1')).updated_at, undefined, 'the failed update left no trace');
     assert.deepEqual((await store.list('audit_log')).map((r) => r.id), ['l1']);
   } finally {
-    fs.chmodSync(dir, 0o700);
+    t.mock.restoreAll();
   }
   // Once the disk is writable again everything works and the state is exactly what was on disk.
   await store.update('users', 'u1', { n: 5 });

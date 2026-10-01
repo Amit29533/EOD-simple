@@ -402,7 +402,7 @@ proj = scored_row['candidate']
 check('assessor projection exposes only professional fields', set(proj.keys()) <= {'id', 'name', 'current_title', 'years_experience', 'target_role_id'})
 
 # ================================ S8 question allocation (X questions per candidate)
-section('S8 · allocate X questions, balanced across competencies')
+section('S8 · strict RSA module allocation and previews')
 
 st, plan = call('GET', f'/admin/roles/{RSA}/question-plan', AT)
 BANK = plan['bank_total']
@@ -415,10 +415,10 @@ check('question-plan: per-competency split provided', len(plan['per_competency']
 check('question-plan: reports a points total', plan['points'] > 0)
 
 st, capped = call('GET', f'/admin/roles/{RSA}/question-plan?limit=8', AT)
-check('question-plan: limit=8 serves exactly 8', st == 200 and capped['total'] == 8)
+check('RSA preview keeps its required 50 questions despite limit=8', st == 200 and capped['total'] == 50)
 check('question-plan: limit keeps bank_total visible', capped['bank_total'] == BANK)
-check('question-plan: 8 spread over competencies, none over-drawn',
-      sum(r['count'] for r in capped['per_competency']) == 8
+check('question-plan: 50 spread over competencies, none over-drawn',
+      sum(r['count'] for r in capped['per_competency']) == 50
       and all(r['count'] >= 0 for r in capped['per_competency']))
 st, over = call('GET', f'/admin/roles/{RSA}/question-plan?limit={BANK + 50}', AT)
 check('question-plan: limit above the cap is clamped to min(cap, bank)',
@@ -444,15 +444,17 @@ check('allocate with fractional question_count -> 400',
 check('allocate with question_count above the bank -> 400',
       call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': BANK + 1})[0] == 400)
 
-st, ax = call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 6})
+check('RSA refuses a 6-question paper that breaks the module contract',
+      call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 6})[0] == 400)
+st, ax = call('POST', '/admin/assessments', AT, {'candidate_id': CX, 'role_id': RSA, 'question_count': 50})
 AX = ax['id']
-check('allocate with question_count=6 -> 201', st == 201)
-check('snapshot stores only the 6 served questions', len(ax['snapshot_json']['questions']) == 6)
+check('allocate with question_count=50 -> 201', st == 201)
+check('snapshot stores only the 50 served questions', len(ax['snapshot_json']['questions']) == 50)
 check('snapshot records the limit and the bank size',
-      ax['snapshot_json']['question_limit'] == 6 and ax['snapshot_json']['bank_total'] == BANK)
+      ax['snapshot_json']['question_limit'] == 50 and ax['snapshot_json']['bank_total'] == BANK)
 
 st, quiz = call('GET', f'/candidate/assessments/{AX}', CXT)
-check('candidate exam.total is 6 (one live question)', st == 200 and quiz['exam']['total'] == 6 and len(quiz['questions']) == 1)
+check('candidate exam.total is 50 (one live question)', st == 200 and quiz['exam']['total'] == 50 and len(quiz['questions']) == 1)
 first_live = quiz['current_question']['id']
 st, nxt = call('POST', f'/candidate/assessments/{AX}/next', CXT, {'answer': None})
 check('lock-and-next advances the cursor', st == 200 and nxt.get('complete') is False)
@@ -462,16 +464,16 @@ check('served questions still hide correct answers/rubrics',
       'correct_option_ids' not in json.dumps(quiz) and 'rubric' not in json.dumps(quiz))
 snap_qs = ax['snapshot_json']['questions']
 served_comps = {q['competency_id'] for q in snap_qs}
-check('6 questions cover multiple competencies', len(snap_qs) == 6 and len(served_comps) > 1)
+check('50 questions cover multiple competencies', len(snap_qs) == 50 and len(served_comps) > 1)
 
 st, lst = call('GET', '/candidate/assessments', CXT)
 row = next(a for a in lst['assessments'] if a['id'] == AX)
-check('candidate list reports the served question count', row['question_count'] == 6)
+check('candidate list reports the served question count', row['question_count'] == 50)
 
 st, adm = call('GET', '/admin/assessments', AT)
 arow = next(a for a in adm['assessments'] if a['id'] == AX)
 check('admin list exposes served vs bank counts',
-      arow['question_count'] == 6 and arow['question_limit'] == 6 and arow['bank_total'] == BANK)
+      arow['question_count'] == 50 and arow['question_limit'] == 50 and arow['bank_total'] == BANK)
 
 # integrity / anti-cheat trail: candidate reports, admin reads counters + history
 st, start = call('POST', f'/candidate/assessments/{AX}/integrity', CXT,
@@ -520,9 +522,9 @@ check('capped assessment submits', call('POST', f'/candidate/assessments/{AX}/su
 
 st, unrel = call('GET', '/admin/assessments', AT)
 rsa_default = [a for a in unrel['assessments']
-               if a['role_id'] == RSA and a['question_limit'] is None and a['bank_total']]
-check('default allocation serves standard bank + at most five spoken prompts',
-      bool(rsa_default) and rsa_default[0]['question_count'] == plan['standard_total'] + plan['spoken_served']
+               if a['role_id'] == RSA and a['question_limit'] == 50 and a['bank_total']]
+check('default RSA allocation serves the fixed 50-question module paper',
+      bool(rsa_default) and rsa_default[0]['question_count'] == 50
       and rsa_default[0]['question_count'] <= rsa_default[0]['bank_total'])
 
 # ---- paper order: MCQ and open must be mixed, never blocked -------------
@@ -536,7 +538,12 @@ seq = ''.join('O' if q['type'] == 'text' else 'X' for q in ordered)
 opens = seq.count('O')
 check('served paper: every question is stamped with the position it is asked at',
       st == 201 and [q['position'] for q in ordered] == list(range(1, len(ordered) + 1)))
-check('served paper: the pinned common question still opens it', ordered[0].get('pin_first') is True)
+check('served paper: no legacy question is pinned', not any(q.get('pin_first') for q in ordered))
+for module in ['T%02d' % i for i in range(1, 11)] + ['C01', 'C02', 'C03', 'C04', 'P01', 'P02', 'P03', 'P04', 'F01', 'F02']:
+    rows = [q for q in ordered if q.get('module') == module]
+    check('RSA exact quota for ' + module,
+          sum(q['type'] == 'text' for q in rows) == 1 and
+          sum(q['type'] == 'mcq_single' for q in rows) == (3 if module.startswith('T') else 0))
 check('served paper: no two open questions back to back',
       max((len(p) for p in seq.split('X') if p), default=0) <= 1)
 check('served paper: MCQ runs are no longer than the mix requires',
@@ -557,8 +564,8 @@ check('catalogue endpoints are admin-only',
       and call('GET', '/admin/content/catalogue')[0] == 401)
 
 st, plan = call('GET', f'/admin/roles/{RSA}/question-plan', AT)
-check('question-plan carries catalogue context', st == 200
-      and plan['catalogue']['total'] == CAT_TOTAL and plan['catalogue']['missing'] == 0)
+check('RSA question-plan uses module context', st == 200
+      and plan['allocation_mode'] == 'module' and len(plan['per_module']) == 20)
 st, oplan = call('GET', f'/admin/roles/{SR}/question-plan', AT)
 check('question-plan omits catalogue context for other tracks', oplan['catalogue'] is None)
 
@@ -571,7 +578,8 @@ st, cat2 = call('GET', '/admin/content/catalogue', AT)
 check('catalogue status: trimmed bank reports the gap',
       cat2['bank_total'] == CAT_TOTAL - TRIM and cat2['missing'] == TRIM)
 st, plan2 = call('GET', f'/admin/roles/{RSA}/question-plan?limit=50', AT)
-check('a bank smaller than the cap limits the plan to the bank', plan2['total'] == 45)
+check('trimming retired catalogue rows cannot change the module allocation',
+      st == 200 and plan2['total'] == 50 and plan2['bank_total'] == BANK)
 
 st, sync = call('POST', '/admin/content/sync', AT)
 check('sync restores the trimmed bank', st == 200 and sync['added'] == TRIM
@@ -586,7 +594,7 @@ st, full = call('POST', '/admin/assessments', AT, {'candidate_id': ccap['id'], '
 check('allocate the full 50-question cap -> 201',
       st == 201 and len(full['snapshot_json']['questions']) == 50
       and full['snapshot_json']['question_limit'] == 50
-      and full['snapshot_json']['bank_total'] == CAT_TOTAL)
+      and full['snapshot_json']['bank_total'] == BANK)
 
 # ================================ S10 automatic allotment (50 questions per candidate user)
 section('S10 · candidate users are auto-allocated 50 questions — no manual Allocate per head')

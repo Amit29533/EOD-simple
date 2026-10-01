@@ -17,21 +17,22 @@
     "bank:build": "python3 scripts/build-question-bank.py data/bank.json src/content/rsa-question-bank.mjs 1.4 scripts/rsa-bank-config.json",
     "bank:rebuild": "npm run bank:extract && npm run bank:build",
     "bank:ai-bi-extract": "node scripts/extract-ai-bi-bank-from-xlsx.mjs \"AI BI G Question bank 1.1.xlsx\" data/ai-bi-bank.json",
-    "bank:ai-bi-build": "python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json",
+    "bank:ai-bi-build": "python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-source-bank.mjs 1.1 scripts/ai-bi-bank-config.json",
     "bank:ai-bi-rebuild": "npm run bank:ai-bi-extract && npm run bank:ai-bi-build",
     "bank:sama-extract": "node scripts/extract-sama-bank-from-xlsx.mjs \"SAMA Question bank 1.2.xlsx\" data/sama-bank.json",
     "bank:sama-build": "python3 scripts/build-question-bank.py data/sama-bank.json src/content/sama-question-bank.mjs 1.2 scripts/sama-bank-config.json",
     "bank:sama-rebuild": "npm run bank:sama-extract && npm run bank:sama-build",
     "bank:audit": "node scripts/audit-question-banks.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:http": "node scripts/test-http.mjs",
     "test:smoke": "python3 tests/smoke.py",
     "test:features": "python3 tests/features.py",
     "test:gauntlet": "python3 tests/final-gauntlet.py"
   },
   "dependencies": {
-    "@netlify/blobs": "^10.7.12"
+    "@netlify/blobs": "10.7.13"
   },
   "devDependencies": {
-    "jsdom": "^29.1.1"
+    "jsdom": "29.1.1"
   }
 }
