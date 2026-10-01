@@ -62,6 +62,17 @@ test('scoring screen: rubric on show, out-of-range scores refused locally, valid
     const progress = spa.view.querySelector('#score-progress');
     assert.equal(progress.textContent, '0/2 open questions scored');
 
+    const jump = spa.view.querySelector('#open-question-jump');
+    assert.equal(jump.options.length, openQs.length + 1);
+    spa.view.querySelector('#next-unscored').click();
+    assert.equal(spa.document.activeElement.id, `score-${openQs[0].id}`);
+    const onlyOpen = spa.view.querySelector('#open-only');
+    onlyOpen.checked = true;
+    onlyOpen.dispatchEvent(new window.Event('change'));
+    for (const card of spa.view.querySelectorAll('[data-question-type]')) {
+      assert.equal(card.hidden, card.dataset.questionType !== 'text');
+    }
+
     // Finalizing early is stopped in the browser: no request goes out.
     spa.view.querySelector('#finalize-btn').click();
     await flush(40);
@@ -86,6 +97,7 @@ test('scoring screen: rubric on show, out-of-range scores refused locally, valid
     type(spa.view.querySelector(`#score-${q2.id}`), '2.5');
     await flush(80);
     assert.equal(progress.textContent, '2/2 open questions scored');
+    assert.equal(spa.view.querySelector('#next-unscored').disabled, true);
     const rows = await w.store.list('responses', { assessment_id: id });
     const r1 = rows.find((r) => r.question_id === q1.id);
     assert.equal(r1.assessor_score, 4);

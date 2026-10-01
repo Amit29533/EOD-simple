@@ -1,3 +1,4 @@
+import { wireAccountForm } from '../account-form.js';
 import { api, apiAll } from '../api.js';
 import { state } from '../app.js';
 import {
@@ -1233,7 +1234,13 @@ export async function usersView(view) {
     </div>
     <div class="demo-creds no-print"><span class="info-strip-icon">⌁</span><span>Only admins can provision accounts. Permissions are role-based, and sensitive candidate details stay compartmentalized.</span></div>
     <div class="card flat account-summary"><span class="account-summary-number">${users.length}</span><span>account${users.length === 1 ? '' : 's'} provisioned</span><span class="summary-divider"></span><span class="muted">Passwords are stored as salted hashes</span></div>
-    <div class="card table-card">
+    <div class="card flat toolbar-card account-filters">
+      <input id="user-search" type="search" placeholder="Search name, username or email…" aria-label="Search users">
+      <select id="user-role-filter" aria-label="Filter users by role"><option value="">All roles</option>${state.meta.userRoles.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+      <select id="user-status-filter" aria-label="Filter users by status"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Deactivated</option></select>
+      <span id="user-result-count" class="small muted" aria-live="polite"></span>
+    </div>
+    <div class="card table-card" id="user-table">
       ${dataTable([
         { label: 'User', render: (u) => `<b>${esc(u.name)}</b><div class="small muted mono">@${esc(u.username)}</div>` },
         { label: 'Role', render: (u) => badge(u.role, roleTone[u.role] || 'grey') },
@@ -1248,6 +1255,27 @@ export async function usersView(view) {
     : u.id === state.user?.id ? '' : `<button class="btn ghost sm" style="color:var(--red)" data-off="${u.id}">Deactivate</button>`}` },
       ], users)}
     </div>`;
+
+  const rows = [...view.querySelectorAll('#user-table tbody tr')];
+  const search = view.querySelector('#user-search');
+  const roleFilter = view.querySelector('#user-role-filter');
+  const statusFilter = view.querySelector('#user-status-filter');
+  const filterUsers = () => {
+    const term = search.value.trim().toLowerCase();
+    let visible = 0;
+    rows.forEach((row, i) => {
+      const u = users[i];
+      const match = (!term || `${u.name} ${u.username} ${u.email || ''} ${u.candidate_name || ''}`.toLowerCase().includes(term))
+        && (!roleFilter.value || u.role === roleFilter.value)
+        && (!statusFilter.value || (u.active !== false ? 'active' : 'inactive') === statusFilter.value);
+      row.hidden = !match;
+      if (match) visible++;
+    });
+    view.querySelector('#user-result-count').textContent = `${visible} of ${users.length} accounts`;
+  };
+  search.oninput = filterUsers;
+  roleFilter.onchange = statusFilter.onchange = filterUsers;
+  filterUsers();
 
   const userFields = (values) => [
     { name: 'username', label: 'Username', required: true, help: 'a-z 0-9 . _ - , at least 3 characters.' },
@@ -1278,8 +1306,11 @@ export async function usersView(view) {
   view.querySelector('#add-user').onclick = async () => {
     // A refusal (username taken, candidate already linked, weak password)
     // keeps the dialog open with everything typed, the message on its field.
+    const fieldOrder = ['role', 'candidate_id', 'name', 'email', 'username', 'password', 'auto_allocate', 'assessor_id'];
+    const fields = userFields(null).sort((a, b) => fieldOrder.indexOf(a.name) - fieldOrder.indexOf(b.name));
     const out = await formModal({
-      title: 'Create user', fields: userFields(null), values: { role: 'assessor' },
+      title: 'Create user', fields, values: { role: 'candidate' },
+      onOpen: (el) => wireAccountForm(el, { candidates, users, create: true }),
       onSubmit: (vals) => {
         if (vals.role === 'candidate' && !vals.candidate_id) {
           throw Object.assign(new Error('Choose the linked candidate before creating a candidate portal user.'), { field: 'candidate_id' });
@@ -1307,6 +1338,7 @@ export async function usersView(view) {
     const u = users.find((x) => x.id === b.dataset.edit);
     const editable = ['name', 'email', 'password', ...(u.role === 'candidate' ? ['candidate_id'] : [])];
     const saved = await formModal({
+      onOpen: (el) => wireAccountForm(el, { candidates, users }),
       title: `Edit @${u.username}`, values: u, fields: userFields(u).filter((f) => editable.includes(f.name)),
       onSubmit: (vals) => {
         const body = { name: vals.name, email: vals.email };
@@ -1323,6 +1355,7 @@ export async function usersView(view) {
     const u = users.find((x) => x.id === b.dataset.pw);
     const saved = await formModal({
       title: `Reset password · @${u.username}`,
+      onOpen: (el) => wireAccountForm(el, { users }),
       fields: [{ name: 'password', label: 'New password', type: 'password', required: true, help: 'Minimum 8 characters.' }],
       onSubmit: (vals) => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { password: vals.password } }),
     });

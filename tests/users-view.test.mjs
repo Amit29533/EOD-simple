@@ -37,7 +37,7 @@ function stubFetch() {
     { id: 'u-assessor', username: 'assessor', name: 'Assessor User', role: 'assessor', email: 'assessor@example.com', active: true },
     { id: 'u-candidate', username: 'candidate', name: 'Candidate User', role: 'candidate', email: 'candidate@example.com', active: true, candidate_id: 'c1', candidate_name: 'Candidate One' },
   ];
-  const candidates = [{ id: 'c1', name: 'Candidate One' }, { id: 'c2', name: 'Candidate Two' }];
+  const candidates = [{ id: 'c1', name: 'Candidate One' }, { id: 'c2', name: 'Candidate Two', email: 'two@example.com' }];
   globalThis.fetch = async (url, opts = {}) => {
     const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
     if (url.includes('/auth/me')) return json({ user: { id: 'u-admin', username: 'admin', name: 'Admin User', role: 'admin', email: '' }, candidate: null });
@@ -124,5 +124,38 @@ test('users view: creating a candidate user requires choosing the linked candida
     assert.equal(modal.querySelector('[name="candidate_id"]').getAttribute('aria-invalid'), 'true');
     assert.equal(modal.querySelector('[name="role"]').value, 'candidate', 'previous role choice is preserved');
     assert.equal(modal.querySelector('[name="username"]').value, 'new.candidate', 'typed values are preserved');
+  } finally { teardown(dom); }
+});
+
+
+test('users view: candidate default, linked identity, visible generated password and filters', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  try {
+    stubFetch();
+    const view = await renderUsersView();
+    const filter = view.querySelector('#user-role-filter');
+    filter.value = 'candidate';
+    filter.dispatchEvent(new dom.window.Event('change'));
+    assert.equal([...view.querySelectorAll('#user-table tbody tr')].filter((r) => !r.hidden).length, 1);
+    view.querySelector('#add-user').click();
+    await flush();
+    const modal = document.querySelector('.modal');
+    assert.equal(modal.querySelector('[name="role"]').value, 'candidate');
+    const linked = modal.querySelector('[name="candidate_id"]');
+    linked.value = 'c2';
+    linked.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(modal.querySelector('[name="name"]').value, 'Candidate Two');
+    assert.equal(modal.querySelector('[name="email"]').value, 'two@example.com');
+    assert.match(modal.querySelector('[name="username"]').value, /^candidate.two.\d{14}$/);
+    [...modal.querySelectorAll('button')].find((b) => b.textContent === 'Generate password').click();
+    const password = modal.querySelector('[name="password"]');
+    assert.equal(password.type, 'text');
+    assert.equal(password.value.length, 20);
+    const role = modal.querySelector('[name="role"]');
+    role.value = 'admin';
+    role.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(linked.disabled, true);
+    assert.equal(linked.closest('label').hidden, true);
+    assert.equal(linked.required, false);
   } finally { teardown(dom); }
 });

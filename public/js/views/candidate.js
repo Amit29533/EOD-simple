@@ -1,3 +1,4 @@
+import { wireMicrophoneCheck } from '../microphone-check.js';
 import { api, session } from '../api.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
@@ -32,6 +33,12 @@ export async function portalView(view) {
       <div class="overview-item"><span>Under review</span><b>${awaiting.length}</b></div>
       <div class="overview-item"><span>Reports ready</span><b>${completed.length}</b></div>
     </div>
+    <div class="card journey-device-check">
+      <div class="panel-head"><div><h2>Check your microphone</h2><p class="small muted">Test and listen to your microphone before entering the exam. This practice clip stays on your device and does not start an assessment.</p></div></div>
+      <div class="row"><button class="btn secondary" data-mic-start>Test microphone</button><button class="btn secondary" data-mic-stop disabled>Stop recording</button></div>
+      <p class="small muted" data-mic-status role="status">Record a short sentence, then play it back to check your voice.</p>
+      <audio data-mic-player controls hidden aria-label="Microphone test playback"></audio>
+    </div>
     <div class="card journey-card">
       <div class="panel-head"><div><h2>Pipeline</h2></div></div>
       ${pipelineStepper(stages, d.candidate.stage)}
@@ -59,6 +66,9 @@ export async function portalView(view) {
         </article>`).join('')
       : emptyState('No assessments yet', 'Your administrator will allocate one when you are ready.')}
     </div>`;
+  wireMicrophoneCheck(view.querySelector('.journey-device-check'), {
+    onUnmount: (dispose) => document.addEventListener(VIEW_UNMOUNT_EVENT, dispose, { once: true }),
+  });
 }
 
 /* ================================ Secure exam ================================ */

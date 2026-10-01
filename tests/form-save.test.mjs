@@ -218,6 +218,8 @@ test('Users: a taken username keeps the form open with the message on Username; 
     spa.view.querySelector('#add-user').click();
     await flush(60);
     const form = dialog(spa);
+    // Staff creation is an explicit choice now that new accounts default to candidates.
+    type(input(spa, 'role'), 'assessor');
     type(input(spa, 'username'), 'taken.name');
     type(input(spa, 'name'), 'Ravi Kulkarni');
     type(input(spa, 'password'), 'Assessor-pass-123');

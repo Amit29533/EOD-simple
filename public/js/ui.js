@@ -214,7 +214,7 @@ export function confirmModal(title, message, confirmLabel = 'Confirm', danger = 
  */
 export function formModal({
   title, fields, values = {}, submitLabel = 'Save', wide = false, intro = '',
-  onSubmit = null, busyLabel = 'Saving…',
+  onSubmit = null, busyLabel = 'Saving…', onOpen = null,
 }) {
   return new Promise((resolve) => {
     // The dialog can be dismissed in several ways (Escape, backdrop, ✕, Cancel);
@@ -291,7 +291,7 @@ export function formModal({
       for (const f of fields) {
         if (f.type === 'static') continue;
         const input = form.elements[f.name];
-        if (!input) continue;
+        if (!input || input.disabled) continue;
         setError(f, '');
         if (f.type === 'checkbox') { out[f.name] = input.checked; continue; }
         const raw = typeof input.value === 'string' ? input.value.trim() : input.value;
@@ -410,9 +410,10 @@ export function formModal({
       onOpen: (el) => {
         submit = el.querySelector('.m-foot .btn:last-child');
         cancel = el.querySelector('.m-foot .btn:first-child');
+        onOpen?.(el);
         // Enter submits from any single-line input, matching a normal form.
         el.querySelector('#fm-form').addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); submit?.click(); }
+          if (e.key === 'Enter' && ['INPUT', 'SELECT'].includes(e.target.tagName) && e.target.type !== 'checkbox') { e.preventDefault(); submit?.click(); }
         });
         // Clear a field's error as soon as the user starts fixing it.
         el.querySelectorAll('#fm-form input, #fm-form select, #fm-form textarea').forEach((input) => {

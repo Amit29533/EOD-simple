@@ -141,6 +141,11 @@ function renderAnswerSheet(view, d, { id, readonly }) {
       <div class="small muted">Candidate profile (shared with you for context): <b>${esc(d.candidate?.current_title || 'n/a')}</b>${d.candidate?.years_experience != null ? `, ${d.candidate.years_experience} years of experience` : ''}. Objective MCQ and scale items are scored automatically — review them; your judgment is required only for open responses, scored against the rubric.</div>
       ${retentionNote ? `<div class="small muted" style="margin-top:8px">🗂 ${retentionNote}</div>` : ''}
     </div>
+    <div class="card scoring-navigation">
+      <label class="f"><span class="lbl">Jump to an open question</span><select id="open-question-jump"><option value="">Choose a question…</option>${manualQs.map((q, i) => `<option value="${esc(q.id)}">Open ${i + 1} · ${esc(q.prompt.slice(0, 100))}</option>`).join('')}</select></label>
+      ${!readonly && manualQs.length ? '<button class="btn secondary" id="next-unscored">Next unscored question →</button>' : ''}
+      <label class="check"><input type="checkbox" id="open-only"> Show only open questions</label>
+    </div>
     ${d.competencies.map((c) => {
       const qs = d.questions.filter((x) => x.competency_id === c.id);
       if (!qs.length) return '';
@@ -165,11 +170,40 @@ function renderAnswerSheet(view, d, { id, readonly }) {
   loadRecordings(view, id);
   wireRecordingDeletes(view, id);
 
+  const jump = (qid) => {
+    const card = [...view.querySelectorAll('[data-question-id]')].find((el) => el.dataset.questionId === qid);
+    if (!card) return;
+    card.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    (card.querySelector('input:not([disabled])') || card).focus({ preventScroll: true });
+  };
+  view.querySelector('#open-question-jump').onchange = (e) => jump(e.target.value);
+  view.querySelector('#open-only').onchange = (e) => {
+    view.querySelectorAll('[data-question-type]').forEach((card) => { card.hidden = e.target.checked && card.dataset.questionType !== 'text'; });
+    view.querySelectorAll('.comp-header').forEach((header) => {
+      let card = header.nextElementSibling;
+      let visible = false;
+      while (card?.matches('[data-question-type]')) { visible ||= !card.hidden; card = card.nextElementSibling; }
+      header.hidden = !visible;
+    });
+  };
+  const nextUnscored = view.querySelector('#next-unscored');
+  if (nextUnscored) nextUnscored.onclick = () => {
+    const q = manualQs.find((q) => scores[q.id] === null || scores[q.id] === '');
+    if (q) jump(q.id);
+    else toast('All open questions have scores.', 'success');
+  };
   const updateProgress = () => {
     const scored = manualQs.filter((q) => scores[q.id] !== null && scores[q.id] !== '').length;
     const el = view.querySelector('#score-progress');
     el.textContent = `${scored}/${manualQs.length} open questions scored`;
     el.className = `badge ${scored === manualQs.length ? 'green' : 'amber'}`;
+    if (nextUnscored) nextUnscored.disabled = scored === manualQs.length;
+    for (const option of view.querySelector('#open-question-jump').options) {
+      if (!option.value) continue;
+      const q = manualQs.find((q) => q.id === option.value);
+      const i = manualQs.indexOf(q);
+      option.textContent = `Open ${i + 1} · ${scores[q.id] == null || scores[q.id] === '' ? 'Unscored' : 'Scored'} · ${q.prompt.slice(0, 100)}`;
+    }
     return scored;
   };
   updateProgress();
@@ -406,5 +440,5 @@ function scoreCard(q, n, r, { readonly = false } = {}) {
           <input type="text" id="comment-${esc(q.id)}" value="${esc(r?.assessor_comment || '')}" placeholder="Why this score? Not shown to the candidate." ${readonly ? 'disabled' : ''}/></label>
       </div>`;
   }
-  return `<div class="q-card">${head}${answerBlock}</div>`;
+  return `<div class="q-card" tabindex="-1" data-question-id="${esc(q.id)}" data-question-type="${esc(q.type)}">${head}${answerBlock}</div>`;
 }
