@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { scoreSaveQueue } from '../score-save-queue.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
   esc, fmtDateTime, fmtDate, loading, emptyState, toast, attempt, confirmModal,
@@ -135,7 +136,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
       <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">${readonly ? 'Answer sheet · report finalized' : 'Scoring review'}</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}${readonly && d.assessment.scored_at ? ` · finalized ${esc(fmtDate(d.assessment.scored_at))}` : ''}</span></div></div>
       <div class="row score-actions"><span class="badge grey" id="score-progress"></span>${readonly
         ? `<a class="btn secondary" href="#/assessments/${esc(id)}">View report card <span aria-hidden="true">→</span></a>`
-        : '<button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button>'}</div>
+        : '<span id="score-save-status" class="small muted" role="status" aria-live="polite">All changes saved</span><button class="btn secondary sm" id="retry-scores" hidden>Retry saving</button><button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button>'}</div>
     </div>
     <div class="card">
       <div class="small muted">Candidate profile (shared with you for context): <b>${esc(d.candidate?.current_title || 'n/a')}</b>${d.candidate?.years_experience != null ? `, ${d.candidate.years_experience} years of experience` : ''}. Objective MCQ and scale items are scored automatically — review them; your judgment is required only for open responses, scored against the rubric.</div>
@@ -221,21 +222,50 @@ function renderAnswerSheet(view, d, { id, readonly }) {
   };
   updateProgress();
 
+  const saves = scoreSaveQueue((score) => api(`/assessor/assessments/${id}/scores`, {
+    method: 'PUT', body: { scores: [score] },
+  }), ({ pending, failed }) => {
+    const status = view.querySelector('#score-save-status');
+    if (!status) return;
+    status.textContent = pending ? `Saving ${pending} question(s)…` : failed ? `${failed} question(s) not saved. Retry before leaving.` : 'All changes saved';
+    status.className = `small ${failed ? 'text-danger' : 'muted'}`;
+    view.querySelector('#retry-scores').hidden = !failed;
+    view.querySelector('#finalize-btn').disabled = Boolean(pending || failed);
+  });
+  if (!readonly) {
+    view.querySelector('#retry-scores').onclick = () => saves.retry();
+    const beforeLeave = (event) => {
+      const { pending, failed } = saves.status();
+      if (pending || failed) { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', beforeLeave);
+    const beforeNavigate = (event) => {
+      const link = event.target.closest?.('a[href], #logout-btn');
+      if (!link || link.getAttribute('href')?.startsWith('#score-')) return;
+      const { pending, failed } = saves.status();
+      if ((pending || failed) && !window.confirm('Some scoring changes have not saved. Leave this page and lose those changes?')) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener('click', beforeNavigate, true);
+    const cleanup = () => {
+      window.removeEventListener('beforeunload', beforeLeave);
+      document.removeEventListener('click', beforeNavigate, true);
+      document.removeEventListener(VIEW_UNMOUNT_EVENT, cleanup);
+    };
+    document.addEventListener(VIEW_UNMOUNT_EVENT, cleanup);
+  }
+
   // wire manual inputs
   for (const q of manualQs) {
     const input = view.querySelector(`#score-${q.id}`);
     const comment = view.querySelector(`#comment-${q.id}`);
     if (!input || !comment) continue;
-    const save = async () => {
-      const out = await attempt(() => api(`/assessor/assessments/${id}/scores`, {
-        method: 'PUT',
-        body: { scores: [{ question_id: q.id, score: scores[q.id], comment: comments[q.id] }] },
-      }));
-      if (out) toast('Saved', 'success', 1200);
-    };
+    const save = () => saves.enqueue({ question_id: q.id, score: scores[q.id], comment: comments[q.id] });
     input.onchange = () => {
       const val = input.value === '' ? null : Number(input.value);
-      if (val !== null && (val < 0 || val > q.points)) { toast(`Score must be between 0 and ${q.points}`, 'error'); input.value = scores[q.id] ?? ''; return; }
+      if (val !== null && (!Number.isFinite(val) || val < 0 || val > q.points)) { toast(`Score must be between 0 and ${q.points}`, 'error'); input.value = scores[q.id] ?? ''; return; }
       scores[q.id] = val;
       updateProgress();
       save();
@@ -246,6 +276,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
   if (readonly) return; // finalized: scores are locked, the inputs are disabled
 
   view.querySelector('#finalize-btn').onclick = async () => {
+    if (!(await saves.flush())) { toast('Some scores have not saved. Retry saving before finalizing.', 'error'); return; }
     const scored = updateProgress();
     if (scored < manualQs.length) {
       toast(`Score all ${manualQs.length} open questions before finalizing (${scored} done).`, 'error');
@@ -253,11 +284,15 @@ function renderAnswerSheet(view, d, { id, readonly }) {
     }
     const yes = await confirmModal('Finalize scoring', 'Generate the capability report? Scores and the report are locked afterwards (admin can still view them).', 'Finalize & generate');
     if (!yes) return;
+    // The confirmation dialog gives another save time to start; wait again.
+    if (!(await saves.flush())) { toast('Save failed. Retry saving before finalizing.', 'error'); return; }
+    const controls = [...view.querySelectorAll('input, textarea, #finalize-btn, #retry-scores')];
+    controls.forEach((el) => { el.disabled = true; });
     const out = await attempt(() => api(`/assessor/assessments/${id}/finalize`, { method: 'POST' }));
     if (out) {
       toast(`Report generated: ${out.report.band.label} at ${out.report.overall_pct}%`, 'success', 5000);
       renderReport(view, { candidate: out.candidate, report: out.report, assessor_name: 'You', audience: 'assessor' });
-    }
+    } else controls.forEach((el) => { el.disabled = false; });
   };
 }
 

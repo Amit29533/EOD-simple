@@ -429,7 +429,8 @@ export function candidateHandlers(route) {
       }
     }
     if (a.status === 'assigned')
-      await store.update('assessments', a.id, { status: 'in_progress', started_at: new Date().toISOString() });
+      await changeAssessment(store, a.id, (current) => current.status === 'assigned'
+        ? { status: 'in_progress', started_at: new Date().toISOString() } : undefined);
     return ok({ ok: true, saved_at: new Date().toISOString(), accepted_question_ids: accepted, ignored_question_ids: ignored });
   }));
 

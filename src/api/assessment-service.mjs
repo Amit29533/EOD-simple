@@ -373,7 +373,8 @@ export async function finalizeScoring(store, assessment) {
       if (r) updates.push({ id: r.id, patch: { auto_score: score, final_score: score } });
     } else {
       const score = r?.assessor_score;
-      if (score === undefined || score === null || Number.isNaN(Number(score))) {
+      const numeric = typeof score === 'number' || (typeof score === 'string' && /^\d+(\.\d+)?$/.test(score.trim()));
+      if (!numeric || !Number.isFinite(Number(score)) || Number(score) < 0 || Number(score) > q.points) {
         missingScores.push({ question_id: q.id, prompt: q.prompt });
       } else {
         finalByQid[q.id] = { ...r, final_score: Number(score) };

@@ -29,11 +29,12 @@ export async function createBlobsStore({ blobsModule = null } = {}) {
    *    (or, with eventual consistency, up to a minute) old on the instance
    *    that takes the next request re-serves a question that was just left
    *    behind, or ignores an autosave for the question actually on screen.
-   * Reference tables (roles, questions, users, …) use a short TTL so
+   * Users also require fresh reads for account deactivation and revocation.
+   * Reference tables (roles, questions, …) use a short TTL so
    * multi-instance deployments converge within a few seconds.
    */
   const CACHE_TTL_MS = 5000;
-  const UNCACHED = new Set(['sessions', 'assessments', 'responses']);
+  const UNCACHED = new Set(['sessions', 'users', 'assessments', 'responses']);
 
   // Per-table write lock to avoid concurrent read-modify-write races
   const locks = new Map();

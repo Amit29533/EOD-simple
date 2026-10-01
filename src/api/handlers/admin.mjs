@@ -1,4 +1,5 @@
 import { purgePreview, purgePerson } from '../person-purge.mjs';
+import { newToken } from '../../core/ids.mjs';
 import { hashPasswordAsync, hashPasswordsAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
@@ -972,7 +973,7 @@ export function adminHandlers(route) {
     });
   });
 
-  route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => withLock('users:create', async () => {
+  route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => withLock('users:create', () => withLock(`identity:${params.id}`, async () => {
     const u = await store.get('users', params.id);
     if (!u) return notFound('User not found.');
     const structured = textField(body, ['name', 'email']);
@@ -1005,6 +1006,16 @@ export function adminHandlers(route) {
     // response lands (every session check requires an active user), and with
     // no other admin there is nobody left to undo it. Refuse the self-lockout.
     if (u.id === auth.user.id && patch.active === false) return bad('You cannot deactivate your own account.');
+    const passwordChanged = patch.password_hash !== undefined;
+    const switchedOff = patch.active === false && u.active !== false;
+    if (passwordChanged || switchedOff) {
+      patch.session_generation = newToken();
+      // Preserve only the admin's current session. Updating it first fails
+      // closed if the user write fails; every other old token stays invalid
+      // even if best-effort physical cleanup cannot remove its row.
+      if (u.id === auth.user.id)
+        await store.update('sessions', auth.session.id, { session_generation: patch.session_generation });
+    }
     const updated = await store.update('users', params.id, patch);
     // A password reset is what an admin reaches for when a login is
     // compromised, and deactivating is how they shut one out — neither is
@@ -1014,8 +1025,6 @@ export function adminHandlers(route) {
     // resurrecting the ones that were revoked). The admin resetting their
     // OWN password keeps the session they are using; their other devices
     // are signed out like anyone else's.
-    const passwordChanged = patch.password_hash !== undefined;
-    const switchedOff = patch.active === false && u.active !== false;
     if (passwordChanged || switchedOff) {
       const sessions = await store.list('sessions', { user_id: u.id });
       const keep = u.id === auth.user.id ? auth.session.id : null;
@@ -1034,7 +1043,7 @@ export function adminHandlers(route) {
     await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`
       + (stranded ? ` (${stranded} open assessment(s) still assigned to this deactivated assessor)` : ''));
     return ok(stranded !== undefined ? { ...publicUser(updated), open_assessments: stranded } : publicUser(updated));
-  }));
+  })));
 
   // ------------------------------------------------ roles (assessment tracks)
   route('GET', '/admin/roles', A, async ({ store }) => {

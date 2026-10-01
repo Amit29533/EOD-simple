@@ -22,12 +22,14 @@ export async function createApp(store) {
     const sessions = await store.list('sessions', { token });
     const session = sessions[0];
     if (!session) return null;
-    if (new Date(session.expires_at).getTime() < Date.now()) {
+    const expires = new Date(session.expires_at).getTime();
+    if (!Number.isFinite(expires) || expires <= Date.now()) {
       await store.remove('sessions', session.id).catch(() => {});
       return null;
     }
     const user = await store.get('users', session.user_id);
     if (!user || user.active === false) return null;
+    if ((session.session_generation || '') !== (user.session_generation || '')) return null;
     return { user, session, token };
   }
 

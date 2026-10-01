@@ -1,7 +1,7 @@
 import { withLock } from '../mutex.mjs';
-import { verifyPasswordAsync } from '../../core/passwords.mjs';
+import { verifyPasswordAsync, hashPasswordAsync } from '../../core/passwords.mjs';
 import { createGate } from '../../core/gate.mjs';
-import { ok, bad, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
+import { ok, bad, forbidden, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 
 /**
@@ -177,7 +177,7 @@ export function authHandlers(route) {
 
     const token = helpers.newToken();
     const expires = new Date(now + helpers.sessionTtlHours * 3600 * 1000).toISOString();
-    await store.insert('sessions', { token, user_id: user.id, expires_at: expires });
+    await store.insert('sessions', { token, user_id: user.id, expires_at: expires, session_generation: user.session_generation || '' });
     await audit(store, user, 'login', 'users', user.id, `${user.name} signed in`);
 
     let candidate = null;
@@ -191,9 +191,37 @@ export function authHandlers(route) {
   });
 
   route('POST', '/auth/logout', null, async ({ store, auth }) => {
-    await store.remove('sessions', auth.session.id).catch(() => {});
+    await store.remove('sessions', auth.session.id);
     return ok({ ok: true });
   });
+
+  route('POST', '/auth/password', null, async ({ store, auth, body, helpers }) => withLock(`identity:${auth.user.id}`, async () => {
+    if (typeof body.current_password !== 'string' || !body.current_password)
+      return bad('Current password is required.');
+    if (typeof body.new_password !== 'string' || body.new_password.length < 8 || body.new_password.length > 200)
+      return bad('New password must contain 8 to 200 characters.');
+    const user = await store.get('users', auth.user.id);
+    if (!user || user.active === false || (user.session_generation || '') !== (auth.session.session_generation || ''))
+      return unauthorized('Please sign in again.');
+    let verified;
+    try { verified = await verifyGate.run(() => verifyPasswordAsync(body.current_password, user.password_hash)); }
+    catch (err) {
+      if (err?.code === 'GATE_FULL') return tooMany('Password verification is busy. Please try again shortly.');
+      throw err;
+    }
+    if (!verified)
+      return forbidden('Current password is incorrect.');
+    if (body.current_password === body.new_password) return bad('Choose a different new password.');
+    const password_hash = await hashPasswordAsync(body.new_password);
+    const session_generation = helpers.newToken();
+    await store.update('sessions', auth.session.id, { session_generation });
+    await store.update('users', user.id, { password_hash, session_generation });
+    const sessions = await store.list('sessions', { user_id: user.id });
+    await Promise.all(sessions.filter((s) => s.id !== auth.session.id)
+      .map((s) => store.remove('sessions', s.id).catch(() => {})));
+    await audit(store, user, 'password_changed', 'users', user.id, 'Password changed; other sessions revoked');
+    return ok({ ok: true });
+  }));
 
   route('GET', '/auth/me', null, async ({ store, auth }) => {
     let candidate = null;

@@ -1,7 +1,8 @@
 import { session, me, bootstrap, setUnauthorizedHandler } from './api.js';
 import { initTheme, toggleTheme, resolvedTheme } from './theme.js';
-import { esc, initials, enhanceTables } from './ui.js';
+import { esc, initials, enhanceTables, toast } from './ui.js';
 import { logoSvg } from './logo.js';
+import { changePassword } from './account-security.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -130,12 +131,15 @@ function renderShell() {
         <div class="who"><span class="avatar">${esc(initials(u.name))}</span><span class="who-copy"><b>${esc(u.name)}</b><small>${esc(u.email || `${u.role} account`)}</small></span></div>
         <div class="role"><span class="online-dot"></span>${esc(u.role)}${state.candidate ? ` · ${esc(state.candidate.name)}` : ''}</div>
       </div>
+      <button class="btn secondary sm signout" id="change-password-btn">Change password</button>
       <button class="btn secondary sm signout" id="logout-btn">Sign out</button>
     </div>`;
 
+  document.getElementById('change-password-btn').onclick = changePassword;
   document.getElementById('logout-btn').onclick = async () => {
     const { logout } = await import('./api.js');
-    await logout();
+    try { await logout(); }
+    catch (err) { toast(`Sign out failed: ${err.message}. Please try again.`, 'error'); return; }
     session.token = null;
     closeMobileNav();
     boot();
