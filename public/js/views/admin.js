@@ -1,3 +1,4 @@
+import { deletePersonFlow } from '../person-delete.js';
 import { wireAccountForm } from '../account-form.js';
 import { api, apiAll } from '../api.js';
 import { state } from '../app.js';
@@ -143,7 +144,7 @@ export async function candidatesView(view) {
     if (!rows.length) { el.innerHTML = emptyState('No candidates match', 'Add your first candidate or adjust the filters.'); return; }
     el.innerHTML = dataTable([
       { label: 'Candidate', render: (c) => `<a href="#/candidates/${c.id}"><b>${esc(c.name)}</b></a><div class="small muted">${esc(c.current_title || '')}${c.years_experience != null ? ` · ${c.years_experience} yrs` : ''}</div>` },
-      { label: 'Target role', render: (c) => c.role_name ? esc(c.role_name) : '<span class="muted">—</span>' },
+      { label: 'Target role', render: (c) => `${c.role_name ? esc(c.role_name) : '<span class="muted">—</span>'}${c.deleting ? `<div>${badge('Deletion incomplete', 'red')}</div>` : ''}` },
       { label: 'Assessor', render: (c) => c.assessor_name ? esc(c.assessor_name) : '<span class="muted">unassigned</span>' },
       { label: 'Stage', render: (c) => stageBadge(M().pipelineStages, c.stage) },
       { label: 'Source', render: (c) => esc(c.source || '—') },
@@ -151,7 +152,8 @@ export async function candidatesView(view) {
       { label: '', cls: 'actions', render: (c) => `
         <button class="btn ghost sm" data-act="edit" data-id="${c.id}">Edit</button>
         <button class="btn ghost sm" data-act="alloc" data-id="${c.id}">Allocate</button>
-        <button class="btn ghost sm" style="color:var(--red)" data-act="del" data-id="${c.id}">Delete</button>` },
+        <button class="btn ghost sm" style="color:var(--red)" data-act="del" data-id="${c.id}">Delete</button>
+        <button class="btn ghost sm" style="color:var(--red)" data-act="purge" data-id="${c.id}">Delete all data</button>` },
     ], rows);
     el.querySelectorAll('button[data-act]').forEach((b) => (b.onclick = () => candidateAction(b.dataset.act, rows.find((r) => r.id === b.dataset.id), roles, assessors)));
   };
@@ -200,6 +202,8 @@ async function candidateAction(act, c, roles, assessors = null) {
     await allocateAssessorModal(c);
   } else if (act === 'del') {
     await deleteCandidateFlow(c);
+  } else if (act === 'purge') {
+    await deletePersonFlow('candidates', c, refresh);
   }
 }
 
@@ -452,6 +456,7 @@ export async function candidateDetailView(view, { id }) {
   const stages = M().pipelineStages;
   view.innerHTML = `
     <div class="card" style="padding:12px 18px"><a class="btn ghost sm" href="#/candidates">← All candidates</a></div>
+    ${c.deleting ? '<div class="card attention-card">Deletion is incomplete. Use “Delete all data” to review the remaining records and finish cleanup. Candidate account access stays disabled.</div>' : ''}
     <div class="row" style="align-items:flex-start">
       <div style="flex:1.2">
         <div class="card">
@@ -462,6 +467,7 @@ export async function candidateDetailView(view, { id }) {
               <button class="btn secondary sm" id="edit">Edit</button>
               <button class="btn sm" id="alloc">Allocate assessment</button>
               <button class="btn ghost sm" id="del" style="color:var(--red)">Delete</button>
+              <button class="btn ghost sm" id="purge-person" style="color:var(--red)">Delete all data</button>
             </div>
           </div>
           <hr class="hr"/>
@@ -505,6 +511,7 @@ export async function candidateDetailView(view, { id }) {
   view.querySelector('#edit').onclick = () => candidateAction('edit', { ...c, assessor_name: d.assessor_name }, roles, assessors);
   view.querySelector('#alloc').onclick = () => allocateAssessorModal(c, c.target_role_id);
   view.querySelector('#del').onclick = () => deleteCandidateFlow(c, { goBack: true });
+  view.querySelector('#purge-person').onclick = () => deletePersonFlow('candidates', c, () => { location.hash = '#/candidates'; });
 }
 
 /* ================================ Assessments ================================ */
@@ -1249,6 +1256,7 @@ export async function usersView(view) {
         { label: '', cls: 'actions', render: (u) => `
             <button class="btn ghost sm" data-edit="${u.id}">Edit</button>
             <button class="btn ghost sm" data-pw="${u.id}">Reset password</button>
+            ${u.id !== state.user?.id && u.username !== 'admin' ? `<button class="btn ghost sm" style="color:var(--red)" data-purge-user="${u.id}">Delete all data</button>` : ''}
             ${u.active === false ? `<button class="btn ghost sm" data-on="${u.id}">Reactivate</button>`
     // The signed-in admin cannot deactivate their own login (the API refuses
     // the self-lockout), so do not offer it.
@@ -1301,6 +1309,10 @@ export async function usersView(view) {
       help: 'Who scores the automatic assessment. Leave blank to use the assessor set on the candidate record (or leave it unassigned). Ignored for other roles.',
     }] : []),
   ];
+
+  view.querySelectorAll('[data-purge-user]').forEach((button) => {
+    button.onclick = () => deletePersonFlow('users', users.find((u) => u.id === button.dataset.purgeUser), () => usersView(view));
+  });
 
   view.querySelector('#import-users').onclick = () => importCandidatesModal(() => usersView(view));
   view.querySelector('#add-user').onclick = async () => {

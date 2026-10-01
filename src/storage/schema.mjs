@@ -6,7 +6,7 @@
 export const TABLES = {
   users:        { json: [], flags: ['active'] },
   sessions:     { json: [], flags: [] },
-  candidates:   { json: [], flags: [] },
+  candidates:   { json: [], flags: ['deleting'] },
   roles:        { json: [], flags: ['active'] },
   competencies: { json: [], flags: ['active'] },
   questions:    { json: ['options', 'correct_option_ids'], flags: ['active', 'pin_first', 'audio_required'] },

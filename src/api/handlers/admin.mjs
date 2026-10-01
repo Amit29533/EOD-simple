@@ -1,3 +1,4 @@
+import { purgePreview, purgePerson } from '../person-purge.mjs';
 import { hashPasswordAsync, hashPasswordsAsync, verifyPasswordAsync } from '../../core/passwords.mjs';
 import {
   ok, created, bad, notFound, conflict, forbidden, unprocessable, audit,
@@ -817,6 +818,11 @@ export function adminHandlers(route) {
     return ok({ updated: found.length, reassigned_assessments: moved.length, missing, assessor_id: nextAssessor, assessor_name: assessorName });
   });
 
+  for (const kind of ['candidates', 'users']) {
+    route('GET', `/admin/${kind}/:id/purge-preview`, A, (ctx) => purgePreview(ctx, kind));
+    route('DELETE', `/admin/${kind}/:id/purge`, A, (ctx) => purgePerson(ctx, kind));
+  }
+
   // Password-gated destructive delete. The signed-in admin must re-enter
   // their own password; the delete then cascades over everything that hangs
   // off the candidate so no orphaned login or draft data is left behind:
@@ -911,7 +917,7 @@ export function adminHandlers(route) {
     if (body.role === 'candidate') {
       if (!body.candidate_id) return bad('A candidate record must be linked for candidate users.');
       const c = await store.get('candidates', body.candidate_id);
-      if (!c) return bad('Linked candidate not found.');
+      if (!c || c.deleting) return bad('Linked candidate not found or being deleted.');
       if ((await store.list('users', { candidate_id: c.id })).length) return conflict('That candidate already has a portal user.');
       candidate_id = c.id;
     }
@@ -966,7 +972,7 @@ export function adminHandlers(route) {
     });
   });
 
-  route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => {
+  route('PATCH', '/admin/users/:id', A, async ({ store, body, params, auth }) => withLock('users:create', async () => {
     const u = await store.get('users', params.id);
     if (!u) return notFound('User not found.');
     const structured = textField(body, ['name', 'email']);
@@ -978,6 +984,8 @@ export function adminHandlers(route) {
     if (body.name !== undefined) patch.name = str(body.name, 120);
     if (body.email !== undefined) patch.email = str(body.email, 200);
     if (body.active !== undefined) patch.active = bool(body.active);
+    if (patch.active === true && u.candidate_id && (await store.get('candidates', u.candidate_id))?.deleting)
+      return conflict('Candidate deletion is incomplete. Finish Delete all data before changing account access.');
     if (body.password !== undefined && body.password !== '') {
       const passwordProblem = passwordError(body.password);
       if (passwordProblem) return bad(passwordProblem);
@@ -986,7 +994,7 @@ export function adminHandlers(route) {
     if (body.candidate_id !== undefined && u.role === 'candidate') {
       if (!body.candidate_id) return bad('Candidate users must be linked to a candidate record.');
       const linkedCandidate = await store.get('candidates', body.candidate_id);
-      if (!linkedCandidate) return bad('Linked candidate not found.');
+      if (!linkedCandidate || linkedCandidate.deleting) return bad('Linked candidate not found or being deleted.');
       const alreadyLinked = (await store.list('users', { candidate_id: body.candidate_id }))
         .find((row) => row.id !== u.id);
       if (alreadyLinked) return conflict('That candidate already has a portal user.');
@@ -1026,7 +1034,7 @@ export function adminHandlers(route) {
     await audit(store, auth.user, 'user_updated', 'users', params.id, `User "${u.username}" updated`
       + (stranded ? ` (${stranded} open assessment(s) still assigned to this deactivated assessor)` : ''));
     return ok(stranded !== undefined ? { ...publicUser(updated), open_assessments: stranded } : publicUser(updated));
-  });
+  }));
 
   // ------------------------------------------------ roles (assessment tracks)
   route('GET', '/admin/roles', A, async ({ store }) => {
@@ -1856,7 +1864,7 @@ export function adminHandlers(route) {
     const miss = missing(body, ['candidate_id', 'role_id']);
     if (miss.length) return bad('candidate_id and role_id are required.');
     const candidate = await store.get('candidates', body.candidate_id);
-    if (!candidate) return bad('Candidate not found.');
+    if (!candidate || candidate.deleting) return bad('Candidate not found or being deleted.');
     let assessor_id = body.assessor_id || null;
     if (assessor_id) {
       const assessor = await store.get('users', assessor_id);

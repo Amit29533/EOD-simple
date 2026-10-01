@@ -238,6 +238,8 @@ export async function autoAllocateAssessment(store, candidate, {
   const assessor_id = await resolveAssessorId(store, assessorId || candidate.assessor_id || null);
 
   return withLock(allocationLockKey(candidate.id, role.id), async () => {
+    const freshCandidate = await store.get('candidates', candidate.id);
+    if (!freshCandidate || freshCandidate.deleting) return fail('Candidate not found or being deleted.');
     const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
       .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
     if (open) {

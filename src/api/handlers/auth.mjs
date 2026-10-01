@@ -1,3 +1,4 @@
+import { withLock } from '../mutex.mjs';
 import { verifyPasswordAsync } from '../../core/passwords.mjs';
 import { createGate } from '../../core/gate.mjs';
 import { ok, bad, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
@@ -150,6 +151,13 @@ export function authHandlers(route) {
       recordFailure(username, address);
       return unauthorized('Invalid username or password.');
     }
+    // Purging an account shares this lock: a verification begun before deletion
+    // must not issue a session or login event after the account is removed.
+    return withLock(`identity:${user.id}`, async () => {
+    const fresh = await store.get('users', user.id);
+    if (!fresh || fresh.active === false || fresh.password_hash !== user.password_hash)
+      return unauthorized('Invalid username or password.');
+    user = fresh;
     recordSuccess(username, address);
 
     // Session hygiene is scoped to THIS user, never a full-table scan on the
@@ -178,6 +186,7 @@ export function authHandlers(route) {
       token,
       user: publicUser(user),
       candidate: candidate ? { id: candidate.id, name: candidate.name, stage: candidate.stage } : null,
+    });
     });
   });
 
