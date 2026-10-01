@@ -2015,6 +2015,9 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 .scoring-navigation .f { flex:1; min-width:240px; margin:0; }
 .scoring-navigation select { width:100%; }
 .journey-device-check audio { width:100%; max-width:520px; }
+.mic-result { font-weight:700; margin:16px 0 6px; }
+.mic-result[data-state="success"] { color:var(--green); }
+.mic-result[data-state="failure"] { color:var(--red); }
 [data-question-id] { scroll-margin-top:110px; }
 .f > button { margin:6px 8px 0 0; }
 [hidden] { display:none !important; }

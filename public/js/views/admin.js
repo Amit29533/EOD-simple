@@ -1221,7 +1221,7 @@ export function questionEditorModal(existing, competencies) {
 /* ================================ Users & access ================================ */
 export async function usersView(view) {
   view.innerHTML = loading();
-  const [users, candidates] = await Promise.all([apiAll('/admin/users', 'users'), apiAll('/admin/candidates', 'candidates')]);
+  const [users, candidates, roles] = await Promise.all([apiAll('/admin/users', 'users'), apiAll('/admin/candidates', 'candidates'), apiAll('/admin/roles', 'roles')]);
   const roleTone = { admin: 'red', assessor: 'blue', candidate: 'green', validator: 'amber', trainer: 'amber' };
   const assessors = users.filter((u) => u.role === 'assessor' && u.active !== false);
   view.innerHTML = `
@@ -1310,7 +1310,7 @@ export async function usersView(view) {
     const fields = userFields(null).sort((a, b) => fieldOrder.indexOf(a.name) - fieldOrder.indexOf(b.name));
     const out = await formModal({
       title: 'Create user', fields, values: { role: 'candidate' },
-      onOpen: (el) => wireAccountForm(el, { candidates, users, create: true }),
+      onOpen: (el) => wireAccountForm(el, { candidates, users, roles, create: true }),
       onSubmit: (vals) => {
         if (vals.role === 'candidate' && !vals.candidate_id) {
           throw Object.assign(new Error('Choose the linked candidate before creating a candidate portal user.'), { field: 'candidate_id' });
@@ -1355,7 +1355,7 @@ export async function usersView(view) {
     const u = users.find((x) => x.id === b.dataset.pw);
     const saved = await formModal({
       title: `Reset password · @${u.username}`,
-      onOpen: (el) => wireAccountForm(el, { users }),
+      onOpen: (el) => { el.dataset.accountName = u.name; wireAccountForm(el, { users }); },
       fields: [{ name: 'password', label: 'New password', type: 'password', required: true, help: 'Minimum 8 characters.' }],
       onSubmit: (vals) => api(`/admin/users/${u.id}`, { method: 'PATCH', body: { password: vals.password } }),
     });

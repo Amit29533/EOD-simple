@@ -89,9 +89,14 @@ test('scoring screen: rubric on show, out-of-range scores refused locally, valid
     assert.equal(input1.value, '', 'the bad value is cleared');
     assert.equal(spa.callsTo(`/assessor/assessments/${id}/scores`).length, 0);
 
+    const unscoredOnly = spa.view.querySelector('#unscored-only');
+    unscoredOnly.checked = true;
+    unscoredOnly.dispatchEvent(new window.Event('change'));
+
     // Valid scores and a comment reach the server.
     type(input1, '4');
     await flush(80);
+    assert.equal(input1.closest('[data-question-id]').hidden, true, 'scored questions leave the unscored filter');
     type(spa.view.querySelector(`#comment-${q1.id}`), 'Good structure, thin on cost.');
     await flush(80);
     type(spa.view.querySelector(`#score-${q2.id}`), '2.5');

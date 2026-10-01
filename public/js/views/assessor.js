@@ -145,6 +145,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
       <label class="f"><span class="lbl">Jump to an open question</span><select id="open-question-jump"><option value="">Choose a question…</option>${manualQs.map((q, i) => `<option value="${esc(q.id)}">Open ${i + 1} · ${esc(q.prompt.slice(0, 100))}</option>`).join('')}</select></label>
       ${!readonly && manualQs.length ? '<button class="btn secondary" id="next-unscored">Next unscored question →</button>' : ''}
       <label class="check"><input type="checkbox" id="open-only"> Show only open questions</label>
+      ${!readonly ? '<label class="check"><input type="checkbox" id="unscored-only"> Show only unscored open questions</label>' : ''}
     </div>
     ${d.competencies.map((c) => {
       const qs = d.questions.filter((x) => x.competency_id === c.id);
@@ -173,12 +174,20 @@ function renderAnswerSheet(view, d, { id, readonly }) {
   const jump = (qid) => {
     const card = [...view.querySelectorAll('[data-question-id]')].find((el) => el.dataset.questionId === qid);
     if (!card) return;
+    if (card.hidden) {
+      view.querySelector('#open-only').checked = false;
+      const unscored = view.querySelector('#unscored-only');
+      if (unscored) unscored.checked = false;
+      filterQuestions();
+    }
     card.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     (card.querySelector('input:not([disabled])') || card).focus({ preventScroll: true });
   };
   view.querySelector('#open-question-jump').onchange = (e) => jump(e.target.value);
-  view.querySelector('#open-only').onchange = (e) => {
-    view.querySelectorAll('[data-question-type]').forEach((card) => { card.hidden = e.target.checked && card.dataset.questionType !== 'text'; });
+  const filterQuestions = () => {
+    const openOnly = view.querySelector('#open-only').checked;
+    const unscoredOnly = view.querySelector('#unscored-only')?.checked;
+    view.querySelectorAll('[data-question-type]').forEach((card) => { card.hidden = ((openOnly || unscoredOnly) && card.dataset.questionType !== 'text') || (unscoredOnly && scores[card.dataset.questionId] != null && scores[card.dataset.questionId] !== ''); });
     view.querySelectorAll('.comp-header').forEach((header) => {
       let card = header.nextElementSibling;
       let visible = false;
@@ -186,6 +195,9 @@ function renderAnswerSheet(view, d, { id, readonly }) {
       header.hidden = !visible;
     });
   };
+  view.querySelector('#open-only').onchange = filterQuestions;
+  const unscoredFilter = view.querySelector('#unscored-only');
+  if (unscoredFilter) unscoredFilter.onchange = filterQuestions;
   const nextUnscored = view.querySelector('#next-unscored');
   if (nextUnscored) nextUnscored.onclick = () => {
     const q = manualQs.find((q) => scores[q.id] === null || scores[q.id] === '');
@@ -204,6 +216,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
       const i = manualQs.indexOf(q);
       option.textContent = `Open ${i + 1} · ${scores[q.id] == null || scores[q.id] === '' ? 'Unscored' : 'Scored'} · ${q.prompt.slice(0, 100)}`;
     }
+    filterQuestions();
     return scored;
   };
   updateProgress();

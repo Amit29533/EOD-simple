@@ -29,6 +29,9 @@ test('journey: allocated -> exam hall -> every question locked -> submitted, all
     assert.match(enter.textContent, /Enter exam hall/);
     assert.match(spa.text(), /3 questions/);
 
+    assert.equal(spa.view.lastElementChild.classList.contains('journey-device-check'), true, 'microphone check is at the bottom');
+    assert.match(spa.view.querySelector('.mic-result').textContent, /not tested|unavailable/);
+
     // Exam hall: the rules gate first; entering needs the acknowledgement.
     spa.window.location.hash = `#/assessments/${assessmentId}/quiz`;
     await cand.quizView(spa.view, { id: assessmentId });

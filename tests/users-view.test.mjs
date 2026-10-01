@@ -37,7 +37,7 @@ function stubFetch() {
     { id: 'u-assessor', username: 'assessor', name: 'Assessor User', role: 'assessor', email: 'assessor@example.com', active: true },
     { id: 'u-candidate', username: 'candidate', name: 'Candidate User', role: 'candidate', email: 'candidate@example.com', active: true, candidate_id: 'c1', candidate_name: 'Candidate One' },
   ];
-  const candidates = [{ id: 'c1', name: 'Candidate One' }, { id: 'c2', name: 'Candidate Two', email: 'two@example.com' }];
+  const candidates = [{ id: 'c1', name: 'Candidate One' }, { id: 'c2', name: 'Candidate Two', email: 'two@example.com', target_role_id: 'sama' }];
   globalThis.fetch = async (url, opts = {}) => {
     const json = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
     if (url.includes('/auth/me')) return json({ user: { id: 'u-admin', username: 'admin', name: 'Admin User', role: 'admin', email: '' }, candidate: null });
@@ -45,6 +45,7 @@ function stubFetch() {
     if (url.includes('/admin/users') && opts.method === 'PATCH') { calls.patches.push(JSON.parse(opts.body)); return json({ ok: true }); }
     if (url.includes('/admin/users') && opts.method === 'POST') { calls.posts.push(JSON.parse(opts.body)); return json({ id: 'new-user' }, 201); }
     if (url.includes('/admin/users')) return json({ users });
+    if (url.includes('/admin/roles')) return json({ roles: [{ id: 'sama', name: 'Technology Risk Consultant - SAMA', default_question_count: 30, active: true }] });
     if (url.includes('/admin/candidates')) return json({ candidates });
     if (url.includes('/admin/dashboard')) return json({ counts: { candidates: 0, enterprise_ready: 0, active_assessments: 0, avg_score: null }, by_stage: {}, by_status: {}, recent_activity: [] });
     return json({});
@@ -146,11 +147,16 @@ test('users view: candidate default, linked identity, visible generated password
     linked.dispatchEvent(new dom.window.Event('change'));
     assert.equal(modal.querySelector('[name="name"]').value, 'Candidate Two');
     assert.equal(modal.querySelector('[name="email"]').value, 'two@example.com');
-    assert.match(modal.querySelector('[name="username"]').value, /^candidate.two.\d{14}$/);
+    assert.match(modal.querySelector('[name="username"]').value, /^candidate\d{4}$/);
+    assert.match(modal.querySelector('[name="password"]').value, /^candidate#\d{4}$/);
+    assert.equal(modal.querySelector('[name="password"]').type, 'text');
+    assert.match(modal.querySelector('#fm-help-auto_allocate').textContent, /SAMA · 30 questions/);
+    const firstPassword = modal.querySelector('[name="password"]').value;
     [...modal.querySelectorAll('button')].find((b) => b.textContent === 'Generate password').click();
     const password = modal.querySelector('[name="password"]');
     assert.equal(password.type, 'text');
-    assert.equal(password.value.length, 20);
+    assert.match(password.value, /^candidate#\d{4}$/);
+    assert.notEqual(password.value, firstPassword);
     const role = modal.querySelector('[name="role"]');
     role.value = 'admin';
     role.dispatchEvent(new dom.window.Event('change'));

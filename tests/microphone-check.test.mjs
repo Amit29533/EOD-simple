@@ -36,6 +36,7 @@ test('mic practice requests access only on click, offers playback, releases trac
     assert.equal(f.root.querySelector('[data-mic-stop]').disabled, false);
     f.root.querySelector('[data-mic-stop]').click();
     assert.equal(f.player.hidden, false);
+    assert.match(f.root.querySelector('.mic-result').textContent, /^✓.*successful/);
     assert.equal(f.player.getAttribute('src'), 'blob:practice');
     assert.ok(f.stopped() > 0);
     f.dispose();
@@ -62,15 +63,18 @@ test('denied microphone permission gives an actionable retry', { skip: SKIP }, a
   try {
     await f.root.querySelector('[data-mic-start]').onclick();
     assert.match(f.root.querySelector('[data-mic-status]').textContent, /site settings/);
+    assert.match(f.root.querySelector('.mic-result').textContent, /^✕.*denied/);
     assert.equal(f.root.querySelector('[data-mic-start]').disabled, false);
   } finally { f.dispose(); f.dom.window.close(); }
 });
 
-test('generated usernames normalize names and resolve collisions; passwords use crypto', () => {
-  const time = new Date('2026-10-01T10:11:12Z');
-  const first = uniqueUsername('Amít Singh', [], time);
-  assert.equal(first, 'amit.singh.20261001101112');
-  assert.equal(uniqueUsername('Amít Singh', [{ username: first.toUpperCase() }], time), `${first}.2`);
-  assert.match(uniqueUsername('李', [], time), /^[a-z0-9._-]{3,}$/);
-  assert.equal(generatePassword().length, 20);
+test('short name-based credentials resolve collisions and respect password minimum', () => {
+  const crypto = { getRandomValues: (array) => { array[0] = 1237; return array; } };
+  const first = uniqueUsername('Amít Singh', [], crypto);
+  assert.equal(first, 'amit1237');
+  assert.equal(uniqueUsername('Amít Singh', [{ username: first.toUpperCase() }], crypto), 'amit1238');
+  assert.match(uniqueUsername('李', [], crypto), /^[a-z0-9._-]{3,}$/);
+  assert.equal(generatePassword('Amit Singh', crypto), 'amit#1237');
+  assert.equal(generatePassword('Amit Singh', crypto), 'amit#1238');
+  assert.ok(generatePassword('A', crypto).length >= 8);
 });
