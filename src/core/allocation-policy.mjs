@@ -1,4 +1,5 @@
 import { MAX_ASSESSMENT_QUESTIONS } from './constants.mjs';
+import { hasStrictModuleAllocation } from './module-allocation-policy.mjs';
 
 /** Defaults shipped with the published tracks. Stored role values win. */
 export const PUBLISHED_AUTO_ALLOCATION_DEFAULTS = Object.freeze({
@@ -16,6 +17,7 @@ export const PUBLISHED_AUTO_ALLOCATION_DEFAULTS = Object.freeze({
  * remains the administrator's source of truth.
  */
 export function defaultQuestionCountForRole(role) {
+  if (hasStrictModuleAllocation(role)) return 50;
   const stored = Number(role?.default_question_count);
   if (Number.isInteger(stored) && stored >= 1 && stored <= MAX_ASSESSMENT_QUESTIONS) return stored;
   return PUBLISHED_AUTO_ALLOCATION_DEFAULTS[role?.key] || MAX_ASSESSMENT_QUESTIONS;

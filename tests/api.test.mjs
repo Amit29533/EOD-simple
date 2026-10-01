@@ -22,7 +22,7 @@ before(async () => {
   store = createJsonStore(path.join(tmp, 'db.json'));
   app = await createApp(store);
 
-  const role = await store.insert('roles', { key: 'databricks-rsa', name: 'RSA', technology: 'Databricks', description: '', active: true });
+  const role = await store.insert('roles', { key: 'test-rsa', name: 'RSA', technology: 'Databricks', description: '', active: true });
   const comp = await store.insert('competencies', {
     role_id: role.id, key: 'arch', name: 'Architecture', category: 'technical', weight: 100,
     target_level: 4, enrichment_hint: 'Review reference blueprints.', order: 1, active: true,

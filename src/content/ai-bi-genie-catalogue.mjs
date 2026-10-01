@@ -13,6 +13,7 @@
  */
 
 import { MODULES, QUESTIONS } from './ai-bi-genie-question-bank.mjs';
+import { MODULE_COMPETENCIES } from '../core/module-allocation-policy.mjs';
 
 export const AIBI_ROLE = {
   key: 'databricks-ai-bi-genie',
@@ -59,9 +60,7 @@ export const AIBI_COMPETENCIES = [
 ];
 
 /** Module key -> competency key, in the bank's module order. */
-const COMPETENCY_FOR_MODULE = Object.fromEntries(
-  MODULES.map((m, i) => [m.key, AIBI_COMPETENCIES[i].key])
-);
+const COMPETENCY_FOR_MODULE = MODULE_COMPETENCIES['databricks-ai-bi-genie'];
 
 const difficultyFromBand = (band) => {
   const b = String(band || '').toLowerCase();

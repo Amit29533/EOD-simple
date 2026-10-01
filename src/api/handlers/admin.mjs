@@ -22,6 +22,7 @@ import {
   allocationLockKey, resolveAssessorId,
 } from '../assessment-service.mjs';
 import { allocationPreview } from '../../core/question-selection.mjs';
+import { hasStrictModuleAllocation } from '../../core/module-allocation-policy.mjs';
 import {
   catalogueStatus, catalogueMissing, syncCatalogue, catalogueForRoleKey,
   listCatalogues, installCatalogue, isCatalogueCompetency,
@@ -1074,12 +1075,15 @@ export function adminHandlers(route) {
       store.list('roles'), store.list('competencies'), store.list('questions'), store.list('assessments', {}, { detached: false }),
     ]);
     roles.sort((a, b) => a.name.localeCompare(b.name));
+    const moduleCounts = new Map(await Promise.all(roles.filter(hasStrictModuleAllocation).map(async (r) =>
+      [r.id, (await effectiveBank(store, r.key)).filter(isActive).length])));
     return ok({
       roles: roles.map((r) => ({
         ...r,
         default_question_count: defaultQuestionCountForRole(r),
         competency_count: comps.filter((c) => c.role_id === r.id).length,
-        question_count: questions.filter((q) => q.role_id === r.id).length,
+        question_count: moduleCounts.has(r.id) ? moduleCounts.get(r.id) : questions.filter((q) => q.role_id === r.id).length,
+        ...(hasStrictModuleAllocation(r) ? { allocation_mode: 'module', module_count: 20 } : {}),
         assessment_count: assessments.filter((a) => a.role_id === r.id).length,
       })),
     });
@@ -1092,6 +1096,8 @@ export function adminHandlers(route) {
     if (structured) return bad(`Role ${structured} must be plain text.`);
     const defaultCountProblem = questionCountError(body.default_question_count);
     if (defaultCountProblem) return bad(defaultCountProblem.replace('Number of questions', 'Default allocation'));
+    if (hasStrictModuleAllocation({ key: str(body.key, 60).toLowerCase() }) && body.default_question_count && Number(body.default_question_count) !== 50)
+      return bad('RSA and AI/BI use a fixed 50-question module blueprint.');
     const key = str(body.key, 60).toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]*$/.test(key)) return bad('Key must be a slug like databricks-rsa.');
     // The uniqueness check and the insert are one step per key (shared with
@@ -1120,6 +1126,8 @@ export function adminHandlers(route) {
     if (structured) return bad(`Role ${structured} must be plain text.`);
     const defaultCountProblem = questionCountError(body.default_question_count);
     if (defaultCountProblem) return bad(defaultCountProblem.replace('Number of questions', 'Default allocation'));
+    if (hasStrictModuleAllocation(r) && body.default_question_count && Number(body.default_question_count) !== 50)
+      return bad('RSA and AI/BI use a fixed 50-question module blueprint.');
     // Creation requires a name; an edit must not be able to blank it (the role
     // then renders as an unnamed track everywhere it is listed).
     if (body.name !== undefined && !str(body.name)) return bad('Role name is required.');
@@ -1494,6 +1502,14 @@ export function adminHandlers(route) {
     // role has more than the product maximum, the preview never promises more
     // than the 50-question allocation cap.
     const previewLimit = limit === null ? null : Math.min(limit, MAX_ASSESSMENT_QUESTIONS);
+    if (hasStrictModuleAllocation(bank.role)) {
+      const snapshot = automaticSnapshotFromBank(bank);
+      if (!snapshot) return unprocessable('The 50-question module blueprint cannot be filled. Check active questions in each module.');
+      return ok({ role: { id: bank.role.id, name: bank.role.name }, max_questions: 50, required_question_count: 50,
+        allocation_mode: 'module', catalogue: null,
+        ...allocationPreview(snapshot.questions, snapshot.competencies, 50), bank_total: bank.questions.length,
+        blueprint: snapshot.allocation_blueprint, per_module: snapshot.allocation_blueprint.sections });
+    }
     // Catalogue context: when this track has a published catalogue with
     // questions and the bank is smaller than the allocation cap, the UI can
     // offer a one-click top-up instead of leaving the admin stuck below the cap.
@@ -1640,12 +1656,12 @@ export function adminHandlers(route) {
       const comps = new Map(bank.competencies.map((c) => [c.id, c]));
       const questions = snapshot.questions.map((q) => {
         const comp = comps.get(q.competency_id);
-        const nonTechnical = ['advisory', 'behavioral'].includes(comp?.category);
+        const nonTechnical = hasStrictModuleAllocation(role) ? !q.module.startsWith('T') : ['advisory', 'behavioral'].includes(comp?.category);
         counts[`${nonTechnical ? 'non_technical' : 'technical'}_${q.type === 'text' ? 'open' : 'objective'}`]++;
-        return { id: q.id, module: comp?.name || '', family: q.type === 'scale' ? 'Scale' : '', type: q.type === 'text' ? 'open' : 'objective', prompt: q.prompt };
+        return { id: q.id, module: q.module || comp?.name || '', family: q.family || (q.type === 'scale' ? 'Scale' : ''), type: q.type === 'text' ? 'open' : 'objective', prompt: q.prompt };
       });
       const requested = defaultQuestionCountForRole(role);
-      return ok({ mode: 'allocation', role_name: role.name, requested, counts, blueprint: counts, sections: [], questions,
+      return ok({ mode: 'allocation', role_name: role.name, requested, counts, blueprint: counts, sections: snapshot.allocation_blueprint?.sections || [], questions,
         warnings: counts.total < requested ? [`Only ${counts.total} eligible questions are available for the configured ${requested}-question assessment.`] : [] });
     }
     const bank = requireBank(roleKey);
@@ -1939,8 +1955,12 @@ export function adminHandlers(route) {
       return created(await store.get('assessments', open.id));
     }
     if (open) return conflict('This candidate already has an open assessment for that role.');
+    const allocationRole = await store.get('roles', body.role_id);
+    if (hasStrictModuleAllocation(allocationRole) && questionLimit !== null && questionLimit !== 50)
+      return bad('RSA and AI/BI require exactly 50 questions: 30 technical objective, 10 technical open and 10 non-technical open.');
     const snapshot = await buildSnapshot(store, body.role_id, { questionLimit });
-    if (!snapshot) return bad('Role not found or inactive.');
+    if (!snapshot) return bad(hasStrictModuleAllocation(allocationRole)
+      ? 'The role’s 50-question module blueprint cannot be filled. Check active questions in every module.' : 'Role not found or inactive.');
     if (!snapshot.bank_total) return bad('That role has no active questions yet. Add questions first.');
     if (questionLimit !== null && questionLimit > snapshot.bank_total)
       return bad(`That role only has ${snapshot.bank_total} active question(s). Choose ${snapshot.bank_total} or fewer.`);

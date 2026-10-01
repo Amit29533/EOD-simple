@@ -21,7 +21,7 @@ Pipeline (AI/BI & Genie bank):
     node scripts/extract-ai-bi-bank-from-xlsx.mjs \\
         "AI BI G Question bank 1.1.xlsx"  data/ai-bi-bank.json
     python3 scripts/build-question-bank.py data/ai-bi-bank.json \\
-        src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
+        src/content/ai-bi-genie-source-bank.mjs 1.1 scripts/ai-bi-bank-config.json
 
 Pipeline (Technology Risk Consultant - SAMA bank):
     node scripts/extract-sama-bank-from-xlsx.mjs \\
@@ -150,6 +150,8 @@ def family_role(questions):
 
 
 def build(bank_path, out_path, version=None, config=None):
+    if out_path.replace('\\', '/').rsplit('/', 1)[-1] == 'ai-bi-genie-question-bank.mjs':
+        raise ValueError('Generate ai-bi-genie-source-bank.mjs instead; the v2 allocation wrapper must be preserved.')
     if config is None:
         config = RSA_CONFIG
     if version is None:

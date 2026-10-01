@@ -152,7 +152,7 @@ questions, version, optional pool, authored-id prefix). The RSA bank is the
 historical default — every unscoped read and call resolves to it, which keeps
 single-track workspaces (and existing clients) byte-for-byte as before. The
 AI/BI & Genie bank (`src/content/ai-bi-genie-question-bank.mjs`, 100 questions
-across 10 modules, generated from `AI BI G Question bank 1.1.xlsx` with the same
+across 20 modules, mapped from the preserved source bank generated from `AI BI G Question bank 1.1.xlsx` with the same
 `extract → build` pipeline: `scripts/extract-ai-bi-bank-from-xlsx.mjs` +
 `scripts/build-question-bank.py` + `scripts/ai-bi-bank-config.json`) is a
 first-class entry: its own tree, plan, preview, import and authoring. The
@@ -166,9 +166,14 @@ registered the same way. All
 column (legacy rows without it belong to the default RSA bank), so the banks
 can never bleed into each other. The per-track paper shape is derived from the
 bank's own module list (`blueprintFor()` in `core/test-generation.mjs`) — RSA
-computes 50 questions as before, AI/BI & Genie 31 (21 technical objective +
-7 technical open + 3 consulting open), SAMA 30 (20 risk & control objective +
+and AI/BI & Genie each compute 50 (30 technical objective + 10 technical open +
+10 non-technical open), SAMA 30 (20 risk & control objective +
 4 risk & control open + 5 reporting objective + 1 reporting open: 25 objective + 5 open).
+
+All new RSA and AI/BI allocation paths use the effective module bank through
+`src/api/module-assessment.mjs`; competency weights remain report-scoring settings.
+Other sizes or module shortfalls refuse allocation, and existing snapshots remain
+unchanged. See [the allocation contract](MODULE-ALLOCATION.md).
 
 The finalized RSA bank (`src/content/rsa-question-bank.mjs`, 348 questions, generated from
 the published `Question bank 1.4.xlsx` workbook) is organised **MODULE → FAMILY →

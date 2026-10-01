@@ -6,6 +6,8 @@ import { sortedQuestions } from './quiz-session.mjs';
 import { applySpokenContract } from './catalogue-service.mjs';
 import { bulkUpdate } from './helpers.mjs';
 import { withLock } from './mutex.mjs';
+import { hasStrictModuleAllocation } from '../core/module-allocation-policy.mjs';
+import { attachModuleBank, moduleSnapshot } from './module-assessment.mjs';
 
 /**
  * The lock both allocation paths take for one candidate and track: the manual
@@ -43,12 +45,13 @@ export async function roleBank(store, roleId) {
   // competency — crashed on the ungrouped rows.
   const competencyIds = new Set(activeCompetencies.map((c) => c.id));
   const eligible = questions.filter((q) => q.active !== false && competencyIds.has(q.competency_id));
-  return {
+  const bank = {
     role,
     framework,
     competencies: activeCompetencies,
     questions: applySpokenContract(dedupeQuestions(eligible.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)))),
   };
+  return hasStrictModuleAllocation(role) ? attachModuleBank(store, bank, competencies) : bank;
 }
 
 /**
@@ -76,6 +79,7 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
  * Both paths freeze identical papers because they share this function.
  */
 export function snapshotFromBank(bank, questionLimit = null, { blueprint = null } = {}) {
+  if (hasStrictModuleAllocation(bank.role)) return moduleSnapshot(bank, questionLimit);
   // The HTTP handler validates this input, but keep the service boundary safe
   // for other callers too. A direct snapshot build can never freeze more than
   // the supported capped-allocation size into an assessment.

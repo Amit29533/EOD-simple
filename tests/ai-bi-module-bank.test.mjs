@@ -47,13 +47,13 @@ test('the registry holds one published bank per published track', () => {
   assert.equal(rsa.questions.length, RSA_QUESTIONS.length);
   assert.ok(rsa.optional, 'the RSA bank keeps its retired-catalogue fallback pool');
   const aibi = MODULE_BANKS[AIBI_KEY];
-  assert.equal(aibi.modules.length, 10);
+  assert.equal(aibi.modules.length, 20);
   assert.equal(aibi.questions.length, AIBI_QUESTIONS.length);
   assert.equal(aibi.questions.length, 100);
   assert.equal(aibi.version, AIBI_VERSION);
   assert.equal(aibi.optional, null, 'the AI/BI bank has no retired catalogue');
-  assert.equal(aibi.modules.filter((m) => m.technical === true).length, 7);
-  assert.equal(aibi.modules.filter((m) => m.technical !== true).length, 3);
+  assert.equal(aibi.modules.filter((m) => m.technical === true).length, 10);
+  assert.equal(aibi.modules.filter((m) => m.technical !== true).length, 10);
 });
 
 test('effective banks are scoped by role key; unscoped reads keep the RSA default', async () => {
@@ -71,6 +71,7 @@ test('effective banks are scoped by role key; unscoped reads keep the RSA defaul
     type: 'open', prompt: 'An authored AI/BI question that must not leak into the RSA bank.',
     difficulty: 4, band: 'Intermediate', mode: 'Online assessment', minutes: 5, rubric: 'Evidence.',
   }, { id: 'AIBI-G01-A001', actorId: 'u1', roleKey: AIBI_KEY });
+  delete rec.bank_version; // A pre-v2 authored row must be mapped without rewriting its stored ID.
   await store.insert('bank_questions', rec);
 
   const aibiAfter = await effectiveBank(store, AIBI_KEY);
@@ -93,14 +94,14 @@ test('effective banks are scoped by role key; unscoped reads keep the RSA defaul
   assert.ok(!aibiLegacy.some((q) => q.id === 'RSA-T01-A999'), 'legacy rows never leak into another bank');
 });
 
-test('generated AI/BI papers hold the 7 technical + 3 consulting structure exactly', () => {
+test('generated AI/BI papers hold the 10 technical + 10 non-technical structure exactly', () => {
   const rng = (n) => () => ((n = (n * 1103515245 + 12345) % 2147483648) / 2147483648);
   for (let seed = 1; seed <= 8; seed += 1) {
     const result = generateTest({ modules: AIBI_MODULES, questions: AIBI_QUESTIONS }, { rng: rng(seed) });
-    assert.equal(result.counts.total, 31, `seed ${seed}: paper length`);
-    assert.equal(result.counts.technical_objective, 21);
-    assert.equal(result.counts.technical_open, 7);
-    assert.equal(result.counts.non_technical_open, 3);
+    assert.equal(result.counts.total, 50, `seed ${seed}: paper length`);
+    assert.equal(result.counts.technical_objective, 30);
+    assert.equal(result.counts.technical_open, 10);
+    assert.equal(result.counts.non_technical_open, 10);
     assert.deepEqual(result.warnings, [], `seed ${seed}: every module meets its quota`);
 
     // Per-module quotas, held exactly: technical 3 objective + 1 open, consulting 1 open.
@@ -128,7 +129,7 @@ test('generated AI/BI papers hold the 7 technical + 3 consulting structure exact
 test('testPlan reports the AI/BI blueprint from the module list, not the RSA one', () => {
   const plan = testPlan({ modules: AIBI_MODULES, questions: AIBI_QUESTIONS });
   assert.deepEqual(plan.blueprint, {
-    technical_objective: 21, technical_open: 7, non_technical_open: 3, total: 31,
+    technical_objective: 30, technical_open: 10, non_technical_open: 10, total: 50,
   });
   assert.equal(plan.ready, true);
   assert.equal(plan.bank_total, 100);
@@ -146,24 +147,24 @@ test('the modules/plan/preview endpoints are scoped by role_key', async () => {
   assert.equal(modules.body.version, AIBI_VERSION);
   assert.equal(modules.body.bank_total, 100);
   assert.deepEqual(modules.body.blueprint, {
-    technical_objective: 21, technical_open: 7, non_technical_open: 3, total: 31,
+    technical_objective: 30, technical_open: 10, non_technical_open: 10, total: 50,
   });
-  assert.equal(modules.body.technical_modules, 7);
-  assert.equal(modules.body.non_technical_modules, 3);
+  assert.equal(modules.body.technical_modules, 10);
+  assert.equal(modules.body.non_technical_modules, 10);
   assert.deepEqual(modules.body.modules.map((m) => m.key), [
-    'G01', 'G02', 'A01', 'S01', 'S02', 'Q01', 'R01', 'F01', 'C01', 'D01',
+    'T01', 'T02', 'T03', 'T04', 'T05', 'T06', 'T07', 'T08', 'T09', 'T10', 'C01', 'C02', 'C03', 'C04', 'P01', 'P02', 'P03', 'P04', 'F01', 'F02',
   ]);
   assert.equal(modules.body.optional.total, 0);
 
   const plan = await call('GET', '/admin/question-bank/plan', { query: { role_key: AIBI_KEY } });
   assert.equal(plan.status, 200);
-  assert.equal(plan.body.blueprint.total, 31);
+  assert.equal(plan.body.blueprint.total, 50);
   assert.equal(plan.body.ready, true);
 
   const preview = await call('POST', '/admin/question-bank/preview', { body: { role_key: AIBI_KEY } });
   assert.equal(preview.status, 200);
-  assert.equal(preview.body.counts.total, 31);
-  assert.equal(preview.body.questions.length, 31);
+  assert.equal(preview.body.counts.total, 50);
+  assert.equal(preview.body.questions.length, 50);
 
   // Unscoped calls still serve the RSA bank.
   const rsaModules = await call('GET', '/admin/question-bank/modules');
@@ -183,7 +184,7 @@ test('authoring in the AI/BI bank mints AIBI ids and stores the role key', async
   const added = await call('POST', '/admin/question-bank/questions', {
     body: {
       role_key: AIBI_KEY,
-      module: 'S02', family: 'OBO Authentication & Role Security', type: 'objective',
+      module: 'T08', family: 'OBO Authentication & Role Security', type: 'objective',
       prompt: 'Which design keeps Genie responses scoped to the requesting user?',
       options: [
         { id: 'a', label: 'A shared service principal' },
@@ -196,20 +197,20 @@ test('authoring in the AI/BI bank mints AIBI ids and stores the role key', async
     },
   });
   assert.equal(added.status, 201, JSON.stringify(added.body));
-  assert.equal(added.body.question.id, 'AIBI-S02-A001');
+  assert.equal(added.body.question.id, 'AIBI-T08-A001');
   assert.equal(added.body.question.role_key, AIBI_KEY);
 
   // The RSA bank did not grow, and its authored-id sequence is independent.
   const rsaBank = await effectiveBank(store);
   assert.equal(rsaBank.length, 348);
-  assert.equal(nextAuthoredId('S02', await store.list('bank_questions'), 'databricks-rsa'), 'RSA-S02-A001');
-  assert.equal(nextAuthoredId('S02', await store.list('bank_questions'), AIBI_KEY), 'AIBI-S02-A002');
+  assert.equal(nextAuthoredId('T08', await store.list('bank_questions'), 'databricks-rsa'), 'RSA-T08-A001');
+  assert.equal(nextAuthoredId('T08', await store.list('bank_questions'), AIBI_KEY), 'AIBI-T08-A002');
 
   // A duplicate prompt is refused within the same bank…
   const dup = await call('POST', '/admin/question-bank/questions', {
     body: {
       role_key: AIBI_KEY,
-      module: 'S02', family: 'OBO Authentication & Role Security', type: 'objective',
+      module: 'T08', family: 'OBO Authentication & Role Security', type: 'objective',
       prompt: 'Which design keeps Genie responses scoped to the requesting user?',
       options: [
         { id: 'a', label: 'One' }, { id: 'b', label: 'Two' },

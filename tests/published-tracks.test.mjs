@@ -10,6 +10,7 @@ import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG, MAX_ASSESSMENT_QUESTIONS } from '../src/core/constants.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
+import { QUESTIONS as RSA_MODULE_QUESTIONS } from '../src/content/rsa-question-bank.mjs';
 import { AIBI_ROLE, AIBI_COMPETENCIES, AIBI_QUESTIONS } from '../src/content/ai-bi-genie-catalogue.mjs';
 import { SC_ROLE, SC_COMPETENCIES } from '../src/content/senior-consultant-catalogue.mjs';
 import { SAMA_ROLE, SAMA_COMPETENCIES, SAMA_QUESTIONS } from '../src/content/sama-catalogue.mjs';
@@ -163,7 +164,7 @@ test('installing the AI/BI track creates the role, framework, competencies and t
 
   // The RSA track was not touched.
   const rsaRow = roles.body.roles.find((r) => r.key === RSA_ROLE.key);
-  assert.equal(rsaRow.question_count, RSA_QUESTIONS.length);
+  assert.equal(rsaRow.question_count, RSA_MODULE_QUESTIONS.length, 'allocation uses the finalized module bank');
   assert.equal((await store.list('roles')).length, 2);
 });
 

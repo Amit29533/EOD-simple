@@ -9,6 +9,7 @@ import { hashPassword } from '../src/core/passwords.mjs';
 import { MAX_ASSESSMENT_QUESTIONS } from '../src/core/constants.mjs';
 import { RSA_ROLE, RSA_COMPETENCIES, RSA_QUESTIONS } from '../src/content/rsa-catalogue.mjs';
 import { buildSnapshot } from '../src/api/assessment-service.mjs';
+import { QUESTIONS as MODULE_QUESTIONS } from '../src/content/rsa-question-bank.mjs';
 
 /**
  * The published-catalogue sync: a workspace whose RSA bank predates the
@@ -81,12 +82,12 @@ test('sync tops a 21-question bank up to the published catalogue', async () => {
   const app = await createApp(store);
   const call = await adminClient(app);
 
-  // The question-plan preview exposes the same catalogue context the UI uses.
+  // Allocation now uses the finalized module bank, independently of the retired catalogue.
   const plan = await call('GET', `/admin/roles/${role.id}/question-plan`);
   assert.equal(plan.status, 200);
-  assert.equal(plan.body.bank_total, 21);
-  assert.equal(plan.body.catalogue.total, RSA_QUESTIONS.length);
-  assert.equal(plan.body.catalogue.missing, RSA_QUESTIONS.length - 21);
+  assert.equal(plan.body.bank_total, MODULE_QUESTIONS.length);
+  assert.equal(plan.body.required_question_count, 50);
+  assert.equal(plan.body.catalogue, null);
 
   const synced = await call('POST', '/admin/content/sync');
   assert.equal(synced.status, 200, JSON.stringify(synced.body));
@@ -97,8 +98,8 @@ test('sync tops a 21-question bank up to the published catalogue', async () => {
   const capped = await call('GET', `/admin/roles/${role.id}/question-plan`, undefined, { limit: 50 });
   assert.equal(capped.status, 200);
   assert.equal(capped.body.total, MAX_ASSESSMENT_QUESTIONS);
-  assert.equal(capped.body.bank_total, RSA_QUESTIONS.length);
-  assert.equal(capped.body.catalogue.missing, 0);
+  assert.equal(capped.body.bank_total, MODULE_QUESTIONS.length);
+  assert.equal(capped.body.catalogue, null);
 
   // Sync is idempotent: nothing is added a second time.
   const again = await call('POST', '/admin/content/sync');
@@ -111,18 +112,19 @@ test('sync tops a 21-question bank up to the published catalogue', async () => {
   assert.ok(events.some((e) => e.action === 'catalogue_synced'), 'catalogue_synced audit entry exists');
 });
 
-test('a 50-question allocation succeeds after syncing a 21-question bank', async () => {
+test('a 50-question module allocation works before and after retired-catalogue sync', async () => {
   const { store, role } = await buildStore();
   const app = await createApp(store);
   const call = await adminClient(app);
 
-  // Before the sync the 50-question cap is unreachable: the bank is smaller.
+  // The finalized module bank already fills the required blueprint.
   const stuck = await store.insert('candidates', { name: 'Stuck At 21', active: true });
   const blocked = await call('POST', '/admin/assessments', {
     candidate_id: stuck.id, role_id: role.id, question_count: MAX_ASSESSMENT_QUESTIONS,
   });
-  assert.equal(blocked.status, 400);
-  assert.match(blocked.body.error, /only has 21 active question/);
+  assert.equal(blocked.status, 201);
+  assert.equal(blocked.body.snapshot_json.questions.length, 50);
+  assert.equal(blocked.body.snapshot_json.allocation_blueprint.sections.length, 20);
 
   await call('POST', '/admin/content/sync');
 
@@ -148,7 +150,7 @@ test('sync never duplicates, reactivates or rewrites existing records (spoken fl
   // An existing assessment snapshot must stay frozen through the sync.
   const candidate = await store.insert('candidates', { name: 'Frozen Snapshot', active: true });
   const allocated = await call('POST', '/admin/assessments', {
-    candidate_id: candidate.id, role_id: role.id, question_count: 5,
+    candidate_id: candidate.id, role_id: role.id, question_count: 50,
   });
   assert.equal(allocated.status, 201);
   const frozen = JSON.stringify(allocated.body.snapshot_json);
@@ -305,7 +307,7 @@ test('sync restores the microphone on standard open questions, not only the spok
 
   // A freshly allocated paper inherits the requirement from the bank itself, so
   // even a client running an older bundle sees flagged rows in the snapshot.
-  const snap = await buildSnapshot(store, role.id, { questionLimit: 10 });
+  const snap = await buildSnapshot(store, role.id, { questionLimit: 50 });
   assert.ok(
     snap.questions.filter((q) => q.type === 'text').every((q) => q.audio_required === true),
     'every open question in the frozen snapshot demands a recording',

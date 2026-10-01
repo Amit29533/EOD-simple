@@ -28,7 +28,7 @@ before(async () => {
 
   // One assessment track so "Target role" can be resolved by name, key and id.
   const role = await store.insert('roles', {
-    key: 'databricks-rsa', name: 'Resident Solutions Architect (RSA)',
+    key: 'test-rsa', name: 'Resident Solutions Architect (RSA)',
     technology: 'Databricks', active: true,
   });
   global.__ROLE_ID = role.id;

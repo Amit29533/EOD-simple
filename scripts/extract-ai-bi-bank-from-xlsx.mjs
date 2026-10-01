@@ -19,7 +19,7 @@
  * The JSON it writes feeds scripts/build-question-bank.py with the AI/BI
  * config:
  *   node scripts/extract-ai-bi-bank-from-xlsx.mjs "AI BI G Question bank 1.1.xlsx" data/ai-bi-bank.json
- *   python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
+ *   python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-source-bank.mjs 1.1 scripts/ai-bi-bank-config.json
  */
 import fs from 'node:fs';
 import path from 'node:path';

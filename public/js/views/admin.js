@@ -303,6 +303,7 @@ export async function allocateAssessorModal(c, presetRoleId) {
         {
           label: 'Allocate',
           onClick: async (close, btn) => {
+            if (!plan) { toast('Wait for a valid allocation preview before allocating.', 'error'); return; }
             if (mode === 'limit') {
               const n = Number(count);
               if (!Number.isInteger(n) || n < 1) { toast('Enter a whole number of questions (1 or more).', 'error'); return; }
@@ -373,19 +374,20 @@ export async function allocateAssessorModal(c, presetRoleId) {
             preview.innerHTML = `<div class="alloc-warn"><span>!</span><span>This track has no active questions yet. Add questions before allocating.</span></div>`;
             return;
           }
-          const rows = plan.per_competency;
+          const rows = plan.per_module ? plan.per_module.map((s) => ({ name: `${s.module} · ${s.name}`, count: s.objective + s.open,
+            quota: `${s.objective} objective + ${s.open} open` })) : plan.per_competency;
           const shown = plan.total;
           preview.innerHTML = `
             <div class="alloc-preview-head">
               <div><div class="section-kicker">Allocation preview</div>
                 <b>${shown} question${shown === 1 ? '' : 's'}</b>
                 <span class="muted">of ${plan.bank_total} in the bank · ${plan.points} points</span></div>
-              ${mode === 'limit' && shown < plan.bank_total ? '<span class="chip">Weighted subset</span>' : '<span class="chip">Full bank</span>'}
+              ${plan.required_question_count ? '<span class="chip">Fixed module blueprint</span>' : mode === 'limit' && shown < plan.bank_total ? '<span class="chip">Weighted subset</span>' : '<span class="chip">Full bank</span>'}
             </div>
             <div class="alloc-split">
               ${rows.map((r) => `
                 <div class="alloc-split-row ${r.count ? '' : 'is-empty'}">
-                  <span class="alloc-split-name">${esc(r.name)}<small>weight ${esc(r.weight)}</small></span>
+                  <span class="alloc-split-name">${esc(r.name)}<small>${r.quota ? esc(r.quota) : `weight ${esc(r.weight)}`}</small></span>
                   <span class="alloc-split-bar"><i style="width:${shown ? Math.round((r.count / shown) * 100) : 0}%"></i></span>
                   <span class="alloc-split-count">${r.count}</span>
                 </div>`).join('')}
@@ -402,10 +404,21 @@ export async function allocateAssessorModal(c, presetRoleId) {
           if (token !== planToken) return; // a newer request won
           plan = out || null;
           if (plan) {
+            const fixed = Boolean(plan.required_question_count);
+            const allChoice = el.querySelector('[data-scope="all"]');
+            el.querySelector('[data-scope="limit"]').hidden = fixed;
+            allChoice.querySelector('b').textContent = fixed ? '50-question module assessment' : 'Full question bank';
+            if (fixed) {
+              mode = 'all'; count = ''; countRow.hidden = true;
+              allChoice.querySelector('input').checked = true;
+              allChoice.classList.add('selected');
+              el.querySelector('[data-scope="limit"]').classList.remove('selected');
+            }
             // The spoken cap is whatever the plan actually served, not a
             // hard-coded "max 5": a track without a spoken set has none.
             const spoken = Number(plan.spoken_served || 0);
-            allHint.textContent = `All ${plan.total} served question${plan.total === 1 ? '' : 's'} (${plan.bank_total} in the bank${spoken ? ` · ${spoken} spoken` : ''})`;
+            allHint.textContent = fixed ? '30 technical objective + 10 technical open + 10 non-technical open'
+              : `All ${plan.total} served question${plan.total === 1 ? '' : 's'} (${plan.bank_total} in the bank${spoken ? ` · ${spoken} spoken` : ''})`;
             const max = Math.min(plan.bank_total, maxQuestions);
             countInput.max = String(max);
             countMax.textContent = `1–${max}`;
@@ -918,6 +931,7 @@ export async function roleDetailView(view, { id }) {
       </div>
       ${role.description ? `<p class="small muted" style="margin-top:8px">${esc(role.description)}</p>` : ''}
       <div class="small" style="margin-top:10px"><b>Default automatic allocation:</b> ${esc(role.default_question_count)} questions</div>
+      ${['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key) ? '<p class="small">Fixed 20-module blueprint: 30 technical objective + 10 technical open + 10 non-technical open. Manage the question pool in Question Bank; competency weights below determine report scoring.</p>' : ''}
     </div>
     <div class="card">
       <div class="row between">
@@ -981,7 +995,9 @@ export async function roleDetailView(view, { id }) {
       fields: [
         { name: 'name', label: 'Role name', required: true },
         { name: 'technology', label: 'Technology', required: true },
-        { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50, help: 'Used for new candidate-user and CSV auto allocations. Existing assessments keep their saved paper.' },
+        { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50,
+          readonly: ['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key),
+          help: ['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key) ? 'Fixed at 50 by the 20-module blueprint. Existing assessments keep their saved paper.' : 'Used for new candidate-user and CSV auto allocations. Existing assessments keep their saved paper.' },
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
         { name: 'active', label: 'Active', type: 'checkbox' },
       ],

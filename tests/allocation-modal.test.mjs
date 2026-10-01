@@ -41,7 +41,7 @@ function teardown(dom) {
 }
 
 /** Stub API: roles/users plus the question-plan endpoint the modal polls. */
-function stubFetch(posted, { bankTotal = 21, missing = 0, syncCalls = [] } = {}) {
+function stubFetch(posted, { bankTotal = 21, missing = 0, syncCalls = [], fixed = false } = {}) {
   let synced = false;
   globalThis.fetch = async (url, opts = {}) => {
     const json = (body) => ({ ok: true, status: 200, json: async () => body });
@@ -51,6 +51,10 @@ function stubFetch(posted, { bankTotal = 21, missing = 0, syncCalls = [] } = {})
       return json({ added: missing, competencies_added: 0, bank_total: bankTotal + missing, role_id: ROLE.id });
     }
     if (url.includes('/admin/roles/') && url.includes('/question-plan')) {
+      if (fixed) return json({ total: 50, bank_total: 100, points: 240, required_question_count: 50,
+        allocation_mode: 'module', max_questions: 50, catalogue: null, per_competency: [],
+        per_module: [...Array.from({ length: 10 }, (_, i) => ({ module: `T${String(i + 1).padStart(2, '0')}`, name: `Technical ${i + 1}`, technical: true, objective: 3, open: 1 })),
+          ...Array.from({ length: 10 }, (_, i) => ({ module: `N${i + 1}`, name: `Consulting ${i + 1}`, technical: false, objective: 0, open: 1 }))] });
       const bank = synced ? bankTotal + missing : bankTotal;
       const limit = Number(new URL(url, 'http://x').searchParams.get('limit')) || bank;
       const n = Math.min(limit, bank);
@@ -68,6 +72,24 @@ function stubFetch(posted, { bankTotal = 21, missing = 0, syncCalls = [] } = {})
     return json({});
   };
 }
+
+test('allocation modal: fixed module paper shows quotas and hides incompatible size choices', { skip: SKIP }, async () => {
+  const dom = setupDom();
+  const posted = [];
+  try {
+    stubFetch(posted, { fixed: true });
+    const { done, modal } = await openModal();
+    assert.equal(modal.querySelector('[data-scope="limit"]').hidden, true);
+    assert.equal(modal.querySelector('#al-count-row').hidden, true);
+    assert.match(modal.querySelector('#al-all-hint').textContent, /30 technical objective.*10 technical open.*10 non-technical open/);
+    assert.equal(modal.querySelectorAll('.alloc-split-row').length, 20);
+    assert.match(modal.querySelector('#al-preview').textContent, /Fixed module blueprint/);
+    [...modal.querySelectorAll('.m-foot button')].find((b) => b.textContent.trim() === 'Allocate').click();
+    await done;
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].question_count, undefined, 'server applies the fixed role blueprint');
+  } finally { teardown(dom); }
+});
 
 async function openModal() {
   const admin = await import(`../public/js/views/admin.js?t=${Date.now()}`);

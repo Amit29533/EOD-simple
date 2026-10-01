@@ -231,15 +231,16 @@ by track, so the banks can never bleed into each other:
 
 - **RSA v1.4** — the 20-module bank above (50-question paper), plus the retired
   115-question catalogue kept as its optional fallback pool.
-- **AI/BI & Genie v1.1** — 100 questions across 10 modules
-  (`G01`, `G02`, `A01`, `S01`, `S02`, `Q01`, `R01` technical — 3 objective + 1 open
-  each; `F01`, `C01`, `D01` consulting — 1 open each), generated from the published
-  `AI BI G Question bank 1.1.xlsx` workbook; every generated test contains
-  **exactly 31 questions** (21 technical objective + 10 open). Regenerate it with:
+- **AI/BI & Genie v2.0** — the original 100 workbook questions reorganized into
+  20 modules: T01–T10 technical and C01–C04, P01–P04, F01–F02 non-technical.
+  Every new RSA and AI/BI assessment contains **exactly 50 questions**:
+  30 technical objective, 10 technical open and 10 non-technical open.
+  See [the allocation contract](docs/MODULE-ALLOCATION.md) for entry points,
+  compatibility and content-pool limitations. Regenerate the source bank with:
 
   ```bash
   node scripts/extract-ai-bi-bank-from-xlsx.mjs "AI BI G Question bank 1.1.xlsx" data/ai-bi-bank.json
-  python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-question-bank.mjs 1.1 scripts/ai-bi-bank-config.json
+  python3 scripts/build-question-bank.py data/ai-bi-bank.json src/content/ai-bi-genie-source-bank.mjs 1.1 scripts/ai-bi-bank-config.json
   ```
 - **Technology Risk Consultant - SAMA v1.2** — 100 questions across 10 modules
   (`R01`, `A01`, `O01`, `B01` risk & control — 2 objective + 1 open each; `R02`, `I01`,

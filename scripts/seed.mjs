@@ -187,7 +187,10 @@ for (const [compKey, compId] of Object.entries(rsaCompIds)) {
     let nth = 0;
     for (const q of list) {
       if (isChoice(q)) {
-        const right = (nth % 2 === 0) === weak.startRight;
+        // The fixed module paper has only three choices in each weak area;
+        // use incorrect choices there to keep this demo below the readiness
+        // threshold while its other competencies remain strong.
+        const right = !snapshot.allocation_blueprint && (nth % 2 === 0) === weak.startRight;
         nth += 1;
         answers.set(q.id, right ? correctOrFirst(q) : wrongChoice(q));
       } else if (q.type === 'scale') {
@@ -210,7 +213,7 @@ for (const q of snapshot.questions) {
   // questions a plausible passing score instead of leaving the seed unable to
   // finalize. The deliberately weak original examples above still keep their
   // lower scores and continue to surface useful gaps.
-  const assessorScore = manual ? (scores.get(q.id) ?? Math.max(0, Math.ceil(q.points * 0.8))) : undefined;
+  const assessorScore = manual ? (scores.get(q.id) ?? Math.max(0, Math.ceil(q.points * 0.9))) : undefined;
   await store.insert('responses', {
     assessment_id: nehaAssessment.id, question_id: q.id,
     answer,

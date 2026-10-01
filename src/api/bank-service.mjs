@@ -26,11 +26,12 @@ import {
 } from '../content/module-banks.mjs';
 import { slug } from '../core/question-intake.mjs';
 import { isActive } from '../core/test-generation.mjs';
+import { remapLegacyQuestion } from '../content/ai-bi-genie-question-bank.mjs';
 
 /** A stored row -> the shape the generator and the UI expect. */
 export function hydrate(row) {
   const type = row.type === 'objective' ? 'objective' : 'open';
-  return {
+  const hydrated = {
     id: row.id,
     module: row.module,
     family_id: row.family_id,
@@ -67,6 +68,8 @@ export function hydrate(row) {
           rubric: row.rubric || '',
         }),
   };
+  return row.role_key === 'databricks-ai-bi-genie' && row.bank_version !== '2.0'
+    ? remapLegacyQuestion(hydrated) : hydrated;
 }
 
 /** Every authored question for one bank, hydrated. */
@@ -226,6 +229,7 @@ export function toStoredRecord(question, { id, actorId, roleKey }) {
   return {
     id,
     role_key: key,
+    bank_version: moduleBankFor(key)?.version || '',
     module: question.module,
     family_id: question.family_id,
     family: question.family,

@@ -51,7 +51,7 @@ export const SCHEMA = {
                          { name: 'correct_option_ids', ...long }, { name: 'rubric', ...long },
                          { name: 'points', ...num }, { name: 'order', ...num },
                          { name: 'active', ...chk }, { name: 'pin_first', ...chk }, { name: 'audio_required', ...chk }]),
-  bank_questions: ['role_key', 'module', 'family_id', 'family', 'type', 'band', 'mode', 'gap_tag', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  bank_questions: ['role_key', 'bank_version', 'module', 'family_id', 'family', 'type', 'band', 'mode', 'gap_tag', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'prompt', ...long }, { name: 'options', ...long }, { name: 'correct_option_ids', ...long },
                          { name: 'rationale', ...long }, { name: 'probes', ...long }, { name: 'rubric', ...long },
                          { name: 'tags', ...long }, { name: 'red_flags', ...long }, { name: 'enrichment', ...long },
