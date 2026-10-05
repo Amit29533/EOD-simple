@@ -287,6 +287,18 @@ function validateAnswerShape(q, value, { strict = false } = {}) {
       if (value && typeof value === 'object') {
         if (value.audio_b64 != null && String(value.audio_b64).replace(/\s/g, '').length > MAX_AUDIO_B64)
           return false;
+        // Refuse corrupt uploads before replacing a valid saved answer. The
+        // browser's FileReader emits canonical, padded base64; accepting other
+        // input here used to acknowledge a dropped clip or even store empty
+        // decoded bytes such as "====" as a recording. Keep stored legacy rows
+        // lenient so an older attempt can still submit.
+        if (strict && value.audio_b64 != null) {
+          if (typeof value.audio_b64 !== 'string') return false;
+          const encoded = value.audio_b64.replace(/\s/g, '');
+          if (encoded && (encoded.length % 4 !== 0
+            || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)
+            || Buffer.from(encoded, 'base64').toString('base64') !== encoded)) return false;
+        }
         if (typeof (value.text || '') !== 'string' || typeof (value.transcript || '') !== 'string') return false;
         return !strict
           || (String(value.text || '').length <= MAX_ANSWER_TEXT

@@ -26,7 +26,7 @@ import {
 } from '../src/core/retention.mjs';
 import { runRetentionSweep, deleteAssessmentRecording } from '../src/api/retention-service.mjs';
 
-const CLIP_B64 = 'RkFLRQ=='.repeat(30); // small but valid base64
+const CLIP_B64 = Buffer.from('FAKE'.repeat(30)).toString('base64'); // encode once; concatenated padded fragments are invalid
 
 /* ============================ the policy itself ============================ */
 

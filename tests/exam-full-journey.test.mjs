@@ -264,10 +264,10 @@ test('A4 · autosave drafts, blanks and locked answers behave exactly as specifi
   const oversized = { text: '', transcript: 'x', audio_b64: 'A'.repeat(MAX_AUDIO_B64 + 1) };
   assert.equal((await put({ [w.ids.pin]: oversized })).status, 422);
 
-  // non-b64 audio is accepted but the audio field is dropped (transcript survives)
-  assert.equal((await put({ [w.ids.pin]: { text: '', transcript: 'clean', audio_b64: 'not base64!!' } })).status, 200);
+  // Corrupt audio must fail visibly and preserve the last accepted draft.
+  assert.equal((await put({ [w.ids.pin]: { text: '', transcript: 'clean', audio_b64: 'not base64!!' } })).status, 422);
   const kept = await current();
-  assert.equal(kept.transcript, 'clean');
+  assert.equal(kept.transcript, 'spoken draft');
   assert.equal(kept.audio_b64, undefined, 'invalid base64 audio is never persisted');
   assert.equal(kept.audio_ref, undefined, 'and no recording row is referenced');
   assert.equal(await clipOf(w.store, alloc.id, w.ids.pin), null, 'nor stored');
