@@ -66,6 +66,18 @@ export function startAudioRecorder(win, stream) {
   return { recorder, mime: recorder.mimeType || mime || 'audio/webm' };
 }
 
+/** MediaRecorder delivers its final data before stop, sometimes well after 800 ms. */
+export function finishAudioRecorder(recorder, timeoutMs = 10_000) {
+  if (!recorder || recorder.state === 'inactive') return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('The browser did not finish saving the recording. Please try recording again.')), timeoutMs);
+    recorder.onstop = () => { clearTimeout(timer); resolve(); };
+    recorder.onerror = () => { clearTimeout(timer); reject(new Error('The browser could not finish the recording. Please try recording again.')); };
+    try { recorder.stop(); }
+    catch (err) { clearTimeout(timer); reject(err); }
+  });
+}
+
 /**
  * Merge typed text, live transcript, and optional recorded audio into a
  * persistable answer.

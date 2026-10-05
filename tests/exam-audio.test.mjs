@@ -2,8 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_AUDIO_B64, speechRecognitionCtor, buildTextAnswer, dataUrlToB64, transcriptFromSpeechEvent,
-  micCapability, pickRecorderMime, startAudioRecorder, blobToStoredAudio, RECORDER_AUDIO_BPS,
+  micCapability, pickRecorderMime, startAudioRecorder, finishAudioRecorder, blobToStoredAudio, RECORDER_AUDIO_BPS,
 } from '../public/js/exam-audio.js';
+
+test('recorder stop errors reject instead of claiming audio was saved', async () => {
+  const recorder = { state: 'recording', stop() { this.onerror(); } };
+  await assert.rejects(finishAudioRecorder(recorder), /could not finish/);
+});
+
+test('a recorder that never finishes times out with a retryable error', async () => {
+  const recorder = { state: 'recording', stop() {} };
+  await assert.rejects(finishAudioRecorder(recorder, 20), /did not finish saving/);
+});
 
 test('buildTextAnswer prefers spoken source when the candidate only recorded', () => {
   const a = buildTextAnswer({ transcript: 'Lakehouse with Unity Catalog' });

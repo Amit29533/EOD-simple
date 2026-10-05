@@ -8,7 +8,7 @@ import {
 import { renderReport } from './report.js';
 import {
   speechRecognitionCtor, buildTextAnswer, blobToStoredAudio, transcriptFromSpeechEvent,
-  micCapability, startAudioRecorder,
+  micCapability, startAudioRecorder, finishAudioRecorder,
 } from '../exam-audio.js';
 
 /* ================================ Portal (My Journey) ================================ */
@@ -848,13 +848,12 @@ async function runExamSession(view, id, payload) {
       const preview = body.querySelector('#transcript-preview');
       if (transcript) { preview.hidden = false; preview.textContent = `Transcript: ${transcript}`; }
       const hasAnswer = () => Boolean((ta?.value || text).trim() || transcript.trim() || rec.audioB64 || rec.keptRef);
-      // Spoken evidence = a stored recording or a transcript. Either alone is
-      // enough: Safari/Firefox have no speech recognition, and a clip can be
-      // dropped for size, so both paths count as "answered out loud". While the
+      // Require actual audio on browsers with capture support. A transcript
+      // alone must not disguise a lost recording. While the
       // recorder is live the answer also counts — browsers only flush chunks on
       // stop(), and "Lock & continue" stops the recording first, so the button
       // must not deadlock a candidate mid-sentence.
-      const hasSpoken = () => Boolean(rec.audioB64 || rec.keptRef || transcript.trim()
+      const hasSpoken = () => Boolean(rec.audioB64 || rec.keptRef
         || (rec.startedAt && Date.now() - rec.startedAt >= 400));
       const enforceMic = needsMic && micCapable;
       const hasEnough = () => (enforceMic ? hasSpoken() : hasAnswer());
@@ -878,7 +877,7 @@ async function runExamSession(view, id, payload) {
       // keeps it rather than asking the candidate to record again.
       if (!existing.audio_b64 && existing.audio_ref) rec.keptRef = true;
       if (existing.audio_b64 || rec.keptRef) setRecState('Recorded answer restored · you can continue', 'ok');
-      else if (existing.transcript) setRecState('Spoken answer captured · you can continue', 'ok');
+      else if (existing.transcript) setRecState('Transcript restored, but no audio recording is saved. Record your answer before continuing.', 'warn');
       syncNext();
 
       const SpeechRec = needsMic ? speechRecognitionCtor(window) : null;
@@ -888,21 +887,24 @@ async function runExamSession(view, id, payload) {
         rec.startedAt = 0;
         if (recTimer) recTimer.hidden = true;
       };
-      stopLiveCapture = releaseMic;
+      stopLiveCapture = () => {
+        rec.cancelled = true;
+        try { rec.recognition?.stop(); } catch { /* optional transcription */ }
+        try { if (rec.recorder?.state !== 'inactive') rec.recorder?.stop(); } catch { /* leaving the screen */ }
+        releaseMic();
+      };
       onTick = () => {
         if (recTimer && !recTimer.hidden) recTimer.textContent = recElapsed();
         if (rec.startedAt) syncNext();
       };
-      const stopCapture = async () => {
+      let stopping = null;
+      let captureBusy = false;
+      let lockingCapture = false;
+      const stopCapture = () => stopping || (stopping = (async () => {
+        rec.cancelled = true;
         try { rec.recognition?.stop(); } catch { /* */ }
         rec.recognition = null;
-        if (rec.recorder && rec.recorder.state !== 'inactive') {
-          await new Promise((resolve) => {
-            rec.recorder.onstop = () => resolve();
-            try { rec.recorder.stop(); } catch { resolve(); }
-            setTimeout(resolve, 800);
-          });
-        }
+        await finishAudioRecorder(rec.recorder);
         rec.recorder = null;
         releaseMic();
         if (rec.chunks?.length) {
@@ -916,101 +918,132 @@ async function runExamSession(view, id, payload) {
             toast('The recording exceeded the storage limit and was not saved.', 'error', 4200);
           }
         }
-      };
+      })().finally(() => { stopping = null; }));
 
       if (needsMic && recBtn && recLabel) {
         recBtn.onclick = async () => {
-          if (rec.recognition || rec.recorder) {
-            await stopCapture();
-            recLabel.textContent = 'Record answer';
-            recBtn.classList.remove('recording');
-            recBtn.setAttribute('aria-pressed', 'false');
-            setRecState(hasSpoken()
-              ? 'Audio saved · you can continue'
-              : 'Recording stopped with nothing captured — press record and speak again.', hasSpoken() ? 'ok' : 'warn');
-            syncNext();
-            // The clip is the answer: it goes to the server now, not only
-            // with the lock, so a lock lost to a timeout cannot lose it.
-            queueDraft(q.id, currentOpenAnswer(), DRAFT_DELAY_MS.now);
-            return;
-          }
-          recLabel.textContent = 'Stop recording';
-          recBtn.classList.add('recording');
-          recBtn.setAttribute('aria-pressed', 'true');
-          rec.chunks = [];
-          rec.audioB64 = '';
-          rec.audioMime = '';
-          rec.keptRef = false; // a new recording replaces whatever the server holds
-          // `startedAt` is only armed once the recorder is actually live: while
-          // the browser permission prompt is open nothing is being captured, and
-          // the unlock must not fire on that wait.
-          if (recTimer) recTimer.hidden = true;
-          setRecState('Waiting for microphone permission…', 'muted');
-          if (SpeechRec) {
-            const recg = new SpeechRec();
-            recg.continuous = true;
-            recg.interimResults = true;
-            recg.lang = 'en-IN';
-            recg.onresult = (ev) => {
-              transcript = transcriptFromSpeechEvent(ev);
-              preview.hidden = false;
-              preview.textContent = `Transcript: ${transcript}`;
-              // Speech must not silently edit the candidate's textarea. The
-              // transcript is shown separately so the candidate can copy or
-              // edit it deliberately.
-              syncNext();
-            };
-            recg.onerror = () => { setRecState('Speech recognition unavailable — keep recording; your audio is stored.', 'muted'); };
-            recg.start();
-            rec.recognition = recg;
-          } else {
-            setRecState('Live transcription is not supported in this browser. Audio will still be stored.', 'muted');
-          }
+          if (captureBusy || lockingCapture || advancing) return;
+          captureBusy = true;
+          recBtn.disabled = true;
           try {
-            rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            rec.chunks = [];
-            const started = startAudioRecorder(window, rec.stream);
-            rec.recorder = started.recorder;
-            rec.mime = started.mime;
-            rec.recorder.ondataavailable = (e) => { if (e.data?.size) rec.chunks.push(e.data); };
-            rec.recorder.start();
-            rec.startedAt = Date.now();
-            if (recTimer) { recTimer.hidden = false; recTimer.textContent = '0:00'; }
-            setRecState('Recording — speak clearly', 'ok');
-            syncNext();
-          } catch {
-            try { rec.recognition?.stop(); } catch { /* */ }
-            rec.recognition = null;
-            releaseMic();
-            rec.recorder = null;
-            recBtn.classList.remove('recording');
-            recBtn.setAttribute('aria-pressed', 'false');
-            recLabel.textContent = 'Record answer';
-            setRecState('Microphone blocked — allow microphone access for this site in your browser, then press record again.', 'warn');
-            toast('The microphone is required for open questions. Allow microphone access and try again.', 'error', 4200);
+            if (rec.recognition || rec.recorder) {
+              setRecState('Finishing recording…', 'muted');
+              await stopCapture();
+              recLabel.textContent = 'Record answer';
+              recBtn.classList.remove('recording');
+              recBtn.setAttribute('aria-pressed', 'false');
+              setRecState(hasSpoken()
+                ? 'Audio saved · you can continue'
+                : 'Recording stopped with nothing captured — press record and speak again.', hasSpoken() ? 'ok' : 'warn');
+              syncNext();
+              // The clip is the answer: it goes to the server now, not only
+              // with the lock, so a lock lost to a timeout cannot lose it.
+              queueDraft(q.id, currentOpenAnswer(), DRAFT_DELAY_MS.now);
+              return;
+            }
+            rec.cancelled = false;
+            recLabel.textContent = 'Stop recording';
+            recBtn.classList.add('recording');
+            recBtn.setAttribute('aria-pressed', 'true');
+            // `startedAt` is only armed once the recorder is actually live: while
+            // the browser permission prompt is open nothing is being captured, and
+            // the unlock must not fire on that wait.
+            if (recTimer) recTimer.hidden = true;
+            setRecState('Waiting for microphone permission…', 'muted');
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              if (!stillHere() || rec.cancelled || lockingCapture) {
+                stream.getTracks().forEach((track) => track.stop());
+                return;
+              }
+              rec.stream = stream;
+              const started = startAudioRecorder(window, rec.stream);
+              rec.recorder = started.recorder;
+              rec.mime = started.mime;
+              const chunks = [];
+              rec.chunks = chunks;
+              rec.recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+              rec.recorder.start();
+              rec.audioB64 = ''; rec.audioMime = ''; rec.keptRef = false;
+              rec.startedAt = Date.now();
+              if (recTimer) { recTimer.hidden = false; recTimer.textContent = '0:00'; }
+              setRecState('Recording — speak clearly', 'ok');
+              syncNext();
+            } catch {
+              releaseMic(); rec.recorder = null;
+              recBtn.classList.remove('recording');
+              recBtn.setAttribute('aria-pressed', 'false');
+              recLabel.textContent = 'Record answer';
+              setRecState('Microphone unavailable — check microphone permission and device access, then try again.', 'warn');
+              toast('Could not start audio recording. Check microphone access and try again.', 'error', 4200);
+              syncNext();
+              return;
+            }
+            // Transcription is optional. Its constructor/start may throw even
+            // when the microphone and MediaRecorder work normally.
+            try {
+              if (SpeechRec) {
+                const recg = new SpeechRec();
+                recg.continuous = true;
+                recg.interimResults = true;
+                recg.lang = 'en-IN';
+                recg.onresult = (ev) => {
+                  transcript = transcriptFromSpeechEvent(ev);
+                  preview.hidden = false;
+                  preview.textContent = `Transcript: ${transcript}`;
+                  // Speech must not silently edit the candidate's textarea. The
+                  // transcript is shown separately so the candidate can copy or
+                  // edit it deliberately.
+                  syncNext();
+                };
+                recg.onerror = () => { if (rec.startedAt) setRecState('Recording audio · live transcription unavailable', 'muted'); };
+                recg.start();
+                rec.recognition = recg;
+              } else {
+                setRecState('Recording audio · live transcription is not supported in this browser', 'ok');
+              }
+            } catch {
+              rec.recognition = null;
+              setRecState('Recording audio · live transcription unavailable', 'ok');
+            }
+          } catch (err) {
+            setRecState(err.message || 'Could not save the recording. Please try again.', 'warn');
+            toast('Recording could not be saved. Please try again before continuing.', 'error', 4200);
+          } finally {
+            captureBusy = false;
+            recBtn.disabled = false;
             syncNext();
           }
         };
       }
 
       nextBtn.onclick = async () => {
+        if (lockingCapture || advancing) return;
+        lockingCapture = true;
         const timedOut = nextBtn.dataset.force === '1';
-        await stopCapture();
-        if (!hasEnough() && !timedOut) {
-          syncNext();
-          toast(enforceMic
-            ? 'Record your spoken answer before continuing — typed notes are optional support, not the answer.'
-            : 'Add an answer before continuing.', 'error', 2800);
-          return;
+        try {
+          await stopCapture();
+          if (!hasEnough() && !timedOut) {
+            syncNext();
+            toast(enforceMic
+              ? 'Record your spoken answer before continuing — typed notes are optional support, not the answer.'
+              : 'Add an answer before continuing.', 'error', 2800);
+            return;
+          }
+          if (timedOut && enforceMic && !hasSpoken()) {
+            // The clock ran out with no recording: the typed notes are still
+            // stored (throwing a candidate's work away helps nobody) but the
+            // answer is flagged `audio_missing` server-side and lands in the
+            // proctoring trail, so the assessor sees it instead of guessing.
+            toast('Time expired with no recording — your notes were saved and flagged for the assessor.', 'error', 4200);
+          }
+          await advance(currentOpenAnswer());
+        } catch (err) {
+          setRecState(err.message || 'Could not save the recording. Please try again.', 'warn');
+          toast('Could not finish the audio recording. Your answer has not been locked; please try again.', 'error', 4200);
+        } finally {
+          lockingCapture = false;
         }
-        if (timedOut && enforceMic && !hasSpoken()) {
-          // The clock ran out with no recording: the typed notes are still
-          // stored (throwing a candidate's work away helps nobody) but the
-          // answer is flagged `audio_missing` server-side and lands in the
-          // proctoring trail, so the assessor sees it instead of guessing.
-          toast('Time expired with no recording — your notes were saved and flagged for the assessor.', 'error', 4200);
-        }
-        advance(currentOpenAnswer());
       };
     }
 

@@ -53,8 +53,12 @@ function fakeRecorder(window) {
     }
     stop() {
       this.state = 'inactive';
-      if (this.ondataavailable) this.ondataavailable({ data: new window.Blob(['abcd'], { type: 'audio/webm' }) });
-      if (this.onstop) this.onstop();
+      const finish = () => {
+        if (this.ondataavailable) this.ondataavailable({ data: new window.Blob(['abcd'], { type: 'audio/webm' }) });
+        if (this.onstop) this.onstop();
+      };
+      if (FakeMediaRecorder.flushDelay) setTimeout(finish, FakeMediaRecorder.flushDelay);
+      else finish();
     }
   }
   FakeMediaRecorder.created = [];
@@ -157,6 +161,113 @@ test('an open question renders the mandatory microphone beside the optional text
   } finally {
     teardown(ctx);
   }
+});
+
+test('SAMA microphone capture still starts when optional speech recognition throws', { skip: SKIP }, async () => {
+  const payload = openQuestionPayload();
+  payload.assessment.role.name = 'Technology Risk Consultant - SAMA';
+  const ctx = await setupDom({ payload: () => payload });
+  ctx.window.SpeechRecognition = class { start() { throw new Error('Speech recognition service unavailable'); } };
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await assert.doesNotReject(view.querySelector('#rec-btn').onclick());
+    assert.equal(ctx.window.MediaRecorder.started, 1);
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#exam-next').onclick();
+    assert.ok(ctx.calls.next.at(-1)?.answer.audio_b64, 'actual audio survives transcription failure');
+  } finally { teardown(ctx); }
+});
+
+test('SAMA stopping waits for a delayed final audio chunk before enabling the lock', { skip: SKIP }, async () => {
+  const payload = openQuestionPayload();
+  payload.assessment.role.name = 'Technology Risk Consultant - SAMA';
+  const ctx = await setupDom({ payload: () => payload });
+  ctx.window.MediaRecorder.flushDelay = 1200;
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#rec-btn').onclick();
+    assert.equal(view.querySelector('#exam-next').disabled, false);
+    await view.querySelector('#exam-next').onclick();
+    assert.ok(ctx.calls.next.at(-1)?.answer.audio_b64, 'final chunk must be sent instead of reporting no recording');
+  } finally { teardown(ctx); }
+});
+
+test('locking a live recording waits for its final chunk and ignores duplicate lock clicks', { skip: SKIP }, async () => {
+  const ctx = await setupDom({ payload: () => openQuestionPayload() });
+  ctx.window.MediaRecorder.flushDelay = 1200;
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    await flush(450);
+    const next = view.querySelector('#exam-next');
+    const pending = next.onclick();
+    await next.onclick();
+    assert.equal(ctx.calls.next.length, 0, 'locking must wait for audio');
+    await pending;
+    assert.equal(ctx.calls.next.length, 1, 'only one lock request');
+    assert.ok(ctx.calls.next[0].answer.audio_b64);
+  } finally { teardown(ctx); }
+});
+
+test('a restored transcript without audio cannot satisfy the recording requirement', { skip: SKIP }, async () => {
+  const payload = openQuestionPayload();
+  payload.current_answer = { text: '', transcript: 'Words without a saved recording', source: 'audio' };
+  const ctx = await setupDom({ payload: () => payload });
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    assert.match(view.querySelector('#rec-state').textContent, /no audio recording is saved/i);
+    assert.equal(view.querySelector('#exam-next').disabled, true);
+  } finally { teardown(ctx); }
+});
+
+test('permission denial when re-recording preserves the previously saved audio', { skip: SKIP }, async () => {
+  const payload = openQuestionPayload();
+  payload.current_answer = { text: '', transcript: '', audio_ref: 'saved-clip', audio_mime: 'audio/webm' };
+  const ctx = await setupDom({ payload: () => payload });
+  ctx.window.navigator.mediaDevices.getUserMedia = async () => { throw new Error('Permission denied'); };
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    assert.match(view.querySelector('#rec-state').textContent, /Microphone unavailable/);
+    assert.equal(view.querySelector('#exam-next').disabled, false);
+    await view.querySelector('#exam-next').onclick();
+    assert.equal(ctx.calls.next[0].answer.audio_keep, true);
+  } finally { teardown(ctx); }
+});
+
+test('a microphone permission request resolving after leaving the exam releases the stream', { skip: SKIP }, async () => {
+  const ctx = await setupDom({ payload: () => openQuestionPayload() });
+  let grant;
+  let stopped = 0;
+  ctx.window.navigator.mediaDevices.getUserMedia = () => new Promise((resolve) => { grant = resolve; });
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    const pending = view.querySelector('#rec-btn').onclick();
+    document.dispatchEvent(new ctx.window.Event('ecod:view-unmount'));
+    grant({ getTracks: () => [{ stop() { stopped++; } }] });
+    await pending;
+    assert.equal(stopped, 1);
+    assert.equal(ctx.window.MediaRecorder.started, 0);
+  } finally { teardown(ctx); }
 });
 
 test('the lock button stays disabled until the candidate has actually spoken', { skip: SKIP }, async () => {
