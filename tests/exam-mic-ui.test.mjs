@@ -270,6 +270,23 @@ test('a microphone permission request resolving after leaving the exam releases 
   } finally { teardown(ctx); }
 });
 
+test('a replacement recording does not submit the previous take\'s transcript', { skip: SKIP }, async () => {
+  const payload = openQuestionPayload();
+  payload.current_answer = { text: '', transcript: 'Previous take', source: 'audio', audio_ref: 'old-clip' };
+  const ctx = await setupDom({ payload: () => payload });
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#exam-next').onclick();
+    assert.equal(ctx.calls.next[0].answer.transcript, '', 'old transcript must not describe a new audio take');
+    assert.ok(ctx.calls.next[0].answer.audio_b64);
+  } finally { teardown(ctx); }
+});
+
 test('the lock button stays disabled until the candidate has actually spoken', { skip: SKIP }, async () => {
   const ctx = await setupDom({ payload: () => openQuestionPayload() });
   try {

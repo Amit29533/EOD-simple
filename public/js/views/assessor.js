@@ -169,7 +169,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
 
   // Clips load per question; the delete control beside each player removes
   // that one recording (it is the only copy — the dialog says so).
-  loadRecordings(view, id);
+  const stopRecordings = loadRecordings(view, id);
   wireRecordingDeletes(view, id);
 
   const jump = (qid) => {
@@ -290,6 +290,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
     controls.forEach((el) => { el.disabled = true; });
     const out = await attempt(() => api(`/assessor/assessments/${id}/finalize`, { method: 'POST', body: { retry_safe: true } }));
     if (out) {
+      stopRecordings?.();
       toast(`Report generated: ${out.report.band.label} at ${out.report.overall_pct}%`, 'success', 5000);
       renderReport(view, { candidate: out.candidate, report: out.report, assessor_name: 'You', audience: 'assessor' });
     } else controls.forEach((el) => { el.disabled = false; });
@@ -322,6 +323,13 @@ function retentionLine(ret) {
  * copy), one DELETE, and the slot is repainted in place — a clip still being
  * fetched for that question is dropped with it.
  */
+function releasePlayer(audio) {
+  if (!audio) return;
+  audio.onerror = null;
+  try { audio.pause(); } catch { /* already released */ }
+  audio.removeAttribute('src');
+}
+
 function wireRecordingDeletes(view, assessmentId) {
   view.querySelectorAll('[data-delete-recording]').forEach((btn) => {
     btn.onclick = async () => {
@@ -337,7 +345,10 @@ function wireRecordingDeletes(view, assessmentId) {
       const slot = btn.closest('.q-card')?.querySelector('.exam-audio-slot');
       // Replacing the node detaches it, so a clip still loading for this
       // question cannot paint itself back over the note.
-      if (slot) slot.outerHTML = '<div class="small muted">🎙 Recording deleted — the transcript and typed notes are kept.</div>';
+      if (slot) {
+        releasePlayer(slot.querySelector('audio'));
+        slot.outerHTML = '<div class="small muted">🎙 Recording deleted — the transcript and typed notes are kept.</div>';
+      }
       btn.remove();
       toast('Recording deleted', 'success', 2000);
     };
@@ -359,8 +370,19 @@ export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecor
   const queue = slots.slice();
   let active = 0;
   let stopped = false;
-  const onUnmount = () => { stopped = true; document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount); };
+  const onUnmount = () => {
+    stopped = true;
+    slots.forEach((slot) => releasePlayer(slot.querySelector('audio')));
+    document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
+  };
   document.addEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
+
+  const retry = (slot, message) => {
+    if (stopped || !slot.isConnected) return;
+    releasePlayer(slot.querySelector('audio'));
+    slot.innerHTML = `<span class="small" style="color:var(--red)">${esc(message)}</span> <button type="button" class="btn ghost sm">Retry</button>`;
+    slot.querySelector('button').onclick = () => { queue.push(slot); pump(); };
+  };
 
   const fill = async (slot) => {
     const qid = slot.dataset.recording;
@@ -373,12 +395,12 @@ export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecor
       audio.className = 'exam-audio-playback';
       audio.controls = true;
       audio.preload = 'metadata';
+      audio.onerror = () => retry(slot, 'Recording could not be played. The browser may not support its format, or the saved audio may be incomplete. Try reloading it or another browser.');
       audio.src = `data:${rec.audio_mime || 'audio/webm'};base64,${rec.audio_b64}`;
       slot.replaceChildren(audio);
     } catch (err) {
       if (stopped || !slot.isConnected) return;
-      slot.innerHTML = `<span class="small" style="color:var(--red)">Recording could not be loaded${err?.message ? `: ${esc(err.message)}` : ''}.</span> <button type="button" class="btn ghost sm">Retry</button>`;
-      slot.querySelector('button').onclick = () => { queue.push(slot); pump(); };
+      retry(slot, `Recording could not be loaded${err?.message ? `: ${err.message}` : ''}.`);
     }
   };
   const pump = () => {
@@ -387,9 +409,10 @@ export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecor
       active += 1;
       fill(slot).finally(() => { active -= 1; pump(); });
     }
-    if (!active && !queue.length) document.removeEventListener(VIEW_UNMOUNT_EVENT, onUnmount);
+    // Keep cleanup attached after fetching: loaded players can still be playing.
   };
   pump();
+  return onUnmount;
 }
 
 function scoreCard(q, n, r, { readonly = false } = {}) {
@@ -457,12 +480,11 @@ function scoreCard(q, n, r, { readonly = false } = {}) {
       : (recordingDeleted && !sheetDeleted
         ? '<div class="small muted" style="margin-top:6px">🎙 The recording was deleted — the transcript and typed notes above are what remain.</div>'
         : '');
-    const nothingSpoken = !hasRecording && !String(ans.transcript || '').trim();
     const spokenWarning = sheetDeleted || recordingDeleted
       ? ''
       : ans.audio_missing === true
-        ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Open questions require a spoken answer, so this is typed notes only — score accordingly and say so in the feedback.</div>'
-        : (nothingSpoken && q.audio_required === true && String(ans.text || '').trim()
+        ? '<div class="small" style="margin-top:6px;color:var(--red);font-weight:700">⚠ No recording was submitted. Only the transcript or typed notes are available — review this limitation when scoring.</div>'
+        : (!hasRecording && (q.type === 'text' || q.audio_required === true) && String(ans.text || ans.transcript || '').trim()
           ? '<div class="small" style="margin-top:6px;color:var(--amber);font-weight:700">⚠ No recording attached to this open answer.</div>'
           : '');
     // A blank open answer carries how it came about: the clock ran out, the
@@ -478,7 +500,7 @@ function scoreCard(q, n, r, { readonly = false } = {}) {
       <blockquote class="answer">${textAns ? esc(textAns) : `<span class="muted">${esc(blankNote)}</span>`}</blockquote>
       ${audioPlayer}
       ${spokenWarning}
-      ${ans.source === 'audio' && !sheetDeleted ? '<div class="small muted" style="margin-top:6px">Submitted via audio (transcribed).</div>' : ''}
+      ${ans.source === 'audio' && !sheetDeleted ? `<div class="small muted" style="margin-top:6px">${hasRecording ? (ans.transcript ? 'Recorded answer with transcript.' : 'Recorded answer · no transcript available.') : 'Transcript or notes retained · no recording attached.'}</div>` : ''}
       <details class="fold" style="margin-top:10px"><summary>📋 Scoring rubric (expected evidence)</summary>
         <div class="rubric" style="margin-top:8px">${esc(q.rubric || 'No rubric configured.')}</div></details>
       <div class="row" style="margin-top:12px;align-items:flex-end">

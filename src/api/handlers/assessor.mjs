@@ -11,6 +11,7 @@ import {
 } from '../retention-service.mjs';
 import { answerRetention } from '../../core/retention.mjs';
 import { expireExam } from '../exam-expiry.mjs';
+import { requiresSpokenAnswer } from '../../core/spoken-answer.mjs';
 
 const R = ['assessor'];
 
@@ -33,13 +34,17 @@ async function own(store, assessorId, assessmentId) {
  * `has_recording` tells the UI to fetch the clip from
  * `GET …/recordings/:question_id` when the answer is on screen.
  */
-function answerForDetail(answer) {
+function answerForDetail(answer, question) {
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return answer;
   const { audio_b64, audio_ref, ...rest } = answer;
   const mark = answerRetention(answer);
   return {
     ...rest,
     has_recording: Boolean(audio_ref || audio_b64),
+    // Legacy transcript-only answers remain reviewable, but a transcript
+    // cannot establish that audio was stored. Do not confuse this with deletion.
+    ...(!mark && requiresSpokenAnswer(question) && !audio_ref && !audio_b64
+      ? { audio_missing: true } : {}),
     // Explain a hole instead of leaving the assessor to guess: the cleanup or
     // a manual delete removed the recording, and/or the retention policy
     // cleared the answer sheet. Without these flags a purged answer would read
@@ -116,7 +121,7 @@ export function assessorHandlers(route) {
           ? (autoScore(q, r.answer) ?? 0)
           : r.auto_score;
         return {
-          question_id: r.question_id, answer: answerForDetail(r.answer),
+          question_id: r.question_id, answer: answerForDetail(r.answer, q),
           auto_score: live, assessor_score: r.assessor_score, assessor_comment: r.assessor_comment || '',
         };
       }),

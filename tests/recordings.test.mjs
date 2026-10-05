@@ -375,6 +375,21 @@ test('the mime type is kept to what a recorder reports; anything else falls back
   }
 });
 
+test('assessor detail exposes missing audio even when a legacy answer has a transcript', async () => {
+  const w = await makeWorld();
+  const { id } = await w.allocate();
+  await w.walk(id, w.tokens.candidate, {
+    [w.open2.id]: { text: '', transcript: 'Transcript survived but the recording did not', source: 'audio' },
+  });
+  assert.equal((await w.call('POST', `/candidate/assessments/${id}/submit`, { token: w.tokens.candidate, body: { answers: {} } })).status, 200);
+  const detail = await w.call('GET', `/assessor/assessments/${id}`, { token: w.tokens.assessor });
+  assert.equal(detail.status, 200);
+  const answer = detail.body.responses.find((r) => r.question_id === w.open2.id).answer;
+  assert.equal(answer.has_recording, false);
+  assert.equal(answer.audio_missing, true, 'a transcript is not an audio recording');
+  assert.match(answer.transcript, /Transcript survived/);
+});
+
 test('assessor detail carries has_recording only; the clip comes from the per-question endpoint with the same access rules', async () => {
   const w = await makeWorld();
   const { id } = await w.allocate();
@@ -490,6 +505,7 @@ function setupDom(fetchImpl) {
     { url: 'http://localhost:3000/#/workspace', pretendToBeVisual: true },
   );
   const { window } = dom;
+  window.HTMLMediaElement.prototype.pause = () => {};
   Object.assign(globalThis, {
     window, document: window.document, location: window.location, localStorage: window.localStorage,
     requestAnimationFrame: window.requestAnimationFrame.bind(window), cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
@@ -568,7 +584,7 @@ test('scoring screen: recordings load per question from the endpoint, two at a t
     assert.equal(cards[3].querySelector('.exam-audio-slot'), null);
     // q3 (audio not required, typed) shows the typed text plainly
     assert.match(cards[2].textContent, /typed/);
-    assert.doesNotMatch(cards[2].textContent, /No recording/);
+    assert.match(cards[2].textContent, /No recording attached/, 'legacy open questions still require audio');
 
     // first clip lands → a player with a data: URL; the second request fails → retry offered
     pending.get('q1')({ question_id: 'q1', audio_b64: B64, audio_mime: 'audio/webm' });
@@ -595,6 +611,48 @@ test('scoring screen: recordings load per question from the endpoint, two at a t
     await flush();
     assert.equal(slots[1].querySelector('audio'), null, 'nothing is written after unmount');
     assert.equal(calls.filter((c) => c.includes('/recordings/')).length, 3, 'no further requests after unmount');
+  } finally { teardown(dom); }
+});
+
+test('loaded assessor players stop on unmount even after the recording queue completes', { skip: SKIP }, async () => {
+  const dom = setupDom(async () => {});
+  try {
+    const { loadRecordings } = await import('../public/js/views/assessor.js');
+    const view = document.getElementById('view');
+    view.innerHTML = '<div class="exam-audio-slot" data-recording="q1"></div>';
+    const cleanup = loadRecordings(view, 'asm1', { fetchRecording: async () => ({ audio_b64: B64, audio_mime: 'audio/webm' }) });
+    await flush();
+    const player = view.querySelector('audio');
+    let pauses = 0;
+    player.pause = () => { pauses++; };
+    document.dispatchEvent(new window.Event('ecod:view-unmount'));
+    assert.equal(pauses, 1);
+    assert.equal(player.getAttribute('src'), null);
+    assert.equal(typeof cleanup, 'function', 'finalizing in the same view can also release players');
+  } finally { teardown(dom); }
+});
+
+test('assessor playback decoder errors show a retry instead of a silent broken player', { skip: SKIP }, async () => {
+  const dom = setupDom(async () => {});
+  try {
+    const { loadRecordings } = await import('../public/js/views/assessor.js');
+    const view = document.getElementById('view');
+    view.innerHTML = '<div class="exam-audio-slot" data-recording="q1"></div>';
+    let requests = 0;
+    loadRecordings(view, 'asm1', { fetchRecording: async () => {
+      requests++;
+      return { audio_b64: B64, audio_mime: 'audio/webm' };
+    } });
+    await flush();
+    const player = view.querySelector('audio');
+    player.pause = () => {};
+    player.dispatchEvent(new window.Event('error'));
+    assert.match(view.textContent, /could not be played/i);
+    view.querySelector('button').click();
+    await flush();
+    assert.equal(requests, 2);
+    view.querySelector('audio').pause = () => {};
+    document.dispatchEvent(new window.Event('ecod:view-unmount'));
   } finally { teardown(dom); }
 });
 

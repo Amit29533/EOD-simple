@@ -2,11 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeWorld, USER_PASSWORD } from './helpers/world.mjs';
 
-test('SAMA default paper retains all five recordings through draft, reload, lock, submission and assessor playback', async (t) => {
+for (const [roleKey, count, openCount] of [
+  ['technology-risk-sama', 30, 5],
+  ['databricks-rsa', 50, 20],
+  ['databricks-ai-bi-genie', 50, 20],
+]) {
+test(`${roleKey} retains every recording through draft, reload, lock, submission and assessor retrieval`, async (t) => {
   const w = await makeWorld({ t });
   const ok = (r) => { assert.ok(r.status < 300, JSON.stringify(r.body)); return r.body; };
   const installed = ok(await w.call('POST', '/admin/content/tracks', {
-    token: w.tok, body: { role_key: 'technology-risk-sama' },
+    token: w.tok, body: { role_key: roleKey },
   }));
   const person = ok(await w.call('POST', '/admin/candidates', {
     token: w.tok, body: { name: 'SAMA Recording Candidate', target_role_id: installed.role.id },
@@ -20,11 +25,11 @@ test('SAMA default paper retains all five recordings through draft, reload, lock
   const assessor = await w.assessorUser('sama.assessor');
   await w.assign(id, assessor.user.id);
   const paper = (await w.store.get('assessments', id)).snapshot_json;
-  assert.equal(paper.questions.length, 30);
-  assert.equal(paper.questions.filter((q) => q.type === 'text').length, 5);
+  assert.equal(paper.questions.length, count);
+  assert.equal(paper.questions.filter((q) => q.type === 'text').length, openCount);
   const clips = new Map();
   const base = `/candidate/assessments/${id}`;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < count; i++) {
     const detail = ok(await w.call('GET', base, { token }));
     const q = detail.current_question;
     assert.ok(q, `question ${i + 1} exists`);
@@ -45,7 +50,7 @@ test('SAMA default paper retains all five recordings through draft, reload, lock
     }
     ok(await w.call('POST', `${base}/next`, { token, body: { question_id: q.id, answer } }));
   }
-  assert.equal(clips.size, 5);
+  assert.equal(clips.size, openCount);
   ok(await w.call('POST', `${base}/submit`, { token, body: { answers: {} } }));
   const detail = ok(await w.call('GET', `/assessor/assessments/${id}`, { token: assessor.token }));
   for (const [qid, bytes] of clips) {
@@ -57,3 +62,4 @@ test('SAMA default paper retains all five recordings through draft, reload, lock
   }
   await w.scoreAndFinalize(assessor.token, id);
 });
+}

@@ -61,7 +61,10 @@ export function startAudioRecorder(win, stream) {
   try {
     recorder = new Ctor(stream, opts);
   } catch {
-    recorder = new Ctor(stream);
+    // An advertised MIME type can still be rejected at construction. Keep
+    // the speech bitrate when letting the browser choose its own format.
+    try { recorder = new Ctor(stream, { audioBitsPerSecond: RECORDER_AUDIO_BPS }); }
+    catch { recorder = new Ctor(stream); }
   }
   return { recorder, mime: recorder.mimeType || mime || 'audio/webm' };
 }

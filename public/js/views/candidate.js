@@ -965,6 +965,9 @@ async function runExamSession(view, id, payload) {
               rec.recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
               rec.recorder.start();
               rec.audioB64 = ''; rec.audioMime = ''; rec.keptRef = false;
+              transcript = '';
+              preview.textContent = '';
+              preview.hidden = true;
               rec.startedAt = Date.now();
               if (recTimer) { recTimer.hidden = false; recTimer.textContent = '0:00'; }
               setRecState('Recording — speak clearly', 'ok');

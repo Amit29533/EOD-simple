@@ -76,6 +76,19 @@ test('pickRecorderMime / startAudioRecorder prefer a codec the browser supports'
   assert.equal(seen[0].opts.audioBitsPerSecond, RECORDER_AUDIO_BPS);
 });
 
+test('a rejected MIME profile keeps the low bitrate with the browser default format', () => {
+  class Recorder {
+    static isTypeSupported() { return true; }
+    constructor(stream, opts) {
+      if (opts?.mimeType) throw new Error('MIME rejected');
+      this.options = opts;
+      this.mimeType = 'audio/webm';
+    }
+  }
+  const { recorder } = startAudioRecorder({ MediaRecorder: Recorder }, 'STREAM');
+  assert.equal(recorder.options.audioBitsPerSecond, RECORDER_AUDIO_BPS);
+});
+
 test('startAudioRecorder degrades instead of breaking the exam', () => {
   assert.throws(() => startAudioRecorder({}, 'STREAM'), /MediaRecorder is not available/);
   // A browser that rejects the requested profile still gets a plain recorder.
