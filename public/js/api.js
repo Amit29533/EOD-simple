@@ -27,7 +27,8 @@ function timeoutError(ms) {
 
 export async function api(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
   const headers = { 'content-type': 'application/json' };
-  if (session.token) headers.authorization = `Bearer ${session.token}`;
+  const requestToken = session.token;
+  if (requestToken) headers.authorization = `Bearer ${requestToken}`;
   const controller = timeoutMs > 0 && typeof AbortController === 'function' ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   let res;
@@ -40,7 +41,13 @@ export async function api(path, { method = 'GET', body, timeoutMs = 20000 } = {}
       signal: controller ? controller.signal : undefined,
     });
     try { data = await res.json(); }
-    catch (err) { if (controller?.signal.aborted) throw err; /* empty body */ }
+    catch (err) {
+      if (controller?.signal.aborted) throw err;
+      // A proxy's HTML error page or a truncated response is not proof that
+      // an answer/score was saved. Keep it retryable instead of returning null.
+      if (res.ok && res.status !== 204)
+        throw new ApiError('The server returned an invalid response. Please retry.', res.status, null);
+    }
     if (controller?.signal.aborted) throw timeoutError(timeoutMs);
   } catch (err) {
     // An aborted fetch is a deadline we set ourselves, not a browser message.
@@ -53,10 +60,9 @@ export async function api(path, { method = 'GET', body, timeoutMs = 20000 } = {}
     // Only treat this as a session drop when a session actually existed.
     // A failed sign-in attempt also returns 401 and must NOT wipe the
     // login form or re-render the page.
-    if (res.status === 401) {
-      const hadSession = !!session.token;
+    if (res.status === 401 && requestToken && session.token === requestToken) {
       session.token = null;
-      if (hadSession) onUnauthorized();
+      onUnauthorized();
     }
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data);
   }

@@ -52,12 +52,14 @@ before(async () => {
   globalThis.__ids = { adminId: admin.id, roleId: role.id, compId: comp.id, candId: cand.id };
 });
 
-test('auth: bad login rejected, no user enumeration via throttling', async () => {
+test('auth: bad login rejected without revealing whether the username exists', async () => {
   const bad = await call('POST', '/auth/login', { body: { username: 'admin', password: 'wrong' } });
   assert.equal(bad.status, 401);
-  const ok = await call('POST', '/auth/login', { body: { username: 'admin', password: 'pw-admin-123' } }).catch(() => null);
-  // seed passwords weren't standardized here; use direct store-issued session instead:
-  assert.ok(true);
+  const absent = await call('POST', '/auth/login', { body: { username: 'does-not-exist', password: 'wrong' } });
+  assert.equal(absent.status, 401);
+  assert.deepEqual(absent.body, bad.body);
+  assert.equal(bad.body.token, undefined);
+  assert.equal((await store.list('sessions')).length, 0, 'failed logins do not create sessions');
 });
 
 test('unauthenticated requests are rejected', async () => {
