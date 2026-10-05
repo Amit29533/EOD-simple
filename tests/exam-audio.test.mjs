@@ -1,9 +1,19 @@
 import test from 'node:test';
+import { MAX_AUDIO_B64 as SERVER_AUDIO_LIMIT } from '../src/core/constants.mjs';
 import assert from 'node:assert/strict';
 import {
   MAX_AUDIO_B64, speechRecognitionCtor, buildTextAnswer, dataUrlToB64, transcriptFromSpeechEvent,
   micCapability, pickRecorderMime, startAudioRecorder, finishAudioRecorder, blobToStoredAudio, RECORDER_AUDIO_BPS,
 } from '../public/js/exam-audio.js';
+
+test('client and server budgets fit a full two-minute WebKit recording', () => {
+  assert.equal(MAX_AUDIO_B64, SERVER_AUDIO_LIMIT);
+  const observedBytesPerSecond = 191414 / 29.575;
+  const fullAnswer = Buffer.alloc(Math.ceil(observedBytesPerSecond * 120)).toString('base64');
+  assert.ok(fullAnswer.length > 400_000, 'regression exceeds the old limit');
+  assert.equal(buildTextAnswer({ audioB64: fullAnswer }).audio_b64, fullAnswer);
+  assert.ok(fullAnswer.length < MAX_AUDIO_B64);
+});
 
 test('recorder stop errors reject instead of claiming audio was saved', async () => {
   const recorder = { state: 'recording', stop() { this.onerror(); } };

@@ -21,9 +21,17 @@ for (const candidate of candidates) {
 if (!executable) throw new Error('Set CHROME_PATH to an installed Chromium browser.');
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'ecod-media-test-'));
 const helper = await fs.readFile(fileURLToPath(new URL('../public/js/exam-audio.js', import.meta.url)));
+const playbackHelper = await fs.readFile(fileURLToPath(new URL('../public/js/recording-playback.js', import.meta.url)));
+// Optional private local fixtures: never checked into the repository.
+const fixtures = process.env.RECORDING_PLAYBACK_DIR ? await Promise.all(
+  ['sama-0.webm', 'sama-1.webm', 'rsa-0.webm'].map(async name => ({
+    name, audio_mime: 'audio/webm;codecs=opus',
+    audio_b64: (await fs.readFile(path.join(process.env.RECORDING_PLAYBACK_DIR, name))).toString('base64'),
+  }))) : [];
 const server = http.createServer((req, res) => {
-  res.setHeader('content-type', req.url === '/exam-audio.js' ? 'text/javascript' : 'text/html');
-  res.end(req.url === '/exam-audio.js' ? helper : '<!doctype html><title>ECOD isolated media test</title>');
+  res.setHeader('content-type', req.url.endsWith('.js') ? 'text/javascript' : req.url === '/fixtures' ? 'application/json' : 'text/html');
+  res.end(req.url === '/exam-audio.js' ? helper : req.url === '/recording-playback.js' ? playbackHelper
+    : req.url === '/fixtures' ? JSON.stringify(fixtures) : '<!doctype html><title>ECOD isolated media test</title>');
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -72,10 +80,42 @@ try {
     assert.ok(i < 50, 'local page loaded before evaluating media code');
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  console.log(`Recording ${durationMs / 1000}s in isolated Chromium using a synthetic microphone…`);
+  console.log(fixtures.length ? 'Checking private local playback fixtures in isolated Chromium…'
+    : `Recording ${durationMs / 1000}s in isolated Chromium using a synthetic microphone…`);
   const evaluated = await command('Runtime.evaluate', {
     awaitPromise: true, returnByValue: true,
     expression: `(async () => {
+      ${fixtures.length ? `
+      const { recordingPlaybackSource } = await import('${origin}/recording-playback.js');
+      const fixtures = await (await fetch('${origin}/fixtures')).json();
+      const results = [];
+      for (const recording of fixtures) {
+        const original = 'data:' + recording.audio_mime + ';base64,' + recording.audio_b64;
+        const fixed = await recordingPlaybackSource(recording);
+        const durationOf = async src => {
+          const audio = document.createElement('audio');
+          const ready = new Promise((resolve, reject) => {
+            audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : 'unknown');
+            audio.onerror = () => reject(new Error('Playback metadata failed'));
+          });
+          audio.src = src;
+          document.body.append(audio);
+          try { return await ready; } finally { audio.removeAttribute('src'); audio.remove(); }
+        };
+        const context = new OfflineAudioContext(1, 1, 48000);
+        const before = await context.decodeAudioData(await (await fetch(original)).arrayBuffer());
+        const after = await context.decodeAudioData(await (await fetch(fixed)).arrayBuffer());
+        let identical = before.length === after.length && before.numberOfChannels === after.numberOfChannels;
+        for (let channel = 0; identical && channel < before.numberOfChannels; channel++) {
+          const a = before.getChannelData(channel), b = after.getChannelData(channel);
+          for (let i=0;i<a.length;i++) if (a[i] !== b[i]) { identical=false; break; }
+        }
+        results.push({ name: recording.name, originalDuration: await durationOf(original),
+          repairedDuration: await durationOf(fixed), decodedSeconds: after.duration, pcmIdentical: identical,
+          sourceChanged: original !== fixed });
+      }
+      return { playback: results };
+      ` : ''}
       const { startAudioRecorder, finishAudioRecorder, blobToStoredAudio, MAX_AUDIO_B64 } = await import('${origin}/exam-audio.js');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       // The fake device's timer-driven samples can lag the WebM timestamp
@@ -123,11 +163,21 @@ try {
   if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.exception?.description || evaluated.exceptionDetails.text);
   const result = evaluated.result.value;
   console.log(JSON.stringify(result, null, 2));
+  if (result.playback) {
+    for (const clip of result.playback) {
+      assert.ok(Number.isFinite(clip.repairedDuration));
+      assert.ok(Math.abs(clip.repairedDuration - clip.decodedSeconds) < 0.1);
+      assert.equal(clip.pcmIdentical, true, 'metadata repair preserves every decoded audio sample');
+      assert.equal(clip.sourceChanged, clip.name.startsWith('sama'), 'existing RSA metadata is unchanged');
+    }
+    console.log('PASS native duration display and sample-identical playback for historical WebKit and Chrome files.');
+  } else {
   assert.ok(result.bytes > 0, 'recorded nonempty audio');
   assert.equal(result.dropped, false, 'full answer fits the portal storage cap');
   assert.ok(result.base64Length <= result.storageLimit);
   assert.ok(result.decodedSeconds >= durationMs / 1000 - 0.5, 'captured audio decodes for the complete recording interval');
   console.log('PASS real MediaRecorder capture, final chunk, storage encoding and audio decoding.');
+  }
 } finally {
   socket?.close();
   if (browser && browser.exitCode === null) {

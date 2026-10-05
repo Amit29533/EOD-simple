@@ -6,6 +6,7 @@ import {
   assessmentStatusBadge, readinessBadge, badge,
 } from '../ui.js';
 import { renderReport } from './report.js';
+import { recordingPlaybackSource } from '../recording-playback.js';
 
 const fmtPts = (v) => {
   const n = Number(v ?? 0);
@@ -391,12 +392,14 @@ export function loadRecordings(view, assessmentId, { concurrency = 2, fetchRecor
       const rec = await load(qid);
       if (stopped || !slot.isConnected) return;
       if (!rec?.audio_b64) throw new Error('empty recording');
+      const source = await recordingPlaybackSource(rec);
+      if (stopped || !slot.isConnected) return;
       const audio = document.createElement('audio');
       audio.className = 'exam-audio-playback';
       audio.controls = true;
       audio.preload = 'metadata';
       audio.onerror = () => retry(slot, 'Recording could not be played. The browser may not support its format, or the saved audio may be incomplete. Try reloading it or another browser.');
-      audio.src = `data:${rec.audio_mime || 'audio/webm'};base64,${rec.audio_b64}`;
+      audio.src = source;
       slot.replaceChildren(audio);
     } catch (err) {
       if (stopped || !slot.isConnected) return;

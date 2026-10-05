@@ -105,8 +105,8 @@ export const EXAM_OPEN_ANSWER_SECONDS = 120;
 export const RSA_ORAL_IN_CAP = 5;
 export const RSA_ORAL_SET = 'rsa-oral';
 
-/** Max base64 characters stored with an open-response audio clip (~300 KB). */
-export const MAX_AUDIO_B64 = 400_000;
+/** ~1.2 MB audio: accommodates two-minute WebKit clips that ignore 16 kbps. */
+export const MAX_AUDIO_B64 = 1_600_000;
 
 /**
  * Caps on the typed halves of an open answer. The clip has MAX_AUDIO_B64; the

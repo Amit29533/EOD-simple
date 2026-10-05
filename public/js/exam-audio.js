@@ -8,13 +8,13 @@
  * window in whatever browser the candidate happens to use.
  */
 
-export const MAX_AUDIO_B64 = 400_000;
+export const MAX_AUDIO_B64 = 1_600_000;
 
 /**
  * Speech-only encoder profile. The store keeps at most MAX_AUDIO_B64 base64
- * characters (~300 KB of audio), so a full 2-minute answer must encode at
- * ~16 kbps mono; a default-rate opus clip of the same length is twice that and
- * would be dropped as "too large", silently destroying a mandatory answer.
+ * characters (~1.2 MB of audio). Request 16 kbps to keep uploads small, but
+ * allow browsers that ignore this request: observed WebKit output is ~52 kbps.
+ * A two-minute clip at that rate fits, including its container overhead.
  */
 export const RECORDER_AUDIO_BPS = 16_000;
 export const RECORDER_MIME_CANDIDATES = [

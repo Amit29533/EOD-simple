@@ -350,10 +350,10 @@ test('airtable adapter: values past one 100,000-character cell are split across 
     const patched = await store.updateMany('responses', many.map((r) => ({ id: r.id, patch: { answer: { audio_b64: 'Z'.repeat(120_000) } } })));
     assert.ok(patched.every((r) => r.answer.audio_b64 === 'Z'.repeat(120_000)));
 
-    // A recording row: the clip alone, at the API's ceiling (400k of base64),
+    // A recording row: the clip alone, at the API's ceiling (1.6M of base64),
     // in the `audio` JSON column. Airtable keeps every table as separate
     // records already, so recordings are an ordinary table there.
-    const clip = { b64: 'C'.repeat(400_000), mime: 'audio/webm;codecs=opus' };
+    const clip = { b64: 'C'.repeat(1_600_000), mime: 'audio/webm;codecs=opus' };
     const rec = await store.insert('recordings', { assessment_id: 'a1', question_id: 'q1', audio: clip });
     assert.deepEqual((await store.get('recordings', rec.id)).audio, clip);
     const [byKey] = await store.list('recordings', { assessment_id: 'a1', question_id: 'q1' });

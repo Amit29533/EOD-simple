@@ -34,11 +34,11 @@ export const TABLES = {
   // must not carry — or collide with — every other candidate's paper.
   responses:    { json: ['answer'], flags: ['locked'], overflow: { answer: 4 } },
   // One recorded spoken answer per (assessment, question): `audio` is
-  // `{ b64, mime }`, up to ~400,000 characters. Kept off the response row so
+  // `{ b64, mime }`, up to ~1,600,000 base64 characters. Kept off the response row so
   // the exam's per-request reads and the assessor's detail payload stay small;
   // the file and blob adapters store this table one object per row
   // (src/storage/row-tables.mjs), Airtable one record with continuation cells.
-  recordings:   { json: ['audio'], flags: [], overflow: { audio: 4 } },
+  recordings:   { json: ['audio'], flags: [], overflow: { audio: 16 } },
   // Platform settings, one row per `key` (the retention policy for answer
   // sheets and recordings lives at `key: 'retention'`, src/core/retention.mjs).
   // The toggles are declared flags so a backend that drops an unchecked

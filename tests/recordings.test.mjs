@@ -95,6 +95,11 @@ for (const kind of ['json-file', 'netlify-blobs']) {
 
     // reads
     assert.deepEqual((await store.get('recordings', 'asm1/q1')).audio, { b64: B64, mime: 'audio/webm' });
+    const webkitSized = Buffer.alloc(780_000, 7).toString('base64');
+    await store.update('recordings', second.id, { audio: { b64: webkitSized, mime: 'audio/webm;codecs=opus' } });
+    assert.equal((await store.get('recordings', second.id)).audio.b64, webkitSized, 'two-minute WebKit-size bytes survive the adapter');
+    assert.equal(mainBytes(), before, 'large clips remain detached from the main database');
+    await store.update('recordings', second.id, { audio: { b64: B64_2, mime: 'audio/ogg' } });
     assert.equal(await store.get('recordings', 'nope/q1'), null);
     assert.equal(await store.get('recordings', 'asm1'), null, 'an id without a shard cannot exist');
     assert.deepEqual((await store.list('recordings', { assessment_id: 'asm1' })).map((r) => r.id).sort(), ['asm1/q1', 'asm1/q2']);
@@ -350,6 +355,25 @@ test('re-recording creates immutable versions; clearing detaches audio without d
   assert.equal((await put({ [q.id]: { text: '', transcript: '' } })).status, 200);
   assert.equal(await w.row(id, q.id), undefined);
   assert.equal((await w.recordings(id)).length, 2);
+});
+
+test('full-length WebKit-size recording survives draft, lock, submit and retrieval', async () => {
+  const w = await makeWorld();
+  const { id } = await w.allocate();
+  const tok = w.tokens.candidate;
+  const q = await w.liveOpen(id, tok);
+  const b64 = Buffer.alloc(Math.ceil(191414 / 29.575 * 120), 7).toString('base64');
+  assert.ok(b64.length > 400_000);
+  const answer = { text: '', transcript: 'two-minute answer', source: 'audio', audio_b64: b64, audio_mime: 'audio/webm;codecs=opus' };
+  assert.equal((await w.call('PUT', `/candidate/assessments/${id}/answers`, { token: tok, body: { answers: { [q.id]: answer } } })).status, 200);
+  assert.equal((await w.call('POST', `/candidate/assessments/${id}/next`, { token: tok, body: { question_id: q.id, answer: { text: '', transcript: answer.transcript, audio_keep: true } } })).status, 200);
+  await w.walk(id, tok);
+  // Submit-time normalization must keep the larger recording too.
+  assert.equal((await w.call('POST', `/candidate/assessments/${id}/submit`, { token: tok, body: { answers: {} } })).status, 200);
+  const clip = await w.call('GET', `/assessor/assessments/${id}/recordings/${q.id}`, { token: w.tokens.assessor });
+  assert.equal(clip.status, 200);
+  assert.equal(clip.body.audio_b64, b64);
+  assert.ok(Buffer.byteLength(JSON.stringify({ answers: { [q.id]: answer } })) < 2_000_000, 'fits the Netlify handler request cap');
 });
 
 test('the mime type is kept to what a recorder reports; anything else falls back to audio/webm', async () => {
