@@ -36,7 +36,7 @@ function payload({ remaining = 24_000, index = 1, total = 3, complete = false, p
     assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
     exam: {
       index, total, phase, remaining_ms: remaining, server_now: new Date().toISOString(),
-      budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete,
+      budgets: { review_ms: 30_000, answer_ms: 60_000 }, integrity: {}, complete,
     },
     current_question: question,
     current_answer: null,
@@ -173,13 +173,13 @@ test('the clock honors the server remaining_ms instead of resetting to a 30s MCQ
   } finally { await h.teardown(); }
 });
 
-test('an open-question answer window keeps its two-minute budget (no 30s clamp)', { skip: SKIP }, async () => {
+test('an open-question answer window keeps its one-minute budget (no 30s clamp)', { skip: SKIP }, async () => {
   const open = { ...QUESTION, type: 'text', audio_required: true };
-  const h = setup({ pages: [payload({ remaining: 118_000, phase: 'answer', question: open })] });
+  const h = setup({ pages: [payload({ remaining: 58_000, phase: 'answer', question: open })] });
   try {
     const view = await paint(h);
     const shown = view.querySelector('#exam-timer').textContent.trim();
-    assert.match(shown, /^1:5[7-9]$|^2:0[0-9]$/, `an open answer window must keep its ~2min budget, got ${JSON.stringify(shown)}`);
+    assert.match(shown, /^5[7-9]s$/, `an open answer window must keep its ~1min budget, got ${JSON.stringify(shown)}`);
   } finally { await h.teardown(); }
 });
 

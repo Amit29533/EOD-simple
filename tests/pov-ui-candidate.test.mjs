@@ -119,7 +119,7 @@ test('one blocked paste into the answer box is logged once, as paste_attempt', {
   };
   const paper = {
     assessment: { id: 'asm1', status: 'in_progress', role: { name: 'RSA' } },
-    exam: { index: 6, total: 10, phase: 'answer', remaining_ms: 118_000, budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete: false },
+    exam: { index: 6, total: 10, phase: 'answer', remaining_ms: 58_000, budgets: { review_ms: 30_000, answer_ms: 60_000 }, integrity: {}, complete: false },
     current_question: q, current_answer: null, competency: null, questions: [q], competencies: [], answers: {},
   };
   const beacons = [];

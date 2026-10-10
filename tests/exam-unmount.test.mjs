@@ -41,7 +41,7 @@ const payload = () => ({
   assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
   exam: {
     index: 1, total: 3, phase: 'answer', remaining_ms: 24_000, server_now: new Date().toISOString(),
-    budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete: false,
+    budgets: { review_ms: 30_000, answer_ms: 60_000 }, integrity: {}, complete: false,
   },
   current_question: QUESTION, current_answer: null,
   competency: { id: 'c1', name: 'Lakehouse Architecture', category: 'technical', description: '', order: 1 },

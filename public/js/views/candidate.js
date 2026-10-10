@@ -138,7 +138,7 @@ function renderExamGate(view, d, onStart) {
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
           <li><b>Two-hour exam window.</b> It starts when you enter the exam hall and runs continuously, including when you close the browser or sign out. After two hours the exam closes and saved answers remain available for review.</li>
           <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer. Multi-select items score only on an exact match — any incorrect choice scores the question at zero, with no partial credit.</li>
-          <li><b>Open / scenario:</b> 60 seconds to review the scenario, then 2 minutes to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
+          <li><b>Open / scenario:</b> 30 seconds to review the scenario, then 60 seconds to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
           <li><b>Microphone.</b> An open question cannot be locked without a recording, so allow the browser's microphone prompt. Granting access on the review screen keeps the dialog from eating your answer time.</li>
           <li><b>Integrity.</b> Copying the question is blocked. Switching tabs, pasting, or leaving fullscreen is logged.</li>
           <li><b>Time expiry</b> auto-submits the current item (blank if unanswered) and advances.</li>
@@ -174,7 +174,7 @@ async function runExamSession(view, id, payload) {
   let d = payload;
   // The server is the authority on the clock: `remaining_ms` is computed from
   // `question_started_at` and the budget for the current question and phase
-  // (30s MCQ / 60s review / 2min answer), and the gate entry above re-fetches a
+  // (30s MCQ / 30s review / 60s answer), and the gate entry above re-fetches a
   // fresh value right before this runs. Overriding it here re-granted a full
   // 30s budget to every question — open questions included — and masked the
   // server's "urgent / expired" state, so the countdown never went red and the
@@ -684,7 +684,7 @@ async function runExamSession(view, id, payload) {
                 <span class="chip">${esc(typeLabel(q.type))}</span>
                 <span class="chip">${esc(q.difficulty)}</span>
                 <span class="chip">${esc(q.points)} pts</span>
-                ${open ? `<span class="chip">${phase === 'review' ? `Review window · ${fmtWindow(exam.budgets?.review_ms, '60s')}` : `Recording window · ${fmtWindow(exam.budgets?.answer_ms, '2 min')}`}</span><span class="chip chip-mic">🎙 Recorded answer required</span>` : `<span class="chip">${fmtWindow(exam.budgets?.answer_ms, '30s')}</span>`}
+                ${open ? `<span class="chip">${phase === 'review' ? `Review window · ${fmtWindow(exam.budgets?.review_ms, '30s')}` : `Recording window · ${fmtWindow(exam.budgets?.answer_ms, '1 min')}`}</span><span class="chip chip-mic">🎙 Recorded answer required</span>` : `<span class="chip">${fmtWindow(exam.budgets?.answer_ms, '30s')}</span>`}
               </div>
             </div>
           </div>
@@ -708,7 +708,7 @@ async function runExamSession(view, id, payload) {
 
     if (open && phase === 'review') {
       body.innerHTML = `<div class="exam-review">
-        <p>Read the scenario carefully. When this review window ends you have 2 minutes to <b>record your spoken answer</b> — the microphone is required. The text box on the answer screen is optional space for supporting notes.</p>
+        <p>Read the scenario carefully. When this review window ends you have ${fmtWindow(exam.budgets?.answer_ms, '1 min')} to <b>record your spoken answer</b> — the microphone is required. The text box on the answer screen is optional space for supporting notes.</p>
         <div class="mic-check-row">
           <button type="button" class="btn secondary sm" id="mic-check" ${micCapable ? '' : 'disabled'}>Check microphone access</button>
           <span class="small muted" id="mic-check-state">${micCapable

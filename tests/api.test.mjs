@@ -126,9 +126,9 @@ test('candidate quiz payload contains NO correct answers or rubrics', async () =
   assert.equal(res.body.exam.total, 2);
   assert.ok(res.body.current_question);
   // The paper is shuffled, so the clock asserted here follows the question
-  // actually served: 30s for an MCQ, the 60s review window for an open one.
+  // actually served: 30s for an MCQ, the 30s review window for an open one.
   const openFirst = res.body.current_question.type === 'text';
-  assert.ok(res.body.exam.remaining_ms <= (openFirst ? 60_000 : 30_000));
+  assert.ok(res.body.exam.remaining_ms <= 30_000);
   assert.equal(res.body.exam.phase, openFirst ? 'review' : 'answer');
   for (const q of res.body.questions) {
     assert.equal(q.correct_option_ids, undefined);

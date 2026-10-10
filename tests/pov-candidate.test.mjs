@@ -101,7 +101,7 @@ test('lock latency: the review→answer transition carries the answer screen', a
   assert.equal(res.status, 200);
   assert.equal(res.body.screen?.exam?.phase, 'answer');
   assert.equal(res.body.screen.current_question.id, first.current_question.id);
-  assert.ok(res.body.screen.exam.remaining_ms > 119000 && res.body.screen.exam.remaining_ms <= 120000);
+  assert.ok(res.body.screen.exam.remaining_ms > 59000 && res.body.screen.exam.remaining_ms <= 60000);
 });
 
 test('lock latency: the last lock reports complete without a screen', async (t) => {

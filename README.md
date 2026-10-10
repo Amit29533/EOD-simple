@@ -152,9 +152,10 @@ python3 tests/features.py     # 216 checks: every feature — CRUD, validation, 
   microphone answer**, and the text box beside the recorder is **optional** supporting notes.
   The exam renders the record control for all of them and keeps "Lock & continue" disabled
   until the candidate has actually spoken — a stored clip *or* a live transcript, since
-  browsers support one or the other — while the 60-second review window offers a microphone
-  pre-check so the permission dialog never eats answer time. A browser that cannot capture
-  audio at all is never hard-locked: it may type, and the answer is flagged. The API keeps
+  browsers support one or the other — while the 30-second review window offers a microphone
+  pre-check before the 60-second recording window so the permission dialog never eats
+  answer time. A browser that cannot capture audio at all is never hard-locked: it may
+  type, and the answer is flagged. The API keeps
   the truth of it: an audio-only answer is a real answer (never discarded as blank), and a
   typed-only lock is stored but marked `audio_missing` and logged as `spoken_answer_missing`
   in the proctoring trail, the audit log and the assessor's paper.

@@ -98,8 +98,8 @@ export const DEFAULT_PORT = 3000;
 
 /** Timed exam budgets (candidate portal). */
 export const EXAM_MCQ_SECONDS = 30;
-export const EXAM_OPEN_REVIEW_SECONDS = 60;
-export const EXAM_OPEN_ANSWER_SECONDS = 120;
+export const EXAM_OPEN_REVIEW_SECONDS = 30;
+export const EXAM_OPEN_ANSWER_SECONDS = 60;
 
 /** How many questions from the RSA oral set a capped (e.g. 50) paper must include. */
 export const RSA_ORAL_IN_CAP = 5;

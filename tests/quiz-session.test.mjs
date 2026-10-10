@@ -6,15 +6,15 @@ import {
 } from '../src/api/quiz-session.mjs';
 import { questionForCandidate } from '../src/api/projections.mjs';
 import { requiresSpokenAnswer, hasSpokenEvidence, openAnswerHasContent } from '../src/core/spoken-answer.mjs';
-import { EXAM_MCQ_SECONDS, EXAM_OPEN_REVIEW_SECONDS, EXAM_OPEN_ANSWER_SECONDS } from '../src/core/constants.mjs';
+import { EXAM_MCQ_SECONDS } from '../src/core/constants.mjs';
 
-test('MCQ budget is 30s; open questions get 60s review + 2 minutes answer', () => {
+test('MCQ budget is 30s; open questions get 30s review + 60s answer', () => {
   assert.deepEqual(budgetsFor({ type: 'mcq_single' }), { review_ms: 0, answer_ms: EXAM_MCQ_SECONDS * 1000 });
   assert.deepEqual(budgetsFor({ type: 'scale' }), { review_ms: 0, answer_ms: 30_000 });
   assert.equal(isOpenQuestion({ type: 'text' }), true);
   assert.deepEqual(budgetsFor({ type: 'text' }), {
-    review_ms: EXAM_OPEN_REVIEW_SECONDS * 1000,
-    answer_ms: EXAM_OPEN_ANSWER_SECONDS * 1000,
+    review_ms: 30_000,
+    answer_ms: 60_000,
   });
 });
 
@@ -23,7 +23,7 @@ test('remaining time never goes negative and open review uses the review window'
   const mcqLeft = remainingMs({ type: 'mcq_single' }, { question_started_at: started, phase: 'answer' });
   assert.ok(mcqLeft <= 20_000 && mcqLeft > 0);
   const reviewLeft = remainingMs({ type: 'text' }, { question_started_at: started, phase: 'review' });
-  assert.ok(reviewLeft <= 50_000 && reviewLeft > 0);
+  assert.ok(reviewLeft <= 20_000 && reviewLeft > 0);
   const expired = remainingMs({ type: 'mcq_single' }, { question_started_at: new Date(Date.now() - 90_000).toISOString(), phase: 'answer' });
   assert.equal(expired, 0);
 });

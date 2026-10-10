@@ -26,8 +26,8 @@ function openQuestionPayload({ phase = 'answer', audio_required = true } = {}) {
   return {
     assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
     exam: {
-      index: 6, total: 10, phase, remaining_ms: 118_000, server_now: new Date().toISOString(),
-      budgets: { review_ms: 60_000, answer_ms: 120_000 }, integrity: {}, complete: false,
+      index: 6, total: 10, phase, remaining_ms: 58_000, server_now: new Date().toISOString(),
+      budgets: { review_ms: 30_000, answer_ms: 60_000 }, integrity: {}, complete: false,
     },
     current_question: q,
     current_answer: null,
@@ -91,7 +91,7 @@ async function setupDom({ payload, capture = true }) {
     if (path.includes('/meta/bootstrap')) return json({ pipelineStages: [], assessmentStatuses: [], userRoles: [], questionTypes: [], difficulties: [] });
     if (path.includes('/auth/me')) return json({ user: { id: 'u1', name: 'Rohit', role: 'candidate', email: '' }, candidate: { id: 'c1' } });
     if (path === '/candidate/assessments/asm1' && method === 'GET') return json(payload());
-    if (path.endsWith('/phase')) { calls.phase.push(body); return json({ phase: 'answer', remaining_ms: 120_000 }); }
+    if (path.endsWith('/phase')) { calls.phase.push(body); return json({ phase: 'answer', remaining_ms: 60_000 }); }
     if (path.endsWith('/next')) { calls.next.push(body); return json({ complete: false, index: payload().exam.index + 1, total: 10 }); }
     if (path.endsWith('/submit')) { calls.submit.push(body); return json({ status: 'submitted' }); }
     if (path.endsWith('/integrity')) { calls.integrity.push(body); return json({ integrity: {}, events: [] }); }
@@ -157,7 +157,7 @@ test('an open question renders the mandatory microphone beside the optional text
     assert.equal(view.querySelector('#exam-ta').getAttribute('maxlength'), '20000',
       'the notes box is capped in the browser to match the server limit');
     assert.match(view.innerHTML, /Recorded answer required/, 'the question is labelled as microphone-required');
-    assert.match(view.innerHTML, /Recording window · 2 min/);
+    assert.match(view.innerHTML, /Recording window · 1 min/);
   } finally {
     teardown(ctx);
   }

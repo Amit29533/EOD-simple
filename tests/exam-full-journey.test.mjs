@@ -167,8 +167,8 @@ test('A1 · exam opens on the pinned spoken question in review phase, leaking no
   assert.equal(first.body.exam.index, 0);
   assert.equal(first.body.exam.total, 6, 'all six bank questions are served');
   assert.equal(first.body.exam.phase, 'review', 'open questions open in the review window');
-  assert.deepEqual(first.body.exam.budgets, { review_ms: 60_000, answer_ms: 120_000 });
-  assert.ok(first.body.exam.remaining_ms > 0 && first.body.exam.remaining_ms <= 60_000);
+  assert.deepEqual(first.body.exam.budgets, { review_ms: 30_000, answer_ms: 60_000 });
+  assert.ok(first.body.exam.remaining_ms > 0 && first.body.exam.remaining_ms <= 30_000);
 
   const q = first.body.current_question;
   assert.equal(q.id, w.ids.pin, 'the pinned spoken question is served first');
@@ -216,19 +216,19 @@ test('A2 · answer validation rejects malformed answers without advancing the cu
   assert.equal(await idx(), paper.length, 'the whole paper was walked');
 });
 
-test('A3 · the answer phase cannot be re-entered to reset the two-minute timer', async () => {
+test('A3 · the answer phase cannot be re-entered to reset the one-minute timer', async () => {
   const w = await makeWorld();
   const alloc = await w.allocate(w.cand1.id, w.assessor1.id);
   const { tok } = await candidateWalkBasics(w, alloc.id);
 
   const enter = await w.call('POST', `/candidate/assessments/${alloc.id}/phase`, { token: tok, body: { phase: 'answer' } });
   assert.equal(enter.status, 200, 'review -> answer works once');
-  assert.equal(enter.body.remaining_ms, 120_000);
+  assert.equal(enter.body.remaining_ms, 60_000);
 
-  // Burn 90s of the answer window, then try to restart it by calling /phase again.
+  // Burn 30s of the answer window, then try to restart it by calling /phase again.
   const a = await w.store.get('assessments', alloc.id);
   await w.store.update('assessments', alloc.id, {
-    quiz_state: { ...a.quiz_state, question_started_at: new Date(Date.now() - 90_000).toISOString() },
+    quiz_state: { ...a.quiz_state, question_started_at: new Date(Date.now() - 30_000).toISOString() },
   });
   const remaining = (await w.call('GET', `/candidate/assessments/${alloc.id}`, { token: tok })).body.exam.remaining_ms;
   assert.ok(remaining > 0 && remaining <= 30_000, `countdown is live (${remaining}ms left)`);

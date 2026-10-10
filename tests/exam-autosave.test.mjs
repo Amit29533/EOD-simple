@@ -81,7 +81,7 @@ function payload({ remaining = 24_000, index = 1, total = 3, complete = false, p
     assessment: { id: 'asm1', status: 'in_progress', started_at: null, submitted_at: null, role: { name: 'RSA', description: '' } },
     exam: {
       index, total, phase, remaining_ms: remaining, server_now: new Date().toISOString(),
-      budgets: question.type === 'text' ? { review_ms: 60_000, answer_ms: 120_000 } : { review_ms: 0, answer_ms: 30_000 },
+      budgets: question.type === 'text' ? { review_ms: 30_000, answer_ms: 60_000 } : { review_ms: 0, answer_ms: 30_000 },
       integrity: {}, complete,
     },
     current_question: question,

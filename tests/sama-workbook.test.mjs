@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import { parseSheet } from '../src/core/sheet-parser.mjs';
 import { QUESTIONS, MODULES, QUESTION_BANK_VERSION } from '../src/content/sama-question-bank.mjs';
 import { SAMA_QUESTIONS } from '../src/content/sama-catalogue.mjs';
-import { EXAM_OPEN_ANSWER_SECONDS } from '../src/core/constants.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const workbook = path.join(root, 'SAMA Question bank 1.2.xlsx');
@@ -56,7 +55,7 @@ test('SAMA v1.2 workbook is complete and its revised questions reach both catalo
       assert.equal(q.rubric, row.expected_evidence_jd_aligned.trim());
       assert.ok(q.rubric.length > 0);
       assert.equal(q.minutes, 2);
-      assert.equal(q.minutes * 60, EXAM_OPEN_ANSWER_SECONDS);
+      // Workbook suggested duration is content metadata, independent of the live exam timer.
       assert.equal(q.probes.join('; '), row.follow_up_probes.trim());
       assert.ok(served.rubric.includes(q.rubric));
       assert.ok(served.rubric.includes(q.probes.join('; ')));
