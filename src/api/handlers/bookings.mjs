@@ -5,7 +5,7 @@ import { hashPasswordAsync, verifyPasswordAsync } from '../../core/passwords.mjs
 import { createGate } from '../../core/gate.mjs';
 import { ok, created, bad, notFound, conflict, unprocessable, tooMany, audit } from '../helpers.mjs';
 import { withLock } from '../mutex.mjs';
-import { roleBank, automaticSnapshotFromBank, paperSummary, advanceStage } from '../assessment-service.mjs';
+import { roleBank, automaticSnapshotFromBank, paperSummary, advanceStage, resolveAllocationAssessor } from '../assessment-service.mjs';
 import { EXAM_SESSION_MS, expireExam } from '../exam-expiry.mjs';
 
 const TABLE = 'test_bookings';
@@ -119,12 +119,17 @@ async function provisionBooking(store, original) {
   });
   if (user.candidate_id !== candidate.id || user.role !== 'candidate' || user.active === false)
     throw provisioningError('The linked booking account is unavailable.');
+  const role = await store.get('roles', row.role_id);
+  const assessor_id = await resolveAllocationAssessor(store, role, candidate);
   const assessment = await insertBookingRecord(store, 'assessments', `booking-exam-${row.id}`, row.id, {
-    candidate_id: candidate.id, role_id: row.role_id, assessor_id: null,
+    candidate_id: candidate.id, role_id: row.role_id, assessor_id,
     status: 'assigned', snapshot_json: plan.snapshot, report_json: null,
     ...paperSummary(plan.snapshot), scheduled_at: row.scheduled_at, scheduled_end_at: row.scheduled_end_at,
     overall_pct: null, readiness_key: '', readiness_label: '', created_by: row.created_by,
   });
+  // Use the persisted paper on repair: a retry must not undo a reassignment.
+  if (!candidate.assessor_id && assessment.assessor_id)
+    await store.update('candidates', candidate.id, { assessor_id: assessment.assessor_id });
   await advanceStage(store, candidate.id, 'assessment');
   row = (await changeBooking(store, row.id, (fresh) => fresh?.status === 'booked'
     ? { user_id: user.id, assessment_id: assessment.id, provisioning_json: null } : undefined)).row;

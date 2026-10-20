@@ -128,6 +128,14 @@ async function candidateAssessorField(store, value) {
   return { id };
 }
 
+function trackAssessorSummary(role, user) {
+  return {
+    default_assessor_id: role.default_assessor_id || null,
+    default_assessor_name: user?.name || '',
+    default_assessor_active: Boolean(user && user.role === 'assessor' && user.active !== false),
+  };
+}
+
 /**
  * Competency text fields, shared by POST and PATCH for the same reason: PATCH
  * used to cap every one of them at 1500, so an edit could store a 1500-char
@@ -518,6 +526,10 @@ export function adminHandlers(route) {
     // default is ignored rather than failing the whole file.
     const defaultAssessorId = await resolveAssessorId(store, body.assessor_id || null);
     const defaultAssessorName = defaultAssessorId ? (existingUsers.find((u) => u.id === defaultAssessorId)?.name || '') : '';
+    const activeAssessorIds = new Set(existingUsers.filter((u) => u.role === 'assessor' && u.active !== false).map((u) => u.id));
+    const importAssessorId = (candidate, plan) => [candidate.assessor_id, defaultAssessorId, plan?.ok && plan.role.default_assessor_id]
+      .find((id) => activeAssessorIds.has(id)) || null;
+    const planByCandidate = new Map(windowAccepted.map((row, i) => [row.candidate, plans[i]]));
 
     const summary = {
       headers: parsed.headers,
@@ -539,7 +551,7 @@ export function adminHandlers(route) {
         name: a.candidate.name,
         target_role: a.candidate.target_role || '',
         stage: a.candidate.stage || '',
-        assessor: a.candidate.assessor || defaultAssessorName || '',
+        assessor: existingUsers.find((u) => u.id === importAssessorId(a.candidate, planByCandidate.get(a.candidate)))?.name || '',
         username: a.candidate.username || '',
       })),
     };
@@ -572,6 +584,7 @@ export function adminHandlers(route) {
     // it blank) and their stage already at Assessment.
     const batch = pageAccepted.map(({ candidate, plan }) => {
       const target_role_id = candidate.target_role_id || (plan?.ok ? plan.role.id : null) || null;
+      const assessor_id = importAssessorId(candidate, plan);
       let stage = candidate.stage || (target_role_id ? 'role_mapped' : 'intake');
       if (plan?.ok && STAGE_KEYS.indexOf(stage) < STAGE_KEYS.indexOf('assessment')) stage = 'assessment';
       return {
@@ -584,7 +597,7 @@ export function adminHandlers(route) {
         source: candidate.source,
         notes: candidate.notes,
         target_role_id,
-        ...((candidate.assessor_id || defaultAssessorId) ? { assessor_id: candidate.assessor_id || defaultAssessorId } : {}),
+        ...(assessor_id ? { assessor_id } : {}),
         stage,
         created_by: auth.user.id,
       };
@@ -1040,8 +1053,8 @@ export function adminHandlers(route) {
 
   // ------------------------------------------------ roles (assessment tracks)
   route('GET', '/admin/roles', A, async ({ store }) => {
-    const [roles, comps, questions, assessments] = await Promise.all([
-      store.list('roles'), store.list('competencies'), store.list('questions'), store.list('assessments', {}, { detached: false }),
+    const [roles, comps, questions, assessments, users] = await Promise.all([
+      store.list('roles'), store.list('competencies'), store.list('questions'), store.list('assessments', {}, { detached: false }), store.list('users'),
     ]);
     roles.sort((a, b) => a.name.localeCompare(b.name));
     const moduleCounts = new Map(await Promise.all(roles.filter(hasStrictModuleAllocation).map(async (r) =>
@@ -1049,6 +1062,7 @@ export function adminHandlers(route) {
     return ok({
       roles: roles.map((r) => ({
         ...r,
+        ...trackAssessorSummary(r, users.find((u) => u.id === r.default_assessor_id)),
         default_question_count: defaultQuestionCountForRole(r),
         competency_count: comps.filter((c) => c.role_id === r.id).length,
         question_count: moduleCounts.has(r.id) ? moduleCounts.get(r.id) : questions.filter((q) => q.role_id === r.id).length,
@@ -1063,6 +1077,8 @@ export function adminHandlers(route) {
     if (miss.length) return bad(`Missing: ${miss.join(', ')}`);
     const structured = textField(body, ['name', 'technology', 'description']);
     if (structured) return bad(`Role ${structured} must be plain text.`);
+    const defaultAssessor = await candidateAssessorField(store, body.default_assessor_id);
+    if (defaultAssessor.error) return bad(defaultAssessor.error);
     const defaultCountProblem = questionCountError(body.default_question_count);
     if (defaultCountProblem) return bad(defaultCountProblem.replace('Number of questions', 'Default allocation'));
     if (hasStrictModuleAllocation({ key: str(body.key, 60).toLowerCase() }) && body.default_question_count && Number(body.default_question_count) !== 50)
@@ -1076,6 +1092,7 @@ export function adminHandlers(route) {
       const rec = await store.insert('roles', {
         key, name: str(body.name, 120), technology: str(body.technology, 120),
         description: str(body.description, 2000),
+        ...(defaultAssessor.id ? { default_assessor_id: defaultAssessor.id } : {}),
         default_question_count: body.default_question_count === undefined || body.default_question_count === null || body.default_question_count === ''
           ? MAX_ASSESSMENT_QUESTIONS : Number(body.default_question_count),
         active: true,
@@ -1101,6 +1118,12 @@ export function adminHandlers(route) {
     // then renders as an unnamed track everywhere it is listed).
     if (body.name !== undefined && !str(body.name)) return bad('Role name is required.');
     const patch = {};
+    const requestedAssessor = body.default_assessor_id === '' ? null : body.default_assessor_id;
+    if (requestedAssessor !== undefined && requestedAssessor !== (r.default_assessor_id || null)) {
+      const defaultAssessor = await candidateAssessorField(store, body.default_assessor_id);
+      if (defaultAssessor.error) return bad(defaultAssessor.error);
+      patch.default_assessor_id = defaultAssessor.id;
+    }
     for (const f of ['name', 'technology', 'description']) if (body[f] !== undefined) patch[f] = str(body[f], f === 'description' ? 2000 : 120);
     if (body.default_question_count !== undefined && body.default_question_count !== null && body.default_question_count !== '') patch.default_question_count = Number(body.default_question_count);
     if (body.active !== undefined) patch.active = bool(body.active);
@@ -1138,7 +1161,8 @@ export function adminHandlers(route) {
     ]);
     comps.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     questions.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    return ok({ role: { ...role, default_question_count: defaultQuestionCountForRole(role) }, competencies: comps, questions, framework: frameworks.find((f) => f.active !== false) || null });
+    const assessor = role.default_assessor_id ? await store.get('users', role.default_assessor_id) : null;
+    return ok({ role: { ...role, ...trackAssessorSummary(role, assessor), default_question_count: defaultQuestionCountForRole(role) }, competencies: comps, questions, framework: frameworks.find((f) => f.active !== false) || null });
   });
 
   // ------------------------------------------------ competencies
