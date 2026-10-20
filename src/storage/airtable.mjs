@@ -299,11 +299,10 @@ export function createAirtableStore({ apiKey, baseId, apiUrl = 'https://api.airt
           continue;
         }
         for (const id of chunk) {
-          try {
-            if (await adapter.remove(t, id)) removed += 1;
-          } catch {
-            // an id that is already gone: skipped, like the other adapters
-          }
+          // remove() already returns false for a missing record (404).
+          // Permission/network/service failures must abort the cascade so
+          // the caller cannot claim that retained personal data was deleted.
+          if (await adapter.remove(t, id)) removed += 1;
         }
       }
       return removed;
