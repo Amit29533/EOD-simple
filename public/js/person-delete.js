@@ -4,7 +4,7 @@ import { esc, modal, formModal, toast } from './ui.js';
 const labels = {
   candidate_profiles: 'Candidate profiles', accounts: 'Portal accounts', sessions: 'Login sessions',
   assessments: 'Assessments and question snapshots', reports: 'Finalized reports',
-  responses: 'Answers, transcripts, scores and comments', recordings: 'Audio recordings', audit_events: 'Linked activity history',
+  responses: 'Answers, transcripts, scores and comments', recordings: 'Audio recordings', audit_events: 'Linked activity history', test_bookings: 'Test bookings',
 };
 
 export async function deletePersonFlow(kind, person, onDeleted) {

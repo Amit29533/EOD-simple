@@ -534,7 +534,7 @@ test('the served question set is managed on the modules screen', { skip: SKIP },
     const view = await renderModules();
     const panel = view.querySelector('#served-set');
     assert.ok(panel, 'the served-set panel is part of the modules screen');
-    assert.match(panel.textContent, /Served question set/);
+    assert.match(panel.textContent, /Role question catalogue/);
     assert.match(panel.textContent, /A served MCQ\?/, 'the role questions are listed here');
     assert.match(panel.textContent, /A served open question\?/);
     assert.ok(panel.querySelector('#served-add'), 'questions can be added from this screen');

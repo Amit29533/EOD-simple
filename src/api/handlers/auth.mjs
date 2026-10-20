@@ -1,7 +1,7 @@
 import { withLock } from '../mutex.mjs';
 import { verifyPasswordAsync, hashPasswordAsync } from '../../core/passwords.mjs';
 import { createGate } from '../../core/gate.mjs';
-import { ok, bad, forbidden, unauthorized, tooMany, missing, audit, str } from '../helpers.mjs';
+import { ok, bad, forbidden, unauthorized, tooMany, missing, audit } from '../helpers.mjs';
 import { publicUser } from '../projections.mjs';
 import { redeemRecoveryLink } from '../recovery-service.mjs';
 import { consumeMfa, beginMfa, enableMfa } from '../mfa-service.mjs';
@@ -128,7 +128,9 @@ export function authHandlers(route) {
   route('POST', '/auth/login', 'public', async ({ store, body, helpers, ip }) => {
     const need = missing(body, ['username', 'password']);
     if (need.length) return bad('Username and password are required.');
-    const username = str(body.username, 100).toLowerCase();
+    if (typeof body.username !== 'string' || body.username.trim().length > 200)
+      return bad('Username or email must be text, up to 200 characters.');
+    const username = body.username.trim().toLowerCase();
     const address = typeof ip === 'string' && ip.trim() ? ip.trim() : 'unknown';
     if (throttled(username, address)) return tooMany('Too many failed attempts. Please wait a few minutes and try again.');
 

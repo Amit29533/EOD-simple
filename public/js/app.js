@@ -4,6 +4,7 @@ import { esc, initials, enhanceTables, toast } from './ui.js';
 import { logoSvg } from './logo.js';
 import { changePassword, authenticatorSettings } from './account-security.js';
 import { recoveryView } from './views/recovery.js';
+import { bookingsView, publicBookingView } from './views/bookings.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -16,6 +17,7 @@ const ROUTES = {
   admin: [
     ['#/dashboard', admin.dashboardView], ['#/candidates', admin.candidatesView],
     ['#/candidates/:id', admin.candidateDetailView], ['#/assessments', admin.assessmentsView],
+    ['#/bookings', bookingsView],
     ['#/assessments/:id/report', admin.reportView], ['#/assessments/:id/integrity', admin.integrityView],
     ['#/roles', admin.rolesView],
     ['#/roles/:id', admin.roleDetailView],
@@ -54,8 +56,8 @@ function placeholderView(moduleName) {
       <div class="empty-illustration" aria-hidden="true"></div>
       <div class="eyebrow">Not available</div>
       <h1>${esc(moduleName)}</h1>
-      <p>This module is not enabled for your account yet.</p>
-      <p class="muted small">Contact your administrator if you need access.</p>
+      <p>This module is planned and is not available in this version of ECOD.</p>
+      <p class="muted small">Assessment, scoring and report workflows are available in the current portal.</p>
     </div>`;
   };
   return fn;
@@ -75,7 +77,7 @@ const NAV_ICONS = {
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 11 8-7 8 7v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"></path><path d="M9 20v-6h6v6"></path></svg>',
 };
 const NAV = {
-  admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'],
+  admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'], ['#/bookings', 'Test bookings'],
           ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Question Bank'],
           ['#/users', 'Users & Access'], ['#/audit', 'Audit Log'], ['#/settings', 'Settings']],
   assessor: [['#/workspace', 'My Assessments']],
@@ -87,10 +89,13 @@ const NAV = {
 const routeHash = () => (location.hash || '').split('?')[0];
 const navKey = (href) => href.slice(2).split('/')[0];
 
-function closeMobileNav() {
-  document.getElementById('sidebar')?.classList.remove('open');
+function closeMobileNav(restoreFocus = false) {
+  const sidebar = document.getElementById('sidebar');
+  const wasOpen = sidebar?.classList.contains('open');
+  sidebar?.classList.remove('open');
   document.getElementById('nav-scrim')?.classList.remove('visible');
   document.getElementById('mobile-nav-toggle')?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && wasOpen) document.getElementById('mobile-nav-toggle')?.focus();
 }
 
 function renderShell() {
@@ -100,7 +105,7 @@ function renderShell() {
   // Group by destination rather than by index, so adding a nav item never
   // silently slides entries into the wrong section.
   const GROUPS = {
-    Workspace: ['#/dashboard', '#/candidates', '#/assessments'],
+    Workspace: ['#/dashboard', '#/candidates', '#/assessments', '#/bookings'],
     Configure: ['#/roles', '#/modules'],
     Governance: ['#/users', '#/audit', '#/settings'],
   };
@@ -198,6 +203,8 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && document.getElementById('profile-panel')?.hidden === false) {
     closeProfileMenu(true);
+  } else if (event.key === 'Escape' && document.getElementById('sidebar')?.classList.contains('open')) {
+    closeMobileNav(true);
   }
 });
 
@@ -232,6 +239,15 @@ async function renderOnce() {
   // `document.defaultView.Event` rather than the bare global: a jsdom
   // document rejects Node's own Event class.
   document.dispatchEvent(new (document.defaultView?.Event || Event)(VIEW_UNMOUNT_EVENT));
+  const booking = location.hash.match(/^#\/book(?:\/(.*))?$/);
+  if (booking) {
+    document.body.classList.remove('app-body', 'exam-lock');
+    closeMobileNav();
+    document.getElementById('sidebar').innerHTML = '';
+    document.getElementById('topbar').innerHTML = '';
+    await publicBookingView(view, booking[1] || '');
+    return;
+  }
   const recovery = location.hash.match(/^#\/recover\/([a-f0-9]{64})$/i);
   if (recovery) {
     document.body.classList.remove('app-body', 'exam-lock');
@@ -314,7 +330,7 @@ function renderRouteError(view, err) {
     : status === 409 ? 'Not available yet'
     : 'Something went wrong';
   const detail = offline
-    ? 'Check your connection — your work is saved and the page will load once you are back online.'
+    ? 'Check your connection and try again. Any changes still marked as unsaved will need to be retried.'
     : (err?.message || 'An unexpected error occurred.');
   view.innerHTML = `<div class="error-page">
     <div class="error-icon">!</div>
@@ -333,7 +349,8 @@ function onSignedIn({ token, user, candidate: c }) {
   session.token = token;
   state.user = user;
   state.candidate = c;
-  const target = DEFAULT_ROUTE[user.role];
+  const target = user.role === 'candidate' && /^#\/assessments\/[^/?]+\/quiz$/.test(location.hash)
+    ? location.hash : DEFAULT_ROUTE[user.role];
   // Setting the hash fires hashchange (which renders); only call render()
   // directly when the hash is already the target, so we never render twice.
   if (routeHash() === target) render();
@@ -341,11 +358,13 @@ function onSignedIn({ token, user, candidate: c }) {
 }
 
 async function boot() {
+  window.onhashchange = () => { closeMobileNav(); render(); };
+  if (/^#\/book(?:\/|$)/.test(location.hash)) { render(); return; }
   if (/^#\/recover\/[a-f0-9]{64}$/i.test(location.hash)) { render(); return; }
   document.getElementById('sidebar').innerHTML = '';
   document.getElementById('topbar').innerHTML = '';
   document.getElementById('nav-scrim')?.classList.remove('visible');
-  window.onhashchange = () => { closeMobileNav(); if (state.user) render(); };
+  window.onhashchange = () => { closeMobileNav(); render(); };
   if (!state.meta) state.meta = await bootstrap().catch(() => null);
   if (session.token) {
     try {
@@ -405,5 +424,14 @@ window.addEventListener('resize', () => {
 });
 
 setUnauthorizedHandler(() => { state.user = null; render(); });
+document.querySelector('.skip-link')?.addEventListener('click', (event) => {
+  // Hash fragments are application routes here. Move keyboard focus without
+  // replacing the active route with #view and bouncing the user home.
+  event.preventDefault();
+  const content = document.getElementById('view');
+  content?.setAttribute('tabindex', '-1');
+  content?.focus({ preventScroll: true });
+  content?.scrollIntoView?.({ block: 'start' });
+});
 initTheme();
 boot();

@@ -3,7 +3,7 @@
  * theming rules that are easy to break by accident:
  *   1. every var(--token) resolves to a declared custom property,
  *   2. the dark palette only applies on screen, so print/PDF stays light,
- *   3. the light palette in :root still carries the original surface values.
+ *   3. the light palette in :root still carries the Anthroprime surface values.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,7 +33,7 @@ test('dark palette is screen-scoped so printed output falls back to light', () =
   assert.match(printBlock, /color-scheme: light !important/, 'print cancels the inline dark color-scheme');
 });
 
-test('light palette keeps the original surface values', () => {
+test('light palette keeps the Anthroprime surface values', () => {
   const rootStart = css.indexOf(':root {');
   const rootBlock = css.slice(rootStart, css.indexOf('@media screen {'));
   const token = (name) => {
@@ -41,9 +41,9 @@ test('light palette keeps the original surface values', () => {
     assert.ok(m, `${name} declared in :root`);
     return m[1].trim();
   };
-  assert.equal(token('--card-bg'), 'rgba(255, 255, 255, .94)');
-  assert.equal(token('--topbar-bg'), 'rgba(255, 255, 255, .83)');
-  assert.equal(token('--surface'), '#ffffff');
-  assert.equal(token('--brand'), '#159b96');
-  assert.equal(token('--line-soft'), '#edf2f4');
+  assert.equal(token('--card-bg'), '#faf9f7');
+  assert.equal(token('--topbar-bg'), 'rgba(250, 249, 247, .96)');
+  assert.equal(token('--surface'), '#faf9f7');
+  assert.equal(token('--brand'), '#2e4080');
+  assert.equal(token('--line-soft'), '#e8e5de');
 });

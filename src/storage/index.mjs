@@ -1,4 +1,5 @@
 import { createJsonStore } from './json-file.mjs';
+import { deploymentStorage } from './deploy-config.mjs';
 
 /**
  * Storage factory. Selected by env STORAGE: json (default) | airtable | blobs.
@@ -8,7 +9,7 @@ import { createJsonStore } from './json-file.mjs';
 const VALID_STORAGE = new Set(['json', 'airtable', 'blobs']);
 
 export async function createStore(env = process.env) {
-  const raw = (env.STORAGE || 'json').toLowerCase();
+  const raw = deploymentStorage(env).kind;
   if (!VALID_STORAGE.has(raw)) {
     console.warn(`[storage] unknown STORAGE="${raw}", falling back to json`);
   }

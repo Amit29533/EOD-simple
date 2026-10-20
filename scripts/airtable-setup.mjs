@@ -37,10 +37,12 @@ const num = N, txt = { type: T }, long = { type: L }, chk = { type: C, options: 
  * tests can pin the coverage.
  */
 export const SCHEMA = {
-  users:        ['username', 'name', 'email', 'role', 'password_hash', 'session_generation', 'candidate_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }, { name: 'creation_request', ...long }, { name: 'mfa_json', ...long }]),
+  users:        ['username', 'name', 'email', 'role', 'password_hash', 'session_generation', 'candidate_id', 'booking_id', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })).concat([{ name: 'active', ...chk }, { name: 'creation_request', ...long }, { name: 'mfa_json', ...long }]),
   sessions:     ['token', 'user_id', 'purpose', 'session_generation', 'expires_at', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt })),
-  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  candidates:   ['name', 'email', 'phone', 'current_title', 'location', 'source', 'target_role_id', 'assessor_id', 'stage', 'created_by', 'created_at', 'updated_at', 'booking_id'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }, { name: 'deleting', ...chk }]),
+  test_bookings: ['token_hash', 'label', 'status', 'role_id', 'role_name', 'created_by', 'created_at', 'updated_at', 'expires_at', 'booked_at', 'name', 'email', 'phone', 'scheduled_at', 'scheduled_end_at', 'timezone', 'candidate_id', 'request_id', 'submission_hash', 'user_id', 'assessment_id', 'automation_version'].map((f) => ({ name: f, ...txt }))
+    .concat([{ name: 'provisioning_json', ...long }], overflowColumns('test_bookings').map((f) => ({ name: f, ...long }))),
   roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'default_question_count', ...num }, { name: 'active', ...chk }]),
   competencies: ['role_id', 'key', 'name', 'category', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
@@ -65,7 +67,7 @@ export const SCHEMA = {
   // a cell at 100,000 characters, and a whole-bank paper or a recorded answer
   // runs past that. The adapter splits/rejoins them (src/storage/schema.mjs
   // `overflow` declares how many each column has).
-  assessments:  ['candidate_id', 'role_id', 'assessor_id', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label', 'role_name'].map((f) => ({ name: f, ...txt }))
+  assessments:  ['candidate_id', 'role_id', 'assessor_id', 'booking_id', 'scheduled_at', 'scheduled_end_at', 'status', 'created_by', 'created_at', 'updated_at', 'started_at', 'submitted_at', 'scored_at', 'readiness_key', 'readiness_label', 'role_name'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'snapshot_json', ...long }, { name: 'report_json', ...long }, { name: 'quiz_state', ...long },
                          // what the retention cleanup removed from this paper (src/core/retention.mjs)
                          { name: 'retention_json', ...long },

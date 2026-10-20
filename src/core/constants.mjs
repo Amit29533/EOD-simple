@@ -23,6 +23,7 @@ export const ASSESSMENT_STATUSES = [
   { key: 'submitted',   label: 'Awaiting scoring', tone: 'amber' },
   { key: 'scored',      label: 'Scored',           tone: 'green' },
   { key: 'validated',   label: 'Validated',        tone: 'green' },
+  { key: 'cancelled',   label: 'Cancelled',        tone: 'grey'  },
 ];
 
 /**

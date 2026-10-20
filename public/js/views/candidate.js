@@ -2,34 +2,42 @@ import { wireMicrophoneCheck } from '../microphone-check.js';
 import { api, session } from '../api.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
-  esc, fmtDate, fmtDateTime, loading, emptyState, toast, attempt,
+  esc, fmtDate, fmtDateTime, fmtScheduledTime, loading, emptyState, toast, attempt,
   pipelineStepper, assessmentStatusBadge, readinessBadge,
 } from '../ui.js';
 import { renderReport } from './report.js';
 import {
   speechRecognitionCtor, buildTextAnswer, blobToStoredAudio, transcriptFromSpeechEvent,
-  micCapability, startAudioRecorder, finishAudioRecorder,
+  micCapability, startAudioRecorder, finishAudioRecorder, finishSpeechRecognition,
 } from '../exam-audio.js';
 
+const scheduledTime = fmtScheduledTime;
+const portalCleanup = new WeakMap();
+
 /* ================================ Portal (My Journey) ================================ */
-export async function portalView(view) {
+export async function portalView(view, { refresh = false } = {}) {
   document.body.classList.remove('exam-lock');
-  view.innerHTML = loading();
+  if (!refresh) { portalCleanup.get(view)?.(); view.innerHTML = loading(); }
   const d = await api('/candidate/assessments');
+  portalCleanup.get(view)?.();
   const stages = state.meta.pipelineStages;
-  const active = d.assessments.filter((a) => ['assigned', 'in_progress'].includes(a.status));
+  const active = d.assessments.filter((a) => ['assigned', 'in_progress'].includes(a.status) && !['upcoming', 'cancelled', 'unavailable'].includes(a.access_state));
+  const upcoming = d.assessments.filter((a) => a.access_state === 'upcoming');
   const awaiting = d.assessments.filter((a) => a.status === 'submitted');
   const completed = d.assessments.filter((a) => ['scored', 'validated'].includes(a.status));
   const nextMessage = active.length
     ? `${active.length} assessment${active.length === 1 ? '' : 's'} ready for you`
-    : awaiting.length ? `${awaiting.length} assessment${awaiting.length === 1 ? '' : 's'} under review`
+    : upcoming.length ? `${upcoming.length} assessment${upcoming.length === 1 ? '' : 's'} scheduled for you`
+      : awaiting.length ? `${awaiting.length} assessment${awaiting.length === 1 ? '' : 's'} under review`
       : completed.length ? 'Your latest report is ready' : 'No action is needed right now';
   view.innerHTML = `
     <div class="page-heading candidate-heading">
       <div><div class="eyebrow">My journey</div><h1>Welcome, ${esc(d.candidate.name.split(' ')[0])}</h1><p class="muted">${esc(nextMessage)}.</p></div>
+      ${d.assessments.some((a) => a.scheduled_at) ? '<button class="btn secondary" id="refresh-exam-availability">Refresh exam availability</button>' : ''}
     </div>
     <div class="candidate-overview" aria-label="Assessment summary">
       <div class="overview-item"><span>Ready or in progress</span><b>${active.length}</b></div>
+      ${upcoming.length ? `<div class="overview-item"><span>Upcoming tests</span><b>${upcoming.length}</b></div>` : ''}
       <div class="overview-item"><span>Under review</span><b>${awaiting.length}</b></div>
       <div class="overview-item"><span>Reports ready</span><b>${completed.length}</b></div>
     </div>
@@ -47,13 +55,18 @@ export async function portalView(view) {
               ${a.readiness_label ? readinessBadge(a.readiness_key, a.readiness_label) : ''}
               <span>${a.question_count} questions</span><span>Allocated ${esc(fmtDate(a.created_at))}</span>
             </div>
-            <p class="small candidate-next-step">${a.status === 'assigned' ? 'Review the exam rules and device checks before you begin.'
+            <p class="small candidate-next-step">${a.access_state === 'cancelled' ? 'This booking has been cancelled. Contact your administrator.'
+              : a.access_state === 'unavailable' ? 'The exam schedule is unavailable. Contact your administrator before entering.'
+              : a.access_state === 'upcoming' ? `Your exam opens ${esc(scheduledTime(a.scheduled_at))} and closes ${esc(scheduledTime(a.expires_at))}. It cannot be opened early.`
+                : a.status === 'assigned' ? (a.scheduled_at ? `Your booked window is open until ${esc(scheduledTime(a.expires_at))}. Joining late does not extend it.` : 'Review the exam rules and device checks before you begin.')
               : a.status === 'in_progress' ? `Continue your saved exam. The two-hour window ends ${esc(fmtDateTime(a.expires_at))}; closing the browser does not pause it.`
                 : a.status === 'submitted' ? (a.exam_expired ? 'The two-hour exam window expired. Your saved answers are available for assessor review.' : 'Under assessor review. The report will appear here when scoring is complete.')
                   : 'Your assessment has been scored. Open the report for results and development guidance.'}</p>
           </div>
           <div class="candidate-assessment-action">
-            ${['assigned', 'in_progress'].includes(a.status) ? `<a class="btn" href="#/assessments/${a.id}/quiz">${a.status === 'in_progress' ? 'Continue secure exam' : 'Enter exam hall'} →</a>` : ''}
+            ${['assigned', 'in_progress'].includes(a.status) ? (['upcoming', 'cancelled', 'unavailable'].includes(a.access_state)
+              ? `<button class="btn" disabled>${a.access_state === 'cancelled' ? 'Booking cancelled' : a.access_state === 'unavailable' ? 'Contact administrator' : 'Not open yet'}</button>`
+              : `<a class="btn" href="#/assessments/${a.id}/quiz">${a.status === 'in_progress' ? 'Continue secure exam' : 'Enter exam hall'} →</a>`) : ''}
             ${a.status === 'submitted' ? `<span class="chip">No action needed</span>` : ''}
             ${['scored', 'validated'].includes(a.status) ? `<a class="btn" href="#/assessments/${a.id}/report">View report card</a>` : ''}
           </div>
@@ -66,9 +79,21 @@ export async function portalView(view) {
       <p class="small muted" data-mic-status role="status">Record a short sentence, then play it back to check your voice.</p>
       <audio data-mic-player controls hidden aria-label="Microphone test playback"></audio>
     </div>`;
-  wireMicrophoneCheck(view.querySelector('.journey-device-check'), {
-    onUnmount: (dispose) => document.addEventListener(VIEW_UNMOUNT_EVENT, dispose, { once: true }),
-  });
+  const ownerDocument = view.ownerDocument;
+  const dispose = wireMicrophoneCheck(view.querySelector('.journey-device-check'));
+  const cleanup = () => {
+    dispose(); ownerDocument.removeEventListener(VIEW_UNMOUNT_EVENT, cleanup); portalCleanup.delete(view);
+  };
+  portalCleanup.set(view, cleanup);
+  ownerDocument.addEventListener(VIEW_UNMOUNT_EVENT, cleanup, { once: true });
+  const refreshButton = view.querySelector('#refresh-exam-availability');
+  if (refreshButton) refreshButton.onclick = async () => {
+    if (refreshButton.disabled) return;
+    refreshButton.disabled = true;
+    try { await portalView(view, { refresh: true }); }
+    catch (err) { toast(err.message || 'Could not refresh exam availability. Please try again.', 'error'); }
+    finally { refreshButton.disabled = false; }
+  };
 }
 
 /* ================================ Secure exam ================================ */
@@ -96,12 +121,21 @@ export async function quizView(view, { id }) {
       view.innerHTML = emptyState('Assessment not found', 'Ask your administrator to allocate an assessment for you.');
       return;
     }
+    if (['upcoming', 'cancelled', 'unavailable'].includes(a.access_state)) {
+      document.body.classList.remove('exam-lock');
+      view.innerHTML = `<div class="card"><h1>${a.access_state === 'cancelled' ? 'Booking cancelled' : a.access_state === 'unavailable' ? 'Exam schedule unavailable' : 'Your exam is scheduled'}</h1>
+        <p>${a.access_state === 'cancelled' ? 'Contact your administrator to arrange another slot.' : a.access_state === 'unavailable' ? 'Contact your administrator to confirm the schedule before entering.' : `The exam opens ${esc(scheduledTime(a.scheduled_at))} and expires ${esc(scheduledTime(a.expires_at))}. You can only enter during this window.`}</p>
+        <a class="btn secondary" href="#/journey">Back to My Journey</a><button class="btn" id="check-booked-exam">Check availability</button></div>`;
+      view.querySelector('#check-booked-exam').onclick = () => quizView(view, { id });
+      return;
+    }
     renderExamGate(view, {
-      assessment: { role: { name: a.role_name || 'this role' } },
+      assessment: { role: { name: a.role_name || 'this role' }, scheduled_at: a.scheduled_at, expires_at: a.expires_at },
       exam: { total: a.question_count || 0 },
-    }, () => {
+    }, async () => {
       sessionStorage.setItem(gateKey, '1');
-      quizView(view, { id });
+      try { await quizView(view, { id }); }
+      catch (err) { sessionStorage.removeItem(gateKey); throw err; }
     });
     return;
   }
@@ -126,26 +160,27 @@ export async function quizView(view, { id }) {
   await runExamSession(view, id, d);
 }
 
-function renderExamGate(view, d, onStart) {
+function renderExamGate(view, d, onStart, entryError = null) {
   document.body.classList.add('exam-lock');
   const total = d.exam?.total || 0;
   view.innerHTML = `
     <div class="exam-hall">
       <div class="exam-seal card">
         <h1>Assessment rules</h1>
+        ${entryError ? `<p class="form-err" role="alert">${esc(entryError.message || 'Could not enter the exam.')} Retry entry promptly; the exam clock may already be running.</p>` : ''}
         <p class="muted">You are about to start a timed, proctored-style assessment for <b>${esc(d.assessment.role?.name || 'this role')}</b>. ${total} question${total === 1 ? '' : 's'} will be presented one at a time. You cannot return to a question once it has passed.</p>
         <ul class="exam-rules">
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
-          <li><b>Two-hour exam window.</b> It starts when you enter the exam hall and runs continuously, including when you close the browser or sign out. After two hours the exam closes and saved answers remain available for review.</li>
+          <li><b>Two-hour exam window.</b> ${d.assessment.scheduled_at ? `Your booked window is ${esc(scheduledTime(d.assessment.scheduled_at))} to ${esc(scheduledTime(d.assessment.expires_at))}. Joining late does not extend the closing time.` : 'It starts when you enter the exam hall.'} It runs continuously, including when you close the browser or sign out. At expiry the exam closes and saved answers remain available for review.</li>
           <li><b>Multiple-choice &amp; scale:</b> 30 seconds to answer. Multi-select items score only on an exact match — any incorrect choice scores the question at zero, with no partial credit.</li>
           <li><b>Open / scenario:</b> 30 seconds to review the scenario, then 60 seconds to <b>record your answer with the microphone</b>. Every open question is answered out loud; the text box beside the recorder is optional space for supporting notes. Speech is transcribed when the browser allows it.</li>
           <li><b>Microphone.</b> An open question cannot be locked without a recording, so allow the browser's microphone prompt. Granting access on the review screen keeps the dialog from eating your answer time.</li>
           <li><b>Integrity.</b> Copying the question is blocked. Switching tabs, pasting, or leaving fullscreen is logged.</li>
           <li><b>Time expiry</b> auto-submits the current item (blank if unanswered) and advances.</li>
         </ul>
-        <label class="check exam-ack"><input type="checkbox" id="exam-ack"/> <span>I understand these conditions and will complete the exam independently.</span></label>
+        <label class="check exam-ack"><input type="checkbox" id="exam-ack" ${entryError ? 'checked' : ''}/> <span>I understand these conditions and will complete the exam independently.</span></label>
         <div class="row" style="margin-top:18px">
-          <button class="btn" id="exam-enter" disabled>Enter exam hall →</button>
+          <button class="btn" id="exam-enter" ${entryError ? '' : 'disabled'}>${entryError ? 'Retry exam entry' : 'Enter exam hall →'}</button>
         </div>
       </div>
     </div>`;
@@ -153,8 +188,11 @@ function renderExamGate(view, d, onStart) {
   const btn = view.querySelector('#exam-enter');
   ack.onchange = () => { btn.disabled = !ack.checked; };
   btn.onclick = async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
     try { await document.documentElement.requestFullscreen?.(); } catch { /* optional */ }
-    onStart();
+    try { await onStart(); }
+    catch (err) { if (err?.status !== 401) renderExamGate(view, d, onStart, err); }
   };
 }
 
@@ -712,7 +750,7 @@ async function runExamSession(view, id, payload) {
         <div class="mic-check-row">
           <button type="button" class="btn secondary sm" id="mic-check" ${micCapable ? '' : 'disabled'}>Check microphone access</button>
           <span class="small muted" id="mic-check-state">${micCapable
-            ? 'Allow the browser prompt now so no dialog interrupts your 2-minute answer window.'
+            ? 'Allow the browser prompt now so no dialog interrupts your 60-second answer window.'
             : 'This browser cannot capture audio (no microphone support). Tell your administrator — a typed answer will be accepted and flagged for the assessor.'}</span>
         </div>
       </div>`;
@@ -819,6 +857,7 @@ async function runExamSession(view, id, payload) {
             <span class="small muted rec-state" id="rec-state" role="status">Required · press record and speak your answer</span>
           </div>` : ''}
           ${needsMic && !micCapable ? `<div class="small exam-mic-note warn">This browser cannot capture microphone audio, so a recording cannot be required here. Type your answer instead — it is stored and flagged for the assessor as “no recording”.</div>` : ''}
+          ${needsMic ? '<p class="small muted" id="caption-status" role="status"></p>' : ''}
           <div class="small muted transcript-block" id="transcript-preview" ${transcript ? '' : 'hidden'}></div>
         </div>`;
       const ta = body.querySelector('#exam-ta');
@@ -881,6 +920,23 @@ async function runExamSession(view, id, payload) {
       syncNext();
 
       const SpeechRec = needsMic ? speechRecognitionCtor(window) : null;
+      const captionStatus = body.querySelector('#caption-status');
+      let captionFailure = '';
+      const showCaptionFailure = (code) => {
+        const reasons = {
+          network: 'the browser speech service could not be reached. Check your connection or try Chrome or Edge.',
+          'not-allowed': 'speech recognition permission was denied. Check your browser site settings.',
+          'service-not-allowed': 'the browser speech service is disabled. Try Chrome or Edge.',
+          'language-not-supported': 'the browser speech service does not support the selected language.',
+          'no-speech': 'no speech was detected. Check the selected microphone and speak clearly.',
+          'audio-capture': 'the speech service could not access the microphone.',
+        };
+        captionFailure = code || 'unknown';
+        if (captionStatus) captionStatus.textContent = `Live captions unavailable: ${reasons[code] || 'the browser speech service did not start.'} Audio is recorded separately.`;
+      };
+      if (captionStatus) captionStatus.textContent = SpeechRec
+        ? 'Live captions start with recording and require the browser speech service.'
+        : 'Live captions are not supported in this browser. Use Chrome or Edge for captions; audio recording is still available.';
       const releaseMic = () => {
         rec.stream?.getTracks().forEach((t) => t.stop());
         rec.stream = null;
@@ -889,7 +945,9 @@ async function runExamSession(view, id, payload) {
       };
       stopLiveCapture = () => {
         rec.cancelled = true;
+        if (rec.recognition) rec.recognition.onresult = rec.recognition.onerror = rec.recognition.onend = null;
         try { rec.recognition?.stop(); } catch { /* optional transcription */ }
+        rec.recognition = null;
         try { if (rec.recorder?.state !== 'inactive') rec.recorder?.stop(); } catch { /* leaving the screen */ }
         releaseMic();
       };
@@ -902,11 +960,18 @@ async function runExamSession(view, id, payload) {
       let lockingCapture = false;
       const stopCapture = () => stopping || (stopping = (async () => {
         rec.cancelled = true;
-        try { rec.recognition?.stop(); } catch { /* */ }
-        rec.recognition = null;
-        await finishAudioRecorder(rec.recorder);
-        rec.recorder = null;
-        releaseMic();
+        const recognition = rec.recognition;
+        try {
+          await Promise.all([
+            rec.speechEnded ? Promise.resolve() : finishSpeechRecognition(recognition),
+            finishAudioRecorder(rec.recorder),
+          ]);
+        } finally {
+          if (recognition) recognition.onresult = recognition.onerror = recognition.onend = null;
+          rec.recognition = null;
+          rec.recorder = null;
+          releaseMic();
+        }
         if (rec.chunks?.length) {
           const blob = new Blob(rec.chunks, { type: rec.mime || 'audio/webm' });
           const stored = await blobToStoredAudio(blob, rec.mime || 'audio/webm');
@@ -918,6 +983,8 @@ async function runExamSession(view, id, payload) {
             toast('The recording exceeded the storage limit and was not saved.', 'error', 4200);
           }
         }
+        if (SpeechRec && !transcript && !captionFailure && captionStatus)
+          captionStatus.textContent = 'No caption text was returned. The audio recording is saved separately; captions are optional.';
       })().finally(() => { stopping = null; }));
 
       if (needsMic && recBtn && recLabel) {
@@ -933,7 +1000,7 @@ async function runExamSession(view, id, payload) {
               recBtn.classList.remove('recording');
               recBtn.setAttribute('aria-pressed', 'false');
               setRecState(hasSpoken()
-                ? 'Audio saved · you can continue'
+                ? 'Audio captured · you can continue'
                 : 'Recording stopped with nothing captured — press record and speak again.', hasSpoken() ? 'ok' : 'warn');
               syncNext();
               // The clip is the answer: it goes to the server now, not only
@@ -942,6 +1009,7 @@ async function runExamSession(view, id, payload) {
               return;
             }
             rec.cancelled = false;
+            captionFailure = '';
             recLabel.textContent = 'Stop recording';
             recBtn.classList.add('recording');
             recBtn.setAttribute('aria-pressed', 'true');
@@ -991,7 +1059,9 @@ async function runExamSession(view, id, payload) {
                 recg.interimResults = true;
                 recg.lang = 'en-IN';
                 recg.onresult = (ev) => {
+                  if (!stillHere() || rec.recognition !== recg) return;
                   transcript = transcriptFromSpeechEvent(ev);
+                  if (captionStatus) captionStatus.textContent = 'Live captions received.';
                   preview.hidden = false;
                   preview.textContent = `Transcript: ${transcript}`;
                   // Speech must not silently edit the candidate's textarea. The
@@ -999,14 +1069,29 @@ async function runExamSession(view, id, payload) {
                   // edit it deliberately.
                   syncNext();
                 };
-                recg.onerror = () => { if (rec.startedAt) setRecState('Recording audio · live transcription unavailable', 'muted'); };
-                recg.start();
+                recg.onerror = (ev) => {
+                  if (!stillHere() || rec.recognition !== recg) return;
+                  showCaptionFailure(ev?.error);
+                  if (rec.startedAt && !rec.cancelled) setRecState('Recording audio · live transcription unavailable', 'muted');
+                };
+                recg.onend = () => {
+                  if (rec.recognition !== recg) return;
+                  rec.speechEnded = true;
+                  if (stillHere() && rec.startedAt && !rec.cancelled) {
+                    setRecState('Recording audio · live transcription has stopped', 'muted');
+                    if (!captionFailure && captionStatus) captionStatus.textContent = 'Live captions have stopped. Your audio recording continues.';
+                  }
+                };
+                rec.speechEnded = false;
                 rec.recognition = recg;
+                if (captionStatus) captionStatus.textContent = 'Starting live captions…';
+                recg.start();
               } else {
                 setRecState('Recording audio · live transcription is not supported in this browser', 'ok');
               }
             } catch {
               rec.recognition = null;
+              showCaptionFailure('start-failed');
               setRecState('Recording audio · live transcription unavailable', 'ok');
             }
           } catch (err) {

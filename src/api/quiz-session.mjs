@@ -24,7 +24,14 @@ export function sortedQuestions(snap) {
   const rows = dedupeQuestions(snap?.questions || []);
   // Restore the spoken-answer contract before partitioning, so a frozen row
   // that lost its flags still pins first and demands a recorded answer.
-  const healed = applySpokenContract(rows);
+  const healed = applySpokenContract(rows).map((q) => {
+    if (!isOpenQuestion(q) || typeof q.prompt !== 'string') return q;
+    // Old authored instructions still name the previous answer budget. Only
+    // adapt that directive; scenario facts and the saved paper stay intact.
+    const prompt = q.prompt.replace(/(^|[.!?]\s+)(in two minutes)(?=,)/gi,
+      (_match, prefix, phrase) => `${prefix}${phrase[0] === 'I' ? 'In' : 'in'} ${EXAM_OPEN_ANSWER_SECONDS} seconds`);
+    return prompt === q.prompt ? q : { ...q, prompt };
+  });
   // A paper allocated since shuffling was introduced records the position each
   // question was drawn into, so the candidate's cursor, the assessor's review
   // list and the scorer all read the same mixed objective/open order back.

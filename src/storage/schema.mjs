@@ -7,6 +7,7 @@ export const TABLES = {
   users:        { json: ['creation_request', 'mfa_json'], flags: ['active'] },
   sessions:     { json: [], flags: [] },
   candidates:   { json: [], flags: ['deleting'] },
+  test_bookings: { json: ['provisioning_json'], flags: [], overflow: { provisioning_json: 3 } },
   roles:        { json: [], flags: ['active'] },
   competencies: { json: [], flags: ['active'] },
   questions:    { json: ['options', 'correct_option_ids'], flags: ['active', 'pin_first', 'audio_required'] },

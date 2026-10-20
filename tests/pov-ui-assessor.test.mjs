@@ -120,6 +120,7 @@ test('scoring screen: rubric on show, out-of-range scores refused locally, valid
     const a = await w.store.get('assessments', id);
     assert.equal(a.status, 'scored', 'the server finalized the paper');
     assert.ok(spa.view.querySelector('.report-legend'), 'the report card is rendered in place');
+    assert.ok(spa.view.querySelector(`a[href="#/assessments/${id}/answers"]`), 'finalizing keeps immediate access to the answer sheet and recordings');
     assert.match(spa.text(), new RegExp(`${a.overall_pct}%`));
     assert.ok(toasts(spa.document).some((m) => /Report generated:/.test(m)));
   } finally { spa.teardown(); }

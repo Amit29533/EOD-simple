@@ -67,6 +67,7 @@ export async function createApp(store) {
       }
       return result;
     } catch (err) {
+      if (err?.code === 'EXAM_ACCESS') return { status: 409, body: { error: err.message } };
       // A duplicate-id insert is a lost race between two writers (two
       // instances of a serverless deployment, where the per-process lock
       // cannot reach), not a server fault: tell the caller to retry.

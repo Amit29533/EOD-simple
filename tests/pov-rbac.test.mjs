@@ -1,6 +1,6 @@
 /**
  * Route guard matrix: every route the API registers, called as each kind of
- * caller (signed out, admin, assessor, candidate).
+ * caller (signed out, admin, assessor, candidate, validator, trainer).
  *
  * The table is read from the live router (registerRoutes), so a route added
  * later is covered automatically, and the policy test fails if it is added
@@ -14,7 +14,8 @@ import { registerRoutes } from '../src/api/router.mjs';
 import { makeWorld } from './helpers/world.mjs';
 
 const ROUTES = registerRoutes();
-const PUBLIC = ['POST /auth/login', 'POST /auth/recover', 'GET /meta/bootstrap', 'GET /health'];
+const PUBLIC = ['POST /auth/login', 'POST /auth/recover', 'GET /meta/bootstrap', 'GET /health',
+  'POST /public/test-bookings/lookup', 'POST /public/test-bookings'];
 const ANY_SIGNED_IN = ['POST /auth/logout', 'POST /auth/password', 'GET /auth/me', 'GET /auth/security', 'POST /auth/mfa/setup', 'POST /auth/mfa/enable', 'POST /auth/mfa/disable'];
 const sig = (r) => `${r.method} ${r.pattern}`;
 const concrete = (pattern) => pattern.replace(/:[a-z_]+/g, 'rec_doesnotexist0000');
@@ -40,6 +41,12 @@ test('matrix: signed-out callers get 401 and wrong roles get 403 on every guarde
   const cand = await w.candidateUser('matrix.cand');
   const assessor = await w.assessorUser('matrix.assessor');
   const tokens = { admin: w.tok, assessor: assessor.token, candidate: cand.token };
+  for (const role of ['validator', 'trainer']) {
+    const username = `matrix.${role}`;
+    assert.equal((await w.call('POST', '/admin/users', { token: w.tok,
+      body: { username, name: `Matrix ${role}`, role, password: 'User-pass-123' } })).status, 201);
+    tokens[role] = await w.login(username);
+  }
 
   let checked = 0;
   for (const r of ROUTES) {
@@ -59,7 +66,7 @@ test('matrix: signed-out callers get 401 and wrong roles get 403 on every guarde
       checked += 1;
     }
   }
-  assert.ok(checked >= 180, `checked ${checked} route x role pairs`);
+  assert.ok(checked >= 350, `checked ${checked} route x role pairs`);
   // Nothing above changed who is signed in.
   for (const token of Object.values(tokens)) assert.equal((await w.call('GET', '/auth/me', { token })).status, 200);
 });

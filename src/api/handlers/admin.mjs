@@ -1,4 +1,5 @@
-import { purgePreview, purgePerson } from '../person-purge.mjs';
+import { purgePreview, purgePerson, deleteUnfinalizedCandidate } from '../person-purge.mjs';
+import { listBookings } from './bookings.mjs';
 import { newToken } from '../../core/ids.mjs';
 import { expireExam } from '../exam-expiry.mjs';
 import { creationRequest, sameCreation, creationId } from '../creation-request.mjs';
@@ -313,9 +314,14 @@ export function adminHandlers(route) {
 
   // ------------------------------------------------ dashboard
   route('GET', '/admin/dashboard', A, async ({ store }) => {
-    const [candidates, assessments, roles] = await Promise.all([
+    // Repair interrupted booking-to-profile creation before counting candidates.
+    const bookings = await listBookings(store);
+    const upcoming = bookings.filter((b) => b.status === 'booked' && !['submitted', 'scored', 'validated', 'cancelled', 'unavailable'].includes(b.assessment_status)
+      && Date.parse(b.scheduled_end_at || b.scheduled_at) > Date.now());
+    const [candidates, listedAssessments, roles] = await Promise.all([
       store.list('candidates'), store.list('assessments', {}, { detached: false }), store.list('roles'),
     ]);
+    const assessments = await Promise.all(listedAssessments.map((a) => expireExam(store, a)));
     // Opportunistic retention cleanup from the one screen an admin opens first
     // (see src/api/retention-service.mjs): the rows are already in hand, so
     // this costs no extra listing and is never awaited.
@@ -339,10 +345,12 @@ export function adminHandlers(route) {
         awaiting_scoring: byStatus.submitted || 0,
         roles: roles.length,
         avg_score: avg,
+        upcoming_tests: upcoming.length,
       },
       by_stage: byStage,
       by_status: byStatus,
       recent_activity: auditRows,
+      upcoming_tests: upcoming.slice(0, 10),
     });
   });
 
@@ -834,46 +842,7 @@ export function adminHandlers(route) {
   //   candidate -> open (unscored) assessments + their draft responses
   //             -> linked portal user(s) + their live sessions
   // Candidates with FINALIZED (scored/validated) reports are protected.
-  route('DELETE', '/admin/candidates/:id', A, async ({ store, params, auth, body }) => {
-    const c = await store.get('candidates', params.id);
-    if (!c) return notFound('Candidate not found.');
-    if (!body?.password || typeof body.password !== 'string')
-      return forbidden('Admin password is required to delete a candidate.');
-    if (!(await verifyPasswordAsync(body.password, auth.user.password_hash)))
-      return forbidden('Incorrect admin password — deletion cancelled.');
-
-    const assessments = await store.list('assessments', { candidate_id: params.id }, { detached: false });
-    if (assessments.some((a) => ['scored', 'validated'].includes(a.status)))
-      return conflict('This candidate has finalized assessment reports and cannot be deleted.');
-
-    // The portal login goes first so an exam the candidate has open cannot
-    // keep writing (every candidate route re-resolves the session), then each
-    // paper is removed under its own assessment lock so an in-flight /next or
-    // autosave cannot interleave with the cascade and leave an orphan row.
-    const users = await store.list('users', { candidate_id: params.id });
-    for (const u of users) {
-      await bulkRemove(store, 'sessions', (await store.list('sessions', { user_id: u.id })).map((s) => s.id));
-    }
-    await bulkRemove(store, 'users', users.map((u) => u.id));
-    let removedAssessments = 0;
-    for (const a of assessments) {
-      await withLock(`assessment:${a.id}`, async () => {
-        await bulkRemove(store, 'responses', (await store.list('responses', { assessment_id: a.id })).map((r) => r.id));
-        await bulkRemove(store, 'recordings', (await store.list('recordings', { assessment_id: a.id })).map((r) => r.id));
-        await store.remove('assessments', a.id);
-      });
-      removedAssessments += 1;
-    }
-    await store.remove('candidates', params.id);
-
-    const cascade = [
-      removedAssessments ? `${removedAssessments} open assessment(s)` : '',
-      users.length ? `portal user(s) ${users.map((u) => `"${u.username}"`).join(', ')}` : '',
-    ].filter(Boolean).join(' and ');
-    await audit(store, auth.user, 'candidate_deleted', 'candidates', params.id,
-      `Candidate "${c.name}" deleted${cascade ? ` (also removed ${cascade})` : ''}`);
-    return ok({ ok: true, removed_users: users.length, removed_assessments: removedAssessments });
-  });
+  route('DELETE', '/admin/candidates/:id', A, deleteUnfinalizedCandidate);
 
   // ------------------------------------------------ users & access
   route('GET', '/admin/users', A, async ({ store, query }) => {
@@ -2007,8 +1976,17 @@ export function adminHandlers(route) {
   route('DELETE', '/admin/assessments/:id', A, lockedAssessment(async ({ store, params, auth }) => {
     const a = await store.get('assessments', params.id);
     if (!a) return notFound('Assessment not found.');
-    if (!['assigned', 'in_progress'].includes(a.status))
+    if (!['assigned', 'in_progress', 'cancelled'].includes(a.status))
       return conflict('Only assessments that have not been submitted can be deleted.');
+    if (a.booking_id) {
+      const decide = (booking) => booking && ['pending', 'booked'].includes(booking.status)
+        ? { status: 'cancelled', provisioning_json: null } : undefined;
+      if (typeof store.changeRow === 'function') await store.changeRow('test_bookings', { id: a.booking_id }, decide);
+      else {
+        const patch = decide(await store.get('test_bookings', a.booking_id));
+        if (patch) await store.update('test_bookings', a.booking_id, patch);
+      }
+    }
     await bulkRemove(store, 'responses', (await store.list('responses', { assessment_id: params.id })).map((r) => r.id));
     await bulkRemove(store, 'recordings', (await store.list('recordings', { assessment_id: params.id })).map((r) => r.id));
     await store.remove('assessments', params.id);

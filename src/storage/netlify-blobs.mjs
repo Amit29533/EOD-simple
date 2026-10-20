@@ -1,4 +1,5 @@
 import { newId } from '../core/ids.mjs';
+import { deploymentStorage } from './deploy-config.mjs';
 import { AUDIT_TABLE, trimAuditRows } from './audit-rotation.mjs';
 import { createRowTable, isRowTable, createShardTable, isShardTable, SHARD_TABLES, createDetacher } from './row-tables.mjs';
 
@@ -7,14 +8,13 @@ import { createRowTable, isRowTable, createShardTable, isShardTable, SHARD_TABLE
  * One blob per table. Suitable for the MVP scale; swap STORAGE=airtable or a
  * future SQL adapter as you grow - the rest of the app does not change.
  */
-export async function createBlobsStore({ blobsModule = null, requireConsistency = process.env.BLOBS_REQUIRE_CONSISTENCY === 'true' || process.env.CONTEXT === 'production' } = {}) {
+export async function createBlobsStore({ blobsModule = null, requireConsistency = deploymentStorage().requireConsistency } = {}) {
   let blobs = blobsModule;
   if (!blobs) {
     try { blobs = await import('@netlify/blobs'); }
     catch { throw new Error('STORAGE=blobs requires the @netlify/blobs package inside the Netlify runtime.'); }
   }
-  const storeName = process.env.BLOBS_STORE_NAME || (['deploy-preview', 'branch-deploy'].includes(process.env.CONTEXT)
-    ? `ecod-preview-${String(process.env.REVIEW_ID || process.env.BRANCH || 'default').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80)}` : 'ecod');
+  const storeName = deploymentStorage().storeName;
   const consistencyError = () => Object.assign(new Error('Production storage requires strong reads and conditional writes.'), { code: 'STORE_CONFLICT' });
   const store = blobs.getStore(
   process.env.NETLIFY_SITE_ID && process.env.NETLIFY_AUTH_TOKEN
@@ -38,7 +38,7 @@ export async function createBlobsStore({ blobsModule = null, requireConsistency 
    * multi-instance deployments converge within a few seconds.
    */
   const CACHE_TTL_MS = 5000;
-  const UNCACHED = new Set(['sessions', 'users', 'candidates', 'assessments', 'responses']);
+  const UNCACHED = new Set(['sessions', 'users', 'candidates', 'assessments', 'responses', 'test_bookings']);
 
   // Per-table write lock to avoid concurrent read-modify-write races
   const locks = new Map();
@@ -310,11 +310,12 @@ export async function createBlobsStore({ blobsModule = null, requireConsistency 
      */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (!['assessments', 'users', 'candidates'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users', 'candidates', 'test_bookings'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return mutate(t, async (rows) => {
         const prior = rowOf(rows, id);
-        const patch = decide(prior ? { ...prior } : null);
+        const patch = decide(prior ? { ...prior } : null,
+          t === 'test_bookings' ? Object.values(rows).map((row) => ({ ...row })) : undefined);
         if (!prior || patch === undefined) {
           return { result: { row: prior ? { ...prior } : null, changed: false }, write: false };
         }

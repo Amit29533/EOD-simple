@@ -20,8 +20,16 @@ export function wireMicrophoneCheck(root, { win = window, onUnmount } = {}) {
   const release = () => { stream?.getTracks().forEach((t) => t.stop()); stream = null; };
   const finish = () => {
     clearTimeout(timer);
-    if (recorder?.state === 'recording') recorder.stop();
-    release();
+    try {
+      if (recorder?.state === 'recording') recorder.stop();
+    } catch {
+      if (!disposed) {
+        setResult('failure', 'Microphone recording failed');
+        status.textContent = 'Could not finish recording. Check your input device and test again.';
+        start.disabled = false;
+        stop.disabled = true;
+      }
+    } finally { release(); }
   };
   const dispose = () => {
     if (disposed) return;

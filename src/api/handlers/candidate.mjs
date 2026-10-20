@@ -11,7 +11,7 @@ import {
 } from '../../core/spoken-answer.mjs';
 import { withLock } from '../mutex.mjs';
 import { paperFacts, paperSummary } from '../assessment-service.mjs';
-import { examDeadline, examHasExpired, expireExam } from '../exam-expiry.mjs';
+import { examDeadline, examHasExpired, expireExam, examScheduledStart, assertExamAccess } from '../exam-expiry.mjs';
 import { createHash } from 'node:crypto';
 
 const R = ['candidate'];
@@ -35,7 +35,9 @@ async function myCandidate(store, user) {
 }
 async function ownAssessment(store, user, id) {
   const a = await store.get('assessments', id);
-  return a && a.candidate_id === user.candidate_id ? expireExam(store, a) : null;
+  if (!a || a.candidate_id !== user.candidate_id) return null;
+  await assertExamAccess(store, a);
+  return expireExam(store, a);
 }
 
 function textValue(value) {
@@ -87,6 +89,7 @@ function examScreen(a, questions, quiz, responses) {
       id: a.id, status: a.status, started_at: a.started_at, submitted_at: a.submitted_at,
       expires_at: examDeadline(a) ? new Date(examDeadline(a)).toISOString() : null,
       exam_expired: Boolean(quiz.exam_expired),
+      scheduled_at: a.scheduled_at || null,
       role: snap.role ? { name: snap.role.name, description: snap.role.description } : null,
     },
     exam: {
@@ -318,6 +321,8 @@ export function candidateHandlers(route) {
     const rows = await Promise.all(listed.map((a) => expireExam(store, a)));
     rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const facts = await paperFacts(store, rows);
+    const bookingRows = rows.some((a) => a.booking_id) ? await store.list('test_bookings') : [];
+    const bookingById = new Map(bookingRows.map((b) => [b.id, b]));
     return ok({
       candidate: { id: candidate.id, name: candidate.name, stage: candidate.stage },
       assessments: rows.map((a, i) => ({
@@ -325,6 +330,11 @@ export function candidateHandlers(route) {
         submitted_at: a.submitted_at, scored_at: a.scored_at,
         expires_at: examDeadline(a) ? new Date(examDeadline(a)).toISOString() : null,
         exam_expired: Boolean(a.quiz_state?.exam_expired),
+        scheduled_at: a.scheduled_at || null,
+        access_state: a.booking_id && bookingById.get(a.booking_id)?.status !== 'booked' ? 'cancelled'
+          : a.booking_id && examScheduledStart(a) === null ? 'unavailable'
+          : examScheduledStart(a) !== null && Date.now() < examScheduledStart(a) ? 'upcoming'
+            : a.quiz_state?.exam_expired ? 'expired' : 'available',
         overall_pct: ['scored', 'validated'].includes(a.status) ? a.overall_pct : null,
         readiness_label: ['scored', 'validated'].includes(a.status) ? a.readiness_label : null,
         readiness_key: ['scored', 'validated'].includes(a.status) ? a.readiness_key : null,
@@ -594,7 +604,7 @@ export function candidateHandlers(route) {
     // Review timer expired: auto-advance to answer phase (soft expiry returns phase_advanced)
     if (isOpenQuestion(q) && (quiz.phase || 'answer') === 'review' && timeExpired) {
       const phased = await changeAssessment(store, a.id, (current) => {
-        if (!current || !['assigned', 'in_progress'].includes(current.status)) return undefined;
+        if (!current || !['assigned', 'in_progress'].includes(current.status) || examHasExpired(current)) return undefined;
         const latest = ensureQuizState(current, questions);
         const latestQ = questions[latest.index];
         // A delayed timer request for Q1 must not switch Q2 to its answer
@@ -613,6 +623,10 @@ export function candidateHandlers(route) {
         return { quiz_state: { ...state, phase: 'answer', question_started_at: new Date().toISOString() } };
       });
       if (!phased.row) return notFound('Assessment not found.');
+      if (examHasExpired(phased.row)) {
+        await expireExam(store, phased.row);
+        return conflict('The two-hour exam window has ended.');
+      }
       if (!phased.changed) {
         const latest = ensureQuizState(phased.row, questions);
         return ok({ complete: latest.index >= questions.length, index: latest.index,

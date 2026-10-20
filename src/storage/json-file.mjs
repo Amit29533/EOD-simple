@@ -7,30 +7,27 @@ import { createRowTable, isRowTable, createShardTable, isShardTable, SHARD_TABLE
 
 /** Local JSON-file store. Used for development, demos and tests. Not for Netlify runtime. */
 export function createJsonStore(file = 'data/ecod.json') {
+  const isMap = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const corrupt = (target, cause) => Object.assign(new Error(`Unreadable or malformed JSON store: ${target}`, { cause }), { code: 'STORE_CORRUPT' });
+  const decode = (raw) => {
+    const parsed = JSON.parse(raw);
+    if (!isMap(parsed)) throw new TypeError('The database must be an object.');
+    const tables = Object.hasOwn(parsed, 'tables') ? parsed.tables : parsed;
+    if (!isMap(tables) || Object.values(tables).some((rows) => !isMap(rows) || Object.values(rows).some((row) => !isMap(row))))
+      throw new TypeError('Tables and their records must be objects.');
+    return { tables };
+  };
   let db = { tables: {} };
   if (fs.existsSync(file)) {
     try {
-      const raw = fs.readFileSync(file, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && parsed.tables && typeof parsed.tables === 'object') {
-        db = { tables: parsed.tables };
-      } else if (parsed && typeof parsed === 'object') {
-        // Legacy shape guard: if file contains only tables directly, wrap it
-        db = { tables: parsed.tables || parsed };
-      }
+      // Accept both the revisioned store and the legacy direct table map.
+      db = decode(fs.readFileSync(file, 'utf8'));
     } catch (err) {
-      // Never silently wipe data on corruption: backup the bad file and start fresh
-      try {
-        const backup = `${file}.corrupt-${Date.now()}.bak`;
-        fs.copyFileSync(file, backup);
-        console.error(`[storage] JSON store corrupted, backed up to ${backup}:`, err.message);
-      } catch {
-        console.error('[storage] JSON store corrupted and backup failed:', err.message);
-      }
-      db = { tables: {} };
+      // Starting empty would let the next login/seed replace the original.
+      // Preserve it and require recovery instead of inventing an empty store.
+      throw corrupt(file, err);
     }
   }
-  if (!db.tables || typeof db.tables !== 'object') db.tables = {};
 
   /**
    * Multi-writer guard. The store keeps the whole database in memory and
@@ -70,12 +67,9 @@ export function createJsonStore(file = 'data/ecod.json') {
   };
   const reload = () => {
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (parsed && typeof parsed === 'object' && parsed.tables && typeof parsed.tables === 'object') {
-        db = { tables: parsed.tables };
-        seen = fingerprint();
-        return true;
-      }
+      db = decode(fs.readFileSync(file, 'utf8'));
+      seen = fingerprint();
+      return true;
     } catch {
       // Half-written or unreadable: keep serving memory; persist() refuses
       // until the file settles into something readable.
@@ -187,10 +181,12 @@ export function createJsonStore(file = 'data/ecod.json') {
   const rowIo = {
     async read(key) {
       try {
-        return JSON.parse(fs.readFileSync(rowPath(key), 'utf8'));
+        const value = JSON.parse(fs.readFileSync(rowPath(key), 'utf8'));
+        if (!isMap(value)) throw new TypeError('Stored objects must be JSON objects.');
+        return value;
       } catch (err) {
-        if (err?.code !== 'ENOENT') console.error(`[storage] unreadable row file ${rowPath(key)}: ${err.message}`);
-        return null;
+        if (err?.code === 'ENOENT') return null;
+        throw corrupt(rowPath(key), err);
       }
     },
     /** No versions on a file store: `etag` is accepted and ignored (one writer per store). */
@@ -221,7 +217,8 @@ export function createJsonStore(file = 'data/ecod.json') {
       const out = [];
       const walk = (dir, rel) => {
         let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+        catch (err) { if (err?.code === 'ENOENT') return; throw err; }
         for (const e of entries) {
           if (e.isDirectory()) walk(path.join(dir, e.name), `${rel}${e.name}/`);
           else if (e.isFile() && e.name.endsWith('.json')) out.push(`${rel}${e.name.slice(0, -5)}`);
@@ -274,11 +271,12 @@ export function createJsonStore(file = 'data/ecod.json') {
     /** Conditional change of a response shard or the assessment cursor. */
     changeRow(t, data, decide) {
       if (isShardTable(t)) return shardTable(t).change(data, decide);
-      if (!['assessments', 'users', 'candidates'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
+      if (!['assessments', 'users', 'candidates', 'test_bookings'].includes(t)) throw new Error(`Table "${t}" does not support changeRow`);
       const id = data?.id;
       return withLock(async () => {
         const prior = rowOf(table(t), id);
-        const patch = decide(prior ? { ...prior } : null);
+        const patch = decide(prior ? { ...prior } : null,
+          t === 'test_bookings' ? Object.values(table(t)).map((row) => ({ ...row })) : undefined);
         if (!prior || patch === undefined)
           return { row: prior ? { ...prior } : null, changed: false };
         if (!patch || typeof patch !== 'object' || Array.isArray(patch))

@@ -245,11 +245,13 @@ async function serveStatic(req, res, url) {
     }
     const ext = path.extname(filePath).toLowerCase();
     const isHtml = ext === '.html';
+    const codeHeaders = ['.js', '.mjs', '.css'].includes(ext) ? { 'cache-control': 'no-cache, must-revalidate' } : {};
     const etag = stat ? `W/"${Math.floor(stat.mtimeMs).toString(16)}-${stat.size.toString(16)}"` : null;
     if (etag && req.headers['if-none-match'] === etag) {
       const headers = {
         etag,
         ...securityHeaders(false, isHtml),
+        ...codeHeaders,
       };
       send(req, res, 304, null, headers);
       return;
@@ -257,6 +259,7 @@ async function serveStatic(req, res, url) {
     const data = await fsp.readFile(filePath);
     const extraHeaders = {
       'content-type': MIME[ext] || 'application/octet-stream',
+      ...codeHeaders,
     };
     if (etag) extraHeaders.etag = etag;
     send(req, res, 200, data, extraHeaders);
