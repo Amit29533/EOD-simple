@@ -121,6 +121,26 @@ async function loadAssessors() {
   return users.filter((u) => u.role === 'assessor' && u.active !== false);
 }
 
+function trackAssessorLabel(role) {
+  if (!role.default_assessor_id) return '<span class="muted">Not set</span>';
+  const name = esc(role.default_assessor_name || 'Unavailable assessor');
+  return role.default_assessor_active ? name : `${name} ${badge('Unavailable — choose another', 'amber')}`;
+}
+
+function trackAssessorField(assessors, role = {}) {
+  return {
+    name: 'default_assessor_id', label: 'Default assessor', type: 'select', allowEmpty: false,
+    options: [
+      { value: '', label: 'No default — assign manually' },
+      ...assessors.map((u) => ({ value: u.id, label: u.name })),
+      ...(role.default_assessor_id && !assessors.some((u) => u.id === role.default_assessor_id)
+        ? [{ value: role.default_assessor_id, label: `${role.default_assessor_name || 'Current assessor'} (unavailable)` }] : []),
+    ],
+    help: 'Receives new booking, candidate-user and CSV auto allocations when no active assessor was selected for the candidate. Existing assessments keep their assessor.'
+      + (assessors.length ? '' : ' Create an assessor in Users & Access to choose one here.'),
+  };
+}
+
 export async function candidatesView(view) {
   view.innerHTML = loading();
   const [candidates, { roles }, assessors] = await Promise.all([apiAll('/admin/candidates', 'candidates'), api('/admin/roles'), loadAssessors()]);
@@ -861,10 +881,11 @@ export async function rolesView(view) {
     <div class="card flat info-strip"><span class="info-strip-icon">✦</span><span>Assessment tracks are configuration, not code. Change the framework here and new assessments use it automatically.</span></div>
     <div class="card table-card">
       ${roles.length ? dataTable([
-        { label: 'Role', render: (r) => `<a href="#/roles/${r.id}"><b>${esc(r.name)}</b></a><div class="small muted">${esc(r.key)} · ${esc(r.technology)}</div>` },
+        { label: 'Role', cls: 'track-name-cell', render: (r) => `<a href="#/roles/${r.id}"><b>${esc(r.name)}</b></a><div class="small muted">${esc(r.key)} · ${esc(r.technology)}</div>` },
         { label: 'Competencies', render: (r) => esc(r.competency_count) },
         { label: 'Questions', render: (r) => esc(r.question_count) },
         { label: 'Auto allocation', render: (r) => `${esc(r.default_question_count)} questions` },
+        { label: 'Default assessor', render: trackAssessorLabel },
         { label: 'Assessments', render: (r) => esc(r.assessment_count) },
         { label: 'Status', render: (r) => r.active !== false ? badge('Active', 'green') : badge('Inactive', 'grey') },
         { label: '', cls: 'actions', render: (r) => `<a class="btn ghost sm" href="#/roles/${r.id}">Configure</a>
@@ -900,12 +921,15 @@ export async function rolesView(view) {
     };
   }
   view.querySelector('#add-role').onclick = async () => {
+    const assessors = await attempt(loadAssessors);
+    if (!assessors) return;
     const saved = await formModal({
       title: 'New assessment track',
       fields: [
         { name: 'name', label: 'Role name', required: true, placeholder: 'e.g. Resident Solutions Architect (RSA)' },
         { name: 'key', label: 'Key (slug)', required: true, placeholder: 'e.g. databricks-rsa', help: 'Lowercase letters, numbers, dashes.' },
         { name: 'technology', label: 'Technology', required: true, placeholder: 'e.g. Databricks' },
+        trackAssessorField(assessors),
         { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50, value: 50, help: 'Used when candidate users are created individually or imported by CSV.' },
         { name: 'description', label: 'Description', type: 'textarea', rows: 3 },
       ],
@@ -934,6 +958,8 @@ export async function roleDetailView(view, { id }) {
       </div>
       ${role.description ? `<p class="small muted" style="margin-top:8px">${esc(role.description)}</p>` : ''}
       <div class="small" style="margin-top:10px"><b>Default automatic allocation:</b> ${esc(role.default_question_count)} questions</div>
+      <div class="small" style="margin-top:10px"><b>Default assessor:</b> ${trackAssessorLabel(role)}</div>
+      <p class="small muted">The default receives new automatic bookings and allocations. Choose one using Edit; existing assessments can be reassigned from Assessments.</p>
       ${['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key) ? '<p class="small">Fixed 20-module blueprint: 30 technical objective + 10 technical open + 10 non-technical open. Manage the question pool in Question Bank; competency weights below determine report scoring.</p>' : ''}
     </div>
     <div class="card">
@@ -993,11 +1019,14 @@ export async function roleDetailView(view, { id }) {
     roleDetailView(view, { id });
   }));
   view.querySelector('#edit-role').onclick = async () => {
+    const assessors = await attempt(loadAssessors);
+    if (!assessors) return;
     const saved = await formModal({
       title: 'Edit role', values: role,
       fields: [
         { name: 'name', label: 'Role name', required: true },
         { name: 'technology', label: 'Technology', required: true },
+        trackAssessorField(assessors, role),
         { name: 'default_question_count', label: 'Default automatic allocation', type: 'number', required: true, min: 1, max: 50,
           readonly: ['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key),
           help: ['databricks-rsa', 'databricks-ai-bi-genie'].includes(role.key) ? 'Fixed at 50 by the 20-module blueprint. Existing assessments keep their saved paper.' : 'Used for new candidate-user and CSV auto allocations. Existing assessments keep their saved paper.' },

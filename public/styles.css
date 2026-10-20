@@ -1931,6 +1931,7 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 .module-metrics { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .family-table { padding: 0 6px 6px; border-top: 1px solid var(--line); overflow-x: auto; }
 .table-card { min-width: 0; max-width: 100%; overflow-x: auto; }
+.data .track-name-cell { min-width: 230px; }
 .served-toolbar { flex-wrap: wrap; }
 .served-toolbar input[type=search] { flex: 1 1 260px; width: auto; }
 .served-toolbar select { flex: 0 1 210px; width: auto; }

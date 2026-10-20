@@ -43,7 +43,7 @@ export const SCHEMA = {
                 .concat([{ name: 'years_experience', ...num }, { name: 'notes', ...long }, { name: 'deleting', ...chk }]),
   test_bookings: ['token_hash', 'label', 'status', 'role_id', 'role_name', 'created_by', 'created_at', 'updated_at', 'expires_at', 'booked_at', 'name', 'email', 'phone', 'scheduled_at', 'scheduled_end_at', 'timezone', 'candidate_id', 'request_id', 'submission_hash', 'user_id', 'assessment_id', 'automation_version'].map((f) => ({ name: f, ...txt }))
     .concat([{ name: 'provisioning_json', ...long }], overflowColumns('test_bookings').map((f) => ({ name: f, ...long }))),
-  roles:        ['key', 'name', 'technology', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+  roles:        ['key', 'name', 'technology', 'default_assessor_id', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'default_question_count', ...num }, { name: 'active', ...chk }]),
   competencies: ['role_id', 'key', 'name', 'category', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'description', ...long }, { name: 'enrichment_hint', ...long },
@@ -129,7 +129,7 @@ async function main() {
     // keeps its old columns: name the fields that must exist for the current
     // app to write to it.
     console.log('\n[airtable] existing tables were left untouched. If this base was created by an older');
-    console.log('[airtable] run, add any missing columns manually: roles.default_question_count (number), candidates.assessor_id (text), questions.question_set,');
+    console.log('[airtable] run, add any missing columns manually: roles.default_question_count (number), roles.default_assessor_id (text), candidates.assessor_id (text), questions.question_set,');
     console.log('[airtable] questions.pin_first, questions.audio_required, assessments.question_count /');
     console.log('[airtable] total_points / question_limit / bank_total / role_name (number, number, number, number, text),');
     console.log('[airtable] responses.locked, assessments.retention_json (what the retention cleanup removed),');

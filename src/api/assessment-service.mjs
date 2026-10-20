@@ -213,6 +213,15 @@ export async function resolveAssessorId(store, assessorId = null) {
   return assessor && assessor.role === 'assessor' && assessor.active !== false ? assessor.id : null;
 }
 
+/** Explicit onboarding choice, candidate preference, then the exam track's default. */
+export async function resolveAllocationAssessor(store, role, candidate, explicitId = null) {
+  for (const id of new Set([explicitId, candidate?.assessor_id, role?.default_assessor_id].filter(Boolean))) {
+    const activeId = await resolveAssessorId(store, id);
+    if (activeId) return activeId;
+  }
+  return null;
+}
+
 /**
  * Allocate the default assessment for a freshly provisioned candidate user.
  *
@@ -221,8 +230,8 @@ export async function resolveAssessorId(store, assessorId = null) {
  * having to open the Allocate dialog per candidate. The assessor is the one
  * passed in (`assessorId`), else the candidate record's default
  * `assessor_id` (set on the Add/Edit candidate form or by the spreadsheet's
- * Assessor column); only when neither names an active assessor is the paper
- * left unassigned for the admin to distribute later via Reassign.
+ * Assessor column), then the track's default assessor. Only when none names
+ * an active assessor is the paper left for the admin to distribute via Reassign.
  *
  * Best-effort by design: it returns `{ allocated: false, reason }` instead of
  * throwing, so user provisioning can never fail because allocation did.
@@ -239,11 +248,10 @@ export async function autoAllocateAssessment(store, candidate, {
   const { role, reason } = await resolveAutoRole(store, candidate, roleId);
   if (!role) return fail(reason);
 
-  const assessor_id = await resolveAssessorId(store, assessorId || candidate.assessor_id || null);
-
   return withLock(allocationLockKey(candidate.id, role.id), async () => {
     const freshCandidate = await store.get('candidates', candidate.id);
     if (!freshCandidate || freshCandidate.deleting) return fail('Candidate not found or being deleted.');
+    const assessor_id = await resolveAllocationAssessor(store, role, freshCandidate, assessorId);
     const open = (await store.list('assessments', { candidate_id: candidate.id }, { detached: false }))
       .find((a) => a.role_id === role.id && ['assigned', 'in_progress', 'submitted'].includes(a.status));
     if (open) {
