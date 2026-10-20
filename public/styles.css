@@ -1088,8 +1088,8 @@ details.fold summary { cursor: pointer; font-weight: 800; color: var(--ink-2); f
 }
 @media (max-width: 900px) {
   body { display: block; }
-  #sidebar { width: 280px; height: 100vh; min-height: 100vh; position: fixed; left: 0; top: 0; transform: translateX(-102%); transition: transform .22s ease; box-shadow: 16px 0 40px rgba(5, 23, 36, .2); }
-  #sidebar.open { transform: translateX(0); }
+  #sidebar { width: 280px; height: 100vh; min-height: 100vh; position: fixed; left: 0; top: 0; visibility: hidden; transform: translateX(-102%); transition: transform .22s ease; box-shadow: 16px 0 40px rgba(5, 23, 36, .2); }
+  #sidebar.open { visibility: visible; transform: translateX(0); }
   #nav-scrim.visible { display: block; position: fixed; inset: 0; z-index: 15; background: rgba(7, 23, 34, .42); backdrop-filter: blur(2px); }
   .main-col { min-height: 100vh; }
   #topbar { min-height: 68px; padding: 11px 18px; }

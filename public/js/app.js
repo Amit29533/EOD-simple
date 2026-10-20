@@ -89,10 +89,13 @@ const NAV = {
 const routeHash = () => (location.hash || '').split('?')[0];
 const navKey = (href) => href.slice(2).split('/')[0];
 
-function closeMobileNav() {
-  document.getElementById('sidebar')?.classList.remove('open');
+function closeMobileNav(restoreFocus = false) {
+  const sidebar = document.getElementById('sidebar');
+  const wasOpen = sidebar?.classList.contains('open');
+  sidebar?.classList.remove('open');
   document.getElementById('nav-scrim')?.classList.remove('visible');
   document.getElementById('mobile-nav-toggle')?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && wasOpen) document.getElementById('mobile-nav-toggle')?.focus();
 }
 
 function renderShell() {
@@ -200,6 +203,8 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && document.getElementById('profile-panel')?.hidden === false) {
     closeProfileMenu(true);
+  } else if (event.key === 'Escape' && document.getElementById('sidebar')?.classList.contains('open')) {
+    closeMobileNav(true);
   }
 });
 

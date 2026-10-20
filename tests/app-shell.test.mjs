@@ -54,6 +54,15 @@ test('signed-in shell: Anthroprime ECOD brand + theme toggle that persists', { s
     const topbar = document.getElementById('topbar');
     assert.match(topbar.innerHTML, /Anthroprime ECOD/, 'topbar eyebrow');
 
+    const navigation = document.getElementById('mobile-nav-toggle');
+    navigation.click();
+    assert.equal(sidebar.classList.contains('open'), true);
+    sidebar.querySelector('a').focus();
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(sidebar.classList.contains('open'), false);
+    assert.equal(navigation.getAttribute('aria-expanded'), 'false');
+    assert.equal(document.activeElement, navigation, 'Escape returns focus to the menu button');
+
     const btn = topbar.querySelector('#theme-toggle');
     assert.ok(btn, 'theme toggle rendered in the topbar');
     const before = document.documentElement.dataset.theme;
