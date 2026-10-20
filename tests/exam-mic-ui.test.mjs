@@ -220,6 +220,26 @@ test('locking includes the final caption delivered after speech recognition stop
   } finally { await flush(90); teardown(ctx); }
 });
 
+test('a speech service failure remains explained after stopping and does not lose recorded audio', { skip: SKIP }, async () => {
+  const ctx = await setupDom({ payload: () => openQuestionPayload() });
+  ctx.window.SpeechRecognition = class {
+    start() { this.onerror?.({ error: 'network' }); }
+    stop() { this.onend?.(); }
+  };
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#rec-btn').onclick();
+    assert.match(view.querySelector('#caption-status').textContent, /speech service could not be reached/);
+    await view.querySelector('#exam-next').onclick();
+    assert.ok(ctx.calls.next[0].answer.audio_b64);
+    assert.equal(ctx.calls.next[0].answer.transcript, '');
+  } finally { teardown(ctx); }
+});
+
 test('locking a live recording waits for its final chunk and ignores duplicate lock clicks', { skip: SKIP }, async () => {
   const ctx = await setupDom({ payload: () => openQuestionPayload() });
   ctx.window.MediaRecorder.flushDelay = 1200;

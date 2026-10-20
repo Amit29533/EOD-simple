@@ -275,7 +275,8 @@ export function createJsonStore(file = 'data/ecod.json') {
       const id = data?.id;
       return withLock(async () => {
         const prior = rowOf(table(t), id);
-        const patch = decide(prior ? { ...prior } : null);
+        const patch = decide(prior ? { ...prior } : null,
+          t === 'test_bookings' ? Object.values(table(t)).map((row) => ({ ...row })) : undefined);
         if (!prior || patch === undefined)
           return { row: prior ? { ...prior } : null, changed: false };
         if (!patch || typeof patch !== 'object' || Array.isArray(patch))

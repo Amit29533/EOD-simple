@@ -5,6 +5,7 @@ import { createApp } from '../src/api/app.mjs';
 import { hashPassword } from '../src/core/passwords.mjs';
 import { DEFAULT_FRAMEWORK_CONFIG } from '../src/core/constants.mjs';
 import { advanceStage } from '../src/api/assessment-service.mjs';
+import { bookingCommitPatch } from '../src/api/handlers/bookings.mjs';
 
 /**
  * Netlify Blobs across function instances.
@@ -63,6 +64,26 @@ function blobBackend({ latency = 0, jitter = 0, etagsOnRead = true, conditional 
   };
   return { data, log, stats, module: { getStore: () => store }, table: (t) => (data.has(t) ? clone(data.get(t).json) : null) };
 }
+
+test('different invitations cannot reserve the same email across independent Blobs instances', async () => {
+  const be = blobBackend({ latency: 8 });
+  const first = await createBlobsStore({ blobsModule: be.module });
+  const second = await createBlobsStore({ blobsModule: be.module });
+  for (const id of ['invite-a', 'invite-b']) await first.insert('test_bookings', {
+    id, status: 'pending', expires_at: new Date(Date.now() + 60000).toISOString(),
+  });
+  const values = { status: 'booked', email: 'same@example.com', automation_version: '1' };
+  const claim = (row, rows) => bookingCommitPatch(row, rows, values);
+  const results = await Promise.all([
+    first.changeRow('test_bookings', { id: 'invite-a' }, claim),
+    second.changeRow('test_bookings', { id: 'invite-b' }, claim),
+  ]);
+  assert.equal(results.filter((r) => r.changed).length, 1);
+  const rows = await second.list('test_bookings');
+  assert.equal(rows.filter((r) => r.status === 'booked').length, 1);
+  assert.equal(rows.filter((r) => r.status === 'pending').length, 1, 'losing invitation remains usable');
+  assert.ok(be.stats.conflicts > 0, 'the losing instance rechecked the email after a real CAS conflict');
+});
 
 test('candidate stages converge forwards across independent Blobs adapters under write conflicts', async () => {
   const be = blobBackend({ latency: 5, jitter: 5 });

@@ -314,7 +314,8 @@ export async function createBlobsStore({ blobsModule = null, requireConsistency 
       const id = data?.id;
       return mutate(t, async (rows) => {
         const prior = rowOf(rows, id);
-        const patch = decide(prior ? { ...prior } : null);
+        const patch = decide(prior ? { ...prior } : null,
+          t === 'test_bookings' ? Object.values(rows).map((row) => ({ ...row })) : undefined);
         if (!prior || patch === undefined) {
           return { result: { row: prior ? { ...prior } : null, changed: false }, write: false };
         }

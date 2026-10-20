@@ -857,6 +857,7 @@ async function runExamSession(view, id, payload) {
             <span class="small muted rec-state" id="rec-state" role="status">Required · press record and speak your answer</span>
           </div>` : ''}
           ${needsMic && !micCapable ? `<div class="small exam-mic-note warn">This browser cannot capture microphone audio, so a recording cannot be required here. Type your answer instead — it is stored and flagged for the assessor as “no recording”.</div>` : ''}
+          ${needsMic ? '<p class="small muted" id="caption-status" role="status"></p>' : ''}
           <div class="small muted transcript-block" id="transcript-preview" ${transcript ? '' : 'hidden'}></div>
         </div>`;
       const ta = body.querySelector('#exam-ta');
@@ -919,6 +920,23 @@ async function runExamSession(view, id, payload) {
       syncNext();
 
       const SpeechRec = needsMic ? speechRecognitionCtor(window) : null;
+      const captionStatus = body.querySelector('#caption-status');
+      let captionFailure = '';
+      const showCaptionFailure = (code) => {
+        const reasons = {
+          network: 'the browser speech service could not be reached. Check your connection or try Chrome or Edge.',
+          'not-allowed': 'speech recognition permission was denied. Check your browser site settings.',
+          'service-not-allowed': 'the browser speech service is disabled. Try Chrome or Edge.',
+          'language-not-supported': 'the browser speech service does not support the selected language.',
+          'no-speech': 'no speech was detected. Check the selected microphone and speak clearly.',
+          'audio-capture': 'the speech service could not access the microphone.',
+        };
+        captionFailure = code || 'unknown';
+        if (captionStatus) captionStatus.textContent = `Live captions unavailable: ${reasons[code] || 'the browser speech service did not start.'} Audio is recorded separately.`;
+      };
+      if (captionStatus) captionStatus.textContent = SpeechRec
+        ? 'Live captions start with recording and require the browser speech service.'
+        : 'Live captions are not supported in this browser. Use Chrome or Edge for captions; audio recording is still available.';
       const releaseMic = () => {
         rec.stream?.getTracks().forEach((t) => t.stop());
         rec.stream = null;
@@ -965,6 +983,8 @@ async function runExamSession(view, id, payload) {
             toast('The recording exceeded the storage limit and was not saved.', 'error', 4200);
           }
         }
+        if (SpeechRec && !transcript && !captionFailure && captionStatus)
+          captionStatus.textContent = 'No caption text was returned. The audio recording is saved separately; captions are optional.';
       })().finally(() => { stopping = null; }));
 
       if (needsMic && recBtn && recLabel) {
@@ -989,6 +1009,7 @@ async function runExamSession(view, id, payload) {
               return;
             }
             rec.cancelled = false;
+            captionFailure = '';
             recLabel.textContent = 'Stop recording';
             recBtn.classList.add('recording');
             recBtn.setAttribute('aria-pressed', 'true');
@@ -1040,6 +1061,7 @@ async function runExamSession(view, id, payload) {
                 recg.onresult = (ev) => {
                   if (!stillHere() || rec.recognition !== recg) return;
                   transcript = transcriptFromSpeechEvent(ev);
+                  if (captionStatus) captionStatus.textContent = 'Live captions received.';
                   preview.hidden = false;
                   preview.textContent = `Transcript: ${transcript}`;
                   // Speech must not silently edit the candidate's textarea. The
@@ -1047,20 +1069,29 @@ async function runExamSession(view, id, payload) {
                   // edit it deliberately.
                   syncNext();
                 };
-                recg.onerror = () => { if (stillHere() && rec.recognition === recg && rec.startedAt && !rec.cancelled) setRecState('Recording audio · live transcription unavailable', 'muted'); };
+                recg.onerror = (ev) => {
+                  if (!stillHere() || rec.recognition !== recg) return;
+                  showCaptionFailure(ev?.error);
+                  if (rec.startedAt && !rec.cancelled) setRecState('Recording audio · live transcription unavailable', 'muted');
+                };
                 recg.onend = () => {
                   if (rec.recognition !== recg) return;
                   rec.speechEnded = true;
-                  if (stillHere() && rec.startedAt && !rec.cancelled) setRecState('Recording audio · live transcription has stopped', 'muted');
+                  if (stillHere() && rec.startedAt && !rec.cancelled) {
+                    setRecState('Recording audio · live transcription has stopped', 'muted');
+                    if (!captionFailure && captionStatus) captionStatus.textContent = 'Live captions have stopped. Your audio recording continues.';
+                  }
                 };
                 rec.speechEnded = false;
                 rec.recognition = recg;
+                if (captionStatus) captionStatus.textContent = 'Starting live captions…';
                 recg.start();
               } else {
                 setRecState('Recording audio · live transcription is not supported in this browser', 'ok');
               }
             } catch {
               rec.recognition = null;
+              showCaptionFailure('start-failed');
               setRecState('Recording audio · live transcription unavailable', 'ok');
             }
           } catch (err) {

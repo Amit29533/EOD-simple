@@ -43,8 +43,18 @@ async function changeBooking(store, id, decide) {
   // Airtable has no cross-instance conditional-write primitive. The local
   // deployment uses JSON; Blobs also re-evaluates this decision on CAS retries.
   const row = await store.get(TABLE, id);
-  const patch = decide(row);
+  const patch = decide(row, await store.list(TABLE));
   return patch ? { row: await store.update(TABLE, id, patch), changed: true } : { row, changed: false };
+}
+
+// The identity check and slot claim share the same whole-table CAS. Checking
+// only before the write allows two Lambda instances to consume different
+// invitations for the same email, stranding one after deterministic user IDs
+// correctly reject the duplicate account.
+export function bookingCommitPatch(current, rows, values) {
+  if (!available(current) || rows.some((b) => b.id !== current.id && b.status === 'booked'
+    && b.automation_version && String(b.email || '').trim().toLowerCase() === values.email)) return undefined;
+  return values;
 }
 
 async function findLink(store, token) {
@@ -259,11 +269,14 @@ export function bookingHandlers(route) {
         if (err?.code === 'GATE_FULL') return tooMany('Registration is busy. Please try again shortly.');
         throw err;
       }
-      const result = replay ? { row: current } : await changeBooking(store, row.id, (fresh) => available(fresh)
-        ? { ...checked.value, scheduled_end_at: new Date(Date.parse(checked.value.scheduled_at) + EXAM_SESSION_MS).toISOString(),
+      const values = { ...checked.value, scheduled_end_at: new Date(Date.parse(checked.value.scheduled_at) + EXAM_SESSION_MS).toISOString(),
           automation_version: '1', provisioning_json: plan,
-          status: 'booked', booked_at: new Date().toISOString(), request_id: body.request_id, submission_hash: signature } : undefined);
-      if (!replay && !result.changed) return conflict('This booking link has already been submitted or cancelled.');
+          status: 'booked', booked_at: new Date().toISOString(), request_id: body.request_id, submission_hash: signature };
+      const result = replay ? { row: current } : await changeBooking(store, row.id,
+        (fresh, rows) => bookingCommitPatch(fresh, rows, values));
+      if (!replay && !result.changed) return conflict(result.row?.status === 'pending'
+        ? 'This email already has a test booking. Use the original invitation or contact your administrator.'
+        : 'This booking link has already been submitted or cancelled.');
       const provisioned = await provisionBooking(store, result.row);
       if (!provisioned?.user_id || !provisioned?.assessment_id) throw provisioningError('Booking setup did not finish. Retry the same submission.');
       if (!replay) await audit(store, null, 'test_slot_booked', TABLE, row.id, 'Candidate booked a test slot.');
