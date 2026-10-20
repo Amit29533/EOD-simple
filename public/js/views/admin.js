@@ -1556,9 +1556,9 @@ export async function modulesView(view) {
         <h1>Question bank</h1>
         <p>v${esc(bank.version)} — ${esc(bank.role_name || '')} — ${bank.bank_total} questions in
            ${modules.length} modules, organised into ${bank.family_total} families.
-           A new question belongs to exactly one family inside one module; the
-           role-based set that allocation serves today is managed at the bottom
-           of this same screen.</p>
+           A new module question belongs to exactly one family inside one module.
+           RSA and AI/BI exams use these module families. SAMA and custom-role
+           exam questions are managed in the role question catalogue below.</p>
       </div>
     </div>
     <div class="card flat bank-toolbar">
@@ -1656,10 +1656,10 @@ export async function modulesView(view) {
 
     <div class="card" id="served-set">
       <div class="panel-head">
-        <div><h2>Served question set</h2>
-          <p class="small muted">What allocation puts in front of a candidate today: questions grouped by role and
-          competency, drawn from the same retired catalogue the optional pool above is built from. Edits apply to the
-          <b>next</b> allocation — in-flight papers keep the snapshot they were allocated with.</p></div>
+        <div><h2>Role question catalogue</h2>
+          <p class="small muted">Questions grouped by role and competency. SAMA and custom-role exams use this catalogue;
+          RSA and AI/BI exams use the module families above. Existing assessments keep their allocated snapshot,
+          so edits affect future allocations only.</p></div>
         <div class="row">
           <span class="chip">${served.length} in view</span>
           <button class="btn secondary sm" id="served-add">＋ Add question</button>
