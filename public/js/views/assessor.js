@@ -84,10 +84,7 @@ export async function assessmentView(view, { id }) {
     // way into the evidence it was built from. The answer sheet, the
     // transcripts and the recordings are kept after finalization (until the
     // retention policy removes them), which is what `answersView` opens.
-    renderReport(view, {
-      candidate: d.candidate, report: d.report, assessor_name: 'You', audience: 'assessor',
-      actionsHtml: `<a class="btn secondary sm" href="#/assessments/${id}/answers">🧾 Answer sheet &amp; recordings</a>`,
-    });
+    renderFinalizedReport(view, d, id);
     return;
   }
   if (d.assessment.status !== 'submitted') {
@@ -96,6 +93,13 @@ export async function assessmentView(view, { id }) {
   }
 
   renderAnswerSheet(view, d, { id, readonly: false });
+}
+
+function renderFinalizedReport(view, data, id) {
+  renderReport(view, {
+    candidate: data.candidate, report: data.report, assessor_name: 'You', audience: 'assessor',
+    actionsHtml: `<a class="btn secondary sm" href="#/assessments/${encodeURIComponent(id)}/answers">🧾 Answer sheet &amp; recordings</a>`,
+  });
 }
 
 /**
@@ -293,7 +297,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
     if (out) {
       stopRecordings?.();
       toast(`Report generated: ${out.report.band.label} at ${out.report.overall_pct}%`, 'success', 5000);
-      renderReport(view, { candidate: out.candidate, report: out.report, assessor_name: 'You', audience: 'assessor' });
+      renderFinalizedReport(view, out, id);
     } else controls.forEach((el) => { el.disabled = false; });
   };
 }

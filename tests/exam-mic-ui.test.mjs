@@ -199,6 +199,27 @@ test('SAMA stopping waits for a delayed final audio chunk before enabling the lo
   } finally { teardown(ctx); }
 });
 
+test('locking includes the final caption delivered after speech recognition stops', { skip: SKIP }, async () => {
+  const ctx = await setupDom({ payload: () => openQuestionPayload() });
+  ctx.window.SpeechRecognition = class {
+    start() {}
+    stop() { setTimeout(() => {
+      this.onresult?.({ results: [[{ transcript: 'The final spoken sentence.' }]] });
+      this.onend?.();
+    }, 70); }
+  };
+  try {
+    const candidate = await import('../public/js/views/candidate.js');
+    const view = document.getElementById('view');
+    await candidate.quizView(view, { id: 'asm1' });
+    await flush();
+    await view.querySelector('#rec-btn').onclick();
+    await view.querySelector('#exam-next').onclick();
+    assert.equal(ctx.calls.next[0].answer.transcript, 'The final spoken sentence.');
+    assert.ok(ctx.calls.next[0].answer.audio_b64);
+  } finally { await flush(90); teardown(ctx); }
+});
+
 test('locking a live recording waits for its final chunk and ignores duplicate lock clicks', { skip: SKIP }, async () => {
   const ctx = await setupDom({ payload: () => openQuestionPayload() });
   ctx.window.MediaRecorder.flushDelay = 1200;
@@ -310,7 +331,7 @@ test('the lock button stays disabled until the candidate has actually spoken', {
 
     view.querySelector('#rec-btn').click(); // stop -> the clip is captured
     await flush(80);
-    assert.match(view.querySelector('#rec-state').textContent, /Audio saved/i);
+    assert.match(view.querySelector('#rec-state').textContent, /Audio captured/i);
     assert.equal(next.disabled, false, 'a captured recording unlocks the exam');
 
     next.click();

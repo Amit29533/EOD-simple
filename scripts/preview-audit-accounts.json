@@ -1,0 +1,18 @@
+[
+  {
+    "id": "preview-admin",
+    "username": "preview.admin",
+    "password_hash": "s2:a94117e9d2589c9f1d65056e053f0c71:556ae71cffb07dd26c9a09425555aa0ce777a89c1e43ec5314a29490243461a438bc3ea11030a8e935d547e73ea48ca03611f8c246332f2ff419c8d743837c70",
+    "role": "admin",
+    "name": "Preview admin",
+    "email": "preview.admin@example.com"
+  },
+  {
+    "id": "preview-assessor",
+    "username": "preview.assessor",
+    "password_hash": "s2:f21081af4c2695c2ac424a85e273fbfa:c9fe568754cf11ff3c0e4c760b9d98b707eb2c34530dee4040610bc7600b367da8a7e89bca50eb5cc5e4212ac85e2b4da6259ff36881c3576d665c90b87740c0",
+    "role": "assessor",
+    "name": "Preview assessor",
+    "email": "preview.assessor@example.com"
+  }
+]

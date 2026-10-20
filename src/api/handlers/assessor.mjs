@@ -88,7 +88,7 @@ export function assessorHandlers(route) {
   route('GET', '/assessor/assessments/:id', R, async ({ store, auth, params }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
-    if (['assigned', 'in_progress'].includes(a.status))
+    if (!['submitted', 'scored', 'validated'].includes(a.status))
       return conflict('The candidate has not submitted this assessment yet.');
     const candidate = await store.get('candidates', a.candidate_id);
     const responses = await store.list('responses', { assessment_id: a.id });
@@ -143,7 +143,7 @@ export function assessorHandlers(route) {
   route('GET', '/assessor/assessments/:id/recordings/:question_id', R, async ({ store, auth, params }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
-    if (['assigned', 'in_progress'].includes(a.status))
+    if (!['submitted', 'scored', 'validated'].includes(a.status))
       return conflict('The candidate has not submitted this assessment yet.');
     const qid = String(params.question_id || '');
     const [row] = await store.list('responses', { assessment_id: a.id, question_id: qid });
@@ -172,7 +172,7 @@ export function assessorHandlers(route) {
   route('DELETE', '/assessor/assessments/:id/recordings/:question_id', R, locked(async ({ store, auth, params }) => {
     const a = await own(store, auth.user.id, params.id);
     if (!a) return notFound('Assessment not found.');
-    if (['assigned', 'in_progress'].includes(a.status))
+    if (!['submitted', 'scored', 'validated'].includes(a.status))
       return conflict('The candidate has not submitted this assessment yet.');
     const result = await deleteAssessmentRecording(store, a, params.question_id, { actor: auth.user });
     if (result.missing) return notFound('No recording for this question.');

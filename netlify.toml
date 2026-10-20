@@ -8,6 +8,13 @@
 [build.environment]
   NODE_VERSION = "24"
 
+# Review builds use their own Blobs store and synthetic accounts.
+[context.deploy-preview]
+  command = "node scripts/seed-preview.mjs"
+  [context.deploy-preview.environment]
+    STORAGE = "blobs"
+    BLOBS_REQUIRE_CONSISTENCY = "true"
+
 [functions]
   node_bundler = "esbuild"
 
@@ -25,6 +32,17 @@
   for = "/index.html"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
+
+# Modules and styles have stable URLs, so reloads must revalidate them.
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/styles.css"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
 
 [[redirects]]
   from = "/api/*"

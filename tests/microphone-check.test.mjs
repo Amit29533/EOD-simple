@@ -4,7 +4,7 @@ import { JSDOM, SKIP } from './helpers/jsdom.mjs';
 import { wireMicrophoneCheck } from '../public/js/microphone-check.js';
 import { uniqueUsername, generatePassword } from '../public/js/account-form.js';
 
-function fixture(getUserMedia) {
+function fixture(getUserMedia, { stopThrows = false } = {}) {
   const dom = new JSDOM('<button data-mic-start></button><button data-mic-stop disabled></button><p data-mic-status></p><audio data-mic-player hidden></audio>');
   const root = dom.window.document.body;
   const player = root.querySelector('audio');
@@ -16,6 +16,7 @@ function fixture(getUserMedia) {
     mimeType = 'audio/webm';
     start() { this.state = 'recording'; }
     stop() {
+      if (stopThrows) throw new Error('Device disconnected');
       this.state = 'inactive';
       this.ondataavailable?.({ data: new Blob(['practice']) });
       this.onstop?.();
@@ -42,6 +43,18 @@ test('mic practice requests access only on click, offers playback, releases trac
     f.dispose();
     assert.equal(f.player.getAttribute('src'), null);
     assert.equal(f.revoked(), 1);
+  } finally { f.dispose(); f.dom.window.close(); }
+});
+
+test('a recorder stop failure releases the microphone and offers retry', { skip: SKIP }, async () => {
+  const f = fixture(null, { stopThrows: true });
+  try {
+    await f.root.querySelector('[data-mic-start]').onclick();
+    assert.doesNotThrow(() => f.root.querySelector('[data-mic-stop]').onclick());
+    assert.equal(f.stopped(), 1);
+    assert.equal(f.root.querySelector('[data-mic-start]').disabled, false);
+    assert.match(f.root.querySelector('.mic-result').textContent, /failed/i);
+    assert.doesNotThrow(f.dispose);
   } finally { f.dispose(); f.dom.window.close(); }
 });
 

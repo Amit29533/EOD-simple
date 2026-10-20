@@ -5,6 +5,7 @@ export const pct = (v) => (v === null || v === undefined || v === '') ? '—' : 
 
 const SHORT_DATE = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 const SHORT_DT = new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const SCHEDULED_DT = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' });
 /**
  * An unreadable date reads like a missing one. `Intl.DateTimeFormat#format`
  * throws a RangeError on an Invalid Date, so one row with a date the app did
@@ -19,6 +20,10 @@ const safeFormat = (formatter, iso) => {
 };
 export const fmtDate = (iso) => safeFormat(SHORT_DATE, iso);
 export const fmtDateTime = (iso) => safeFormat(SHORT_DT, iso);
+export const fmtScheduledTime = (iso) => {
+  const formatted = safeFormat(SCHEDULED_DT, iso);
+  return formatted === '—' ? formatted : `${formatted} IST`;
+};
 
 export const initials = (name = '') => name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 
@@ -295,7 +300,7 @@ export function formModal({
         if (!input || input.disabled) continue;
         setError(f, '');
         if (f.type === 'checkbox') { out[f.name] = input.checked; continue; }
-        const raw = typeof input.value === 'string' ? input.value.trim() : input.value;
+        const raw = typeof input.value === 'string' && f.type !== 'password' ? input.value.trim() : input.value;
         if (f.type === 'number') out[f.name] = raw === '' ? null : Number(raw);
         else out[f.name] = raw;
 

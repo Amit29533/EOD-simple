@@ -297,6 +297,11 @@ export function createShardTable(t, io, legacy = null) {
   const readShard = async (s) => {
     let cur = await io.readVersioned(keyOf(s));
     if (cur.value === undefined) cur = { value: null, etag: cur.etag ?? null };
+    const value = cur.value;
+    if (value !== null && (typeof value !== 'object' || Array.isArray(value)
+      || Object.values(value).some((row) => !row || typeof row !== 'object' || Array.isArray(row)))) {
+      throw Object.assign(new Error(`Malformed response shard: ${keyOf(s)}`), { code: 'STORE_CORRUPT' });
+    }
     cur = await migrate(s, cur);
     if (cur.value === null || cur.value === undefined) return { value: {}, etag: cur.etag ?? null };
     return cur;

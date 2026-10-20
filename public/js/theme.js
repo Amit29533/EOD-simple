@@ -9,7 +9,7 @@
 const STORAGE_KEY = 'anthroprime-ecod-theme';
 export const THEME_PREFS = ['auto', 'light', 'dark'];
 
-const THEME_COLORS = { light: '#eef6f7', dark: '#060f17' };
+const THEME_COLORS = { light: '#f5f4f1', dark: '#15161b' };
 
 const media = () => (typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null);
 

@@ -19,6 +19,8 @@ async function plan(store, kind, id, actor) {
   const assigned = !candidate && ids.size ? (await store.list('assessments', {}, { detached: false })).filter((a) => ids.has(a.assessor_id)) : [];
   const candidateAssignments = !candidate && ids.size ? (await store.list('candidates')).filter((c) => ids.has(c.assessor_id)) : [];
   const sessions = (await store.list('sessions')).filter((s) => ids.has(s.user_id));
+  const bookings = candidate ? (await store.list('test_bookings'))
+    .filter((b) => b.candidate_id === candidate.id || b.id === candidate.booking_id) : [];
   const responses = [], recordings = [];
   for (const a of assessments) {
     responses.push(...await store.list('responses', { assessment_id: a.id }));
@@ -32,9 +34,9 @@ async function plan(store, kind, id, actor) {
   const counts = {
     candidate_profiles: candidate ? 1 : 0, accounts: accounts.length, sessions: sessions.length,
     assessments: assessments.length, reports: assessments.filter((a) => a.report_json || finalized(a)).length,
-    responses: responses.length, recordings: recordings.length, audit_events: events.length,
+    responses: responses.length, recordings: recordings.length, audit_events: events.length, test_bookings: bookings.length,
   };
-  const rows = { accounts, assessments, assigned, candidateAssignments, sessions, responses, recordings, events };
+  const rows = { accounts, assessments, assigned, candidateAssignments, sessions, responses, recordings, events, bookings };
   const signature = Object.fromEntries(Object.entries(rows).map(([key, values]) => [key, values.map((r) => [r.id, r.updated_at || '', r.status || '', r.assessor_id || '']).sort()]));
   const token = createHash('sha256').update(JSON.stringify({ kind, id, candidate: candidate?.id,
     target_updated: target.updated_at, candidate_updated: candidate?.updated_at, signature })).digest('hex');
@@ -54,7 +56,18 @@ export async function purgePreview({ store, params, auth }, kind) {
   return data ? ok(data.preview) : notFound('Person not found.');
 }
 
-export async function purgePerson({ store, params, auth, body }, kind) {
+export async function deleteUnfinalizedCandidate(ctx) {
+  if (!await ctx.store.get('candidates', ctx.params.id)) return notFound('Candidate not found.');
+  if (typeof ctx.body?.password !== 'string' || !ctx.body.password)
+    return forbidden('Admin password is required to delete a candidate.');
+  const data = await plan(ctx.store, 'candidates', ctx.params.id, ctx.auth.user);
+  if (!data) return notFound('Candidate not found.');
+  const result = await purgePerson({ ...ctx, body: { ...ctx.body, confirmation: 'DELETE', preview_token: data.preview.preview_token } },
+    'candidates', { unfinalizedOnly: true, retainAudit: true });
+  return result.status === 200 ? ok({ ok: true, removed_users: result.body.removed.accounts, removed_assessments: result.body.removed.assessments }) : result;
+}
+
+export async function purgePerson({ store, params, auth, body }, kind, { unfinalizedOnly = false, retainAudit = false } = {}) {
   if (!await store.get(kind, params.id)) return notFound('Person not found.');
   if (typeof body?.password !== 'string' || !body.password) return forbidden('Admin password is required for permanent deletion.');
   // Use the current hash, rather than the copy resolved before a password reset.
@@ -70,8 +83,10 @@ export async function purgePerson({ store, params, auth, body }, kind) {
       ? (await store.list('roles')).map((r) => allocationLockKey(initial.candidate.id, r.id)).sort() : [];
     return lockAll(initial.accounts.map((u) => `identity:${u.id}`).sort(), () => lockAll(allocationLocks, async () => {
       const papers = [...initial.assessments, ...initial.assigned];
-      return lockAll([...new Set(papers.map((a) => `assessment:${a.id}`))].sort(), async () => {
+      return lockAll([...new Set([...papers.map((a) => `assessment:${a.id}`), ...initial.bookings.map((b) => `booking:${b.id}`)])].sort(), async () => {
         const data = await plan(store, kind, params.id, actor);
+        if (unfinalizedOnly && data?.assessments.some(finalized))
+          return conflict('This candidate has finalized assessment reports and cannot be deleted.');
         if (!data || data.preview.preview_token !== body.preview_token)
           return conflict('Linked data changed since the preview. Close this dialog and review the deletion again.');
         if (data.preview.blocked_reason) return conflict(data.preview.blocked_reason);
@@ -89,11 +104,12 @@ export async function purgePerson({ store, params, auth, body }, kind) {
         // Staff accounts do not own their candidates' papers or reports.
         for (const a of data.assigned) await store.update('assessments', a.id, { assessor_id: null });
         await bulkUpdate(store, 'candidates', data.candidateAssignments.map((c) => ({ id: c.id, patch: { assessor_id: null } })));
-        await bulkRemove(store, 'audit_log', data.events.map((r) => r.id));
+        if (!retainAudit) await bulkRemove(store, 'audit_log', data.events.map((r) => r.id));
         await bulkRemove(store, 'users', data.accounts.map((r) => r.id));
+        await bulkRemove(store, 'test_bookings', data.bookings.map((r) => r.id));
         if (data.candidate) await store.remove('candidates', data.candidate.id);
-        await audit(store, actor, 'person_permanently_deleted', kind, params.id,
-          'Permanent deletion completed.', { counts: data.preview.counts });
+        await audit(store, actor, unfinalizedOnly ? 'candidate_deleted' : 'person_permanently_deleted', kind, params.id,
+          unfinalizedOnly ? 'Candidate and linked open assessments deleted.' : 'Permanent deletion completed.', { counts: data.preview.counts });
         return ok({ ok: true, removed: data.preview.counts });
       });
     }));

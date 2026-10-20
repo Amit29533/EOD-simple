@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import { JSDOM, SKIP } from './helpers/jsdom.mjs';
 
-const SHELL_HTML = `<!doctype html><html><head><meta name="theme-color" content="#eef6f7"></head>
+const SHELL_HTML = `<!doctype html><html><head><meta name="theme-color" content="#f5f4f1"></head>
   <body><div id="sidebar"></div><div id="topbar"></div><main id="view"></main><div id="toast-root"></div></body></html>`;
 
 /** Boot a jsdom window with the globals the browser modules expect. */
@@ -62,12 +62,12 @@ test('theme.js applies, persists and resolves the colour theme', { skip: SKIP },
     assert.equal(document.documentElement.dataset.theme, 'dark');
     assert.equal(document.documentElement.dataset.themePref, 'dark');
     assert.equal(document.documentElement.style.colorScheme, 'dark');
-    assert.equal(document.querySelector('meta[name="theme-color"]').getAttribute('content'), '#060f17');
+    assert.equal(document.querySelector('meta[name="theme-color"]').getAttribute('content'), '#15161b');
 
     theme.setThemePref('light');
     assert.equal(document.documentElement.dataset.theme, 'light');
     assert.equal(localStorage.getItem('anthroprime-ecod-theme'), 'light', 'preference persisted');
-    assert.equal(document.querySelector('meta[name="theme-color"]').getAttribute('content'), '#eef6f7');
+    assert.equal(document.querySelector('meta[name="theme-color"]').getAttribute('content'), '#f5f4f1');
 
     theme.applyTheme('auto');
     assert.ok(['light', 'dark'].includes(document.documentElement.dataset.theme), 'auto resolves to a concrete theme');

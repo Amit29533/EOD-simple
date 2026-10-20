@@ -13,7 +13,7 @@ import { logoSvg } from '../logo.js';
  * browser Print / Save as PDF works offline and charts survive print engines
  * that do not preserve CSS gradients.
  */
-const CHART_COLORS = ['#159b96', '#315ca8', '#a36317', '#7553a8', '#d36b56', '#4c8c6b', '#2f708f'];
+const CHART_COLORS = Array.from({ length: 7 }, (_, i) => `var(--chart-${i + 1})`);
 
 const finite = (value, fallback = 0) => {
   const n = Number(value);
@@ -42,7 +42,7 @@ function donutSvg(value, tone) {
   const radius = 43;
   const circumference = 2 * Math.PI * radius;
   const dash = circumference * (score / 100);
-  const color = tone === 'green' ? '#147a57' : tone === 'amber' ? '#a36317' : '#b53a35';
+  const color = `var(--${scoreTone(tone)})`;
   return `<svg class="report-donut" viewBox="0 0 120 120" role="img" aria-label="Overall score ${rounded(score)} percent">
     <circle class="report-donut-track" cx="60" cy="60" r="${radius}" fill="none" stroke-width="10"/>
     <circle class="report-donut-value" cx="60" cy="60" r="${radius}" fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${dash.toFixed(2)} ${(circumference - dash).toFixed(2)}" transform="rotate(-90 60 60)"/>
@@ -106,8 +106,8 @@ function weightPie(report) {
     angle = next;
   });
   return `<svg class="report-pie" viewBox="0 0 100 100" role="img" aria-label="Assessment weight distribution">
-    ${slices.map((slice) => `<path d="${slice.d}" fill="${slice.color}" stroke="#ffffff" stroke-width="1.4"/>`).join('')}
-    <circle cx="50" cy="50" r="20" fill="#ffffff"/>
+    ${slices.map((slice) => `<path d="${slice.d}" fill="${slice.color}" stroke="var(--surface)" stroke-width="1.4"/>`).join('')}
+    <circle cx="50" cy="50" r="20" fill="var(--surface)"/>
     <text class="report-pie-center" x="50" y="48" text-anchor="middle">${competencies.length}</text>
     <text class="report-pie-center-label" x="50" y="59" text-anchor="middle">AREAS</text>
   </svg>`;

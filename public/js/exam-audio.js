@@ -81,6 +81,24 @@ export function finishAudioRecorder(recorder, timeoutMs = 10_000) {
   });
 }
 
+// SpeechRecognition may emit its final result only after stop(). Captions are
+// optional, so a broken speech service must not hold the answer indefinitely.
+export function finishSpeechRecognition(recognition, timeoutMs = 1000) {
+  if (!recognition) return Promise.resolve();
+  return new Promise((resolve) => {
+    const previous = recognition.onend;
+    let timer;
+    const done = () => {
+      clearTimeout(timer);
+      recognition.onend = previous;
+      resolve();
+    };
+    recognition.onend = (...args) => { previous?.apply(recognition, args); done(); };
+    timer = setTimeout(done, timeoutMs);
+    try { recognition.stop(); } catch { done(); }
+  });
+}
+
 /**
  * Merge typed text, live transcript, and optional recorded audio into a
  * persistable answer.

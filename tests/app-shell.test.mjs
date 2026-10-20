@@ -14,6 +14,7 @@ const flush = (ms = 40) => new Promise((r) => setTimeout(r, ms));
 test('signed-in shell: Anthroprime ECOD brand + theme toggle that persists', { skip: SKIP }, async () => {
   const dom = new JSDOM(
     `<!doctype html><html><head><meta name="theme-color" content="#eef6f7"></head><body>
+       <a class="skip-link" href="#view">Skip to content</a>
        <div id="sidebar"></div><div id="nav-scrim"></div>
        <div id="topbar"></div><main id="view"></main>
        <div id="modal-root"></div><div id="toast-root"></div></body></html>`,
@@ -74,6 +75,9 @@ test('signed-in shell: Anthroprime ECOD brand + theme toggle that persists', { s
     window.location.hash = '#/questions?role=role-9';
     await flush(80);
     assert.equal(window.location.hash, '#/modules?role=role-9', 'the retired route redirects, filter intact');
+    document.querySelector('.skip-link').click(); await flush(60);
+    assert.equal(window.location.hash, '#/modules?role=role-9', 'Skip to content must not replace the application route');
+    assert.equal(document.activeElement, document.getElementById('view'), 'keyboard focus moves into the main content');
   } finally {
     dom.window.close();
     for (const k of ['window', 'document', 'location', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch']) delete globalThis[k];

@@ -8,6 +8,7 @@ import {
   modal,
 } from '../ui.js';
 import { renderReport } from './report.js';
+import { bookingTable, createBookingLink } from './bookings.js';
 
 const M = () => state.meta;
 // Kept as a fallback for cached/static bootstrap payloads from before the
@@ -39,7 +40,7 @@ export async function dashboardView(view) {
         <h1>Capability pipeline</h1>
         <p>Candidates, assessments and average scored results.</p>
       </div>
-      <div class="heading-actions"><a class="btn" href="#/candidates">＋ Add candidate</a></div>
+      <div class="heading-actions"><button class="btn secondary" id="dashboard-booking-link">Create booking link</button><a class="btn" href="#/candidates">＋ Add candidate</a></div>
     </div>
     <div class="grid cols-4 metric-grid">
       <div class="stat"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.candidates}</span></div><div class="num">${d.counts.candidates}</div><div class="lbl">Candidates in pipeline</div></div>
@@ -47,6 +48,7 @@ export async function dashboardView(view) {
       <div class="stat stat-blue"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.active}</span></div><div class="num">${d.counts.active_assessments}</div><div class="lbl">Active assessments</div></div>
       <div class="stat stat-violet"><div class="stat-top"><span class="stat-icon">${DASHBOARD_ICONS.score}</span></div><div class="num">${d.counts.avg_score ?? '—'}${d.counts.avg_score != null ? '%' : ''}</div><div class="lbl">Average scored result</div></div>
     </div>
+    <div class="card" id="upcoming-tests"><div class="panel-head"><div><h2>Upcoming tests (${d.counts.upcoming_tests ?? 0})</h2><p>Candidate-booked slots · India Standard Time (IST)</p></div><a class="btn ghost sm" href="#/bookings">View all bookings →</a></div>${bookingTable(d.upcoming_tests || [])}</div>
     <div class="dashboard-grid">
       <div class="card pipeline-panel">
         <div class="panel-head"><div><h2>Pipeline health</h2><p>Candidate volume by readiness stage</p></div><a class="btn ghost sm" href="#/candidates">View all <span aria-hidden="true">→</span></a></div>
@@ -74,6 +76,7 @@ export async function dashboardView(view) {
         </div>
       </div>
     </div>`;
+  view.querySelector('#dashboard-booking-link').onclick = () => createBookingLink(() => dashboardView(view));
 }
 
 /* ================================ Candidates ================================ */
@@ -1306,7 +1309,7 @@ export async function usersView(view) {
     { name: 'username', label: 'Username', required: true, help: 'a-z 0-9 . _ - , at least 3 characters.' },
     { name: 'name', label: 'Full name', required: true },
     { name: 'email', label: 'Email', type: 'email' },
-    { name: 'role', label: 'Role', type: 'select', required: true, allowEmpty: false, options: state.meta.userRoles.map((r) => ({ value: r, label: r })) },
+    { name: 'role', label: 'Role', type: 'select', required: true, allowEmpty: false, options: state.meta.userRoles.map((r) => ({ value: r, label: ['trainer', 'validator'].includes(r) ? `${r} (planned portal)` : r })) },
     { name: 'password', label: values ? 'New password (leave blank to keep current)' : 'Password', type: 'password', required: !values, help: 'Minimum 8 characters. Share securely with the user.' },
     ...(values && values.role !== 'candidate' ? [] : [{
       name: 'candidate_id', label: 'Linked candidate (required for candidate role)', type: 'select',
@@ -1557,14 +1560,16 @@ export async function modulesView(view) {
            role-based set that allocation serves today is managed at the bottom
            of this same screen.</p>
       </div>
-      <div class="heading-actions">
+    </div>
+    <div class="card flat bank-toolbar">
         ${banks.length > 1 ? `
-        <label class="f" style="margin:0">
+        <label class="f bank-track">
           <span class="lbl">Track</span>
           <select id="mv-bank" aria-label="Module bank track">
             ${banks.map((b) => `<option value="${esc(b.role_key)}" ${b.role_key === roleKey ? 'selected' : ''}>${esc(b.role_name)} (v${esc(b.version)})</option>`).join('')}
           </select>
         </label>` : ''}
+      <div class="bank-actions">
         <button class="btn secondary" id="mv-import">Import (.xlsx / .csv)</button>
         <button class="btn secondary" id="mv-add">Add question</button>
         <button class="btn" id="mv-preview">Preview default assessment</button>
@@ -1623,7 +1628,7 @@ export async function modulesView(view) {
             ${row ? (row.sufficient ? badge('Ready', 'green') : badge('Short', 'amber')) : ''}
           </span>
         </summary>
-        <div class="family-table">
+        <div class="family-table" tabindex="0" role="region" aria-label="${esc(m.name)} families — scrollable table">
           ${dataTable([
             { label: 'Family', render: (f) => `<b>${esc(f.name)}</b><div class="small muted mono">${esc(f.id)}</div>` },
             { label: 'Holds', render: (f) => roleChip(f.role) },
