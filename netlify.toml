@@ -3,14 +3,14 @@
 [build]
   publish = "public"
   functions = "netlify/functions"
-  command = "echo 'ECOD: no client build required'"
+  command = "node scripts/configure-deploy.mjs"
 
 [build.environment]
   NODE_VERSION = "24"
 
 # Review builds use their own Blobs store and synthetic accounts.
 [context.deploy-preview]
-  command = "node scripts/seed-preview.mjs"
+  command = "node scripts/configure-deploy.mjs && node scripts/seed-preview.mjs"
   [context.deploy-preview.environment]
     STORAGE = "blobs"
     BLOBS_REQUIRE_CONSISTENCY = "true"

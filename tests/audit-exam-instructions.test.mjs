@@ -16,4 +16,3 @@ test('legacy two-minute open-answer directives match the current answer window w
   assert.equal(questions.find((q) => q.id === 'scenario').prompt, original.questions[2].prompt);
   assert.deepEqual(paper, original);
 });
-
