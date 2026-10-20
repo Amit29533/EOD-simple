@@ -365,8 +365,10 @@ export function adminHandlers(route) {
   // ------------------------------------------------ candidates
   // Pagination: limit/offset to prevent OOM on large directories. Default 200, max 500.
   const paginate = (rows, query, sortFn) => {
-    const limit = Math.min(500, Math.max(1, Number(query.limit) || 200));
-    const offset = Math.max(0, Number(query.offset) || 0);
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(query.limit) || 200)));
+    const requestedOffset = Number(query.offset);
+    const offset = Number.isFinite(requestedOffset)
+      ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(requestedOffset))) : 0;
     if (sortFn) rows.sort(sortFn);
     const total = rows.length;
     const slice = rows.slice(offset, offset + limit);
