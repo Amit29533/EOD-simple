@@ -33,7 +33,10 @@ export async function portalView(view, { refresh = false } = {}) {
   view.innerHTML = `
     <div class="page-heading candidate-heading">
       <div><div class="eyebrow">My journey</div><h1>Welcome, ${esc(d.candidate.name.split(' ')[0])}</h1><p class="muted">${esc(nextMessage)}.</p></div>
+      <div class="row">
+      ${state.meta.learningUrl ? `<a class="btn secondary" href="${esc(state.meta.learningUrl)}" target="_blank" rel="noopener">Continue learning →</a>` : ''}
       ${d.assessments.some((a) => a.scheduled_at) ? '<button class="btn secondary" id="refresh-exam-availability">Refresh exam availability</button>' : ''}
+      </div>
     </div>
     <div class="candidate-overview" aria-label="Assessment summary">
       <div class="overview-item"><span>Ready or in progress</span><b>${active.length}</b></div>

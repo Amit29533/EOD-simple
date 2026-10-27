@@ -134,7 +134,15 @@ export async function purgeAssessment(store, assessment, settings, {
 export async function runRetentionSweep(store, {
   now = Date.now(), rows = null, actor = null, limit = MAX_PURGE_PER_SWEEP, reason = 'retention',
 } = {}) {
-  const settings = await getRetentionSettings(store);
+  // A failed read is not an unconfigured workspace. Defaults are suitable
+  // for display, but must never authorize destruction of stored evidence.
+  const policy = await readRetentionSettings(store);
+  if (!policy.provisioned) {
+    const err = new Error('Retention cleanup stopped because its policy could not be read.');
+    err.code = 'RETENTION_POLICY_UNAVAILABLE';
+    throw err;
+  }
+  const settings = policy.settings;
   if (retentionDisabled(settings)) return { ran: false, reason: 'off', settings, purged: 0, rows: 0, clips: 0, papers: [] };
 
   const all = Array.isArray(rows) ? rows : await store.list('assessments', {}, { detached: false });
