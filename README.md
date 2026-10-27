@@ -597,6 +597,20 @@ Verify before you ship: `npm test` (655 Node tests), then with a local server up
        force = true
      ```
 
+## Anthroprime Learning integration
+
+Courses, practice quizzes, learning paths and progress live in the separate
+[Anthroprime-LMS repository](https://github.com/Amit29533/Anthroprime-LMS).
+The LMS verifies existing EOD usernames/emails, passwords and MFA codes through
+the existing authentication API; no second account or shared database is required.
+It reads finalized capability reports and requests formal reassessment through
+the administrator allocation API.
+
+Set `LMS_WEB_URL` to the LMS HTTPS browser URL (HTTP is accepted only for loopback
+development) to show **Continue learning** on the candidate journey. It is optional:
+leaving it unset preserves the current navigation. This supplies a navigation link
+and shared credentials, not an automatic cross-origin browser-session handoff.
+
 ## Security notes
 
 - Passwords: **scrypt** salted hashes (Node crypto); constant-time verification.
