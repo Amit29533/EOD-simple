@@ -5,10 +5,11 @@ import { assessorHandlers } from './handlers/assessor.mjs';
 import { candidateHandlers } from './handlers/candidate.mjs';
 import { metaHandlers } from './handlers/meta.mjs';
 import { bookingHandlers } from './handlers/bookings.mjs';
+import { trainingHandlers } from './handlers/training.mjs';
 
 /** Route tables, kept in handler modules and registered here in order. */
 const HANDLER_MODULES = [
-  authHandlers, adminHandlers, assessorHandlers, candidateHandlers, metaHandlers, bookingHandlers,
+  authHandlers, adminHandlers, assessorHandlers, candidateHandlers, metaHandlers, bookingHandlers, trainingHandlers,
 ];
 
 /**

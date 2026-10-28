@@ -1,5 +1,5 @@
 import { wireMicrophoneCheck } from '../microphone-check.js';
-import { api, session } from '../api.js';
+import { api, session, setExamOtherDeviceHandler, deviceId } from '../api.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
   esc, fmtDate, fmtDateTime, fmtScheduledTime, loading, emptyState, toast, attempt,
@@ -14,6 +14,38 @@ import {
 const scheduledTime = fmtScheduledTime;
 const portalCleanup = new WeakMap();
 
+const closedAccess = (a) => ['upcoming', 'cancelled', 'unavailable'].includes(a.access_state);
+/** What the candidate should do about one assessment, in one sentence. */
+function nextStepText(a) {
+  return a.access_state === 'cancelled' ? 'This booking has been cancelled. Contact your administrator.'
+    : a.access_state === 'unavailable' ? 'The exam schedule is unavailable. Contact your administrator before entering.'
+    : a.access_state === 'upcoming' ? `Your exam opens ${scheduledTime(a.scheduled_at)} and closes ${scheduledTime(a.expires_at)}. It cannot be opened early.`
+    : a.status === 'assigned' ? (a.scheduled_at ? `Your booked window is open until ${scheduledTime(a.expires_at)}. Joining late does not extend it.` : 'Review the exam rules and device checks before you begin.')
+    : a.status === 'in_progress' ? `Continue your saved exam. The two-hour window ends ${fmtDateTime(a.expires_at)}; closing the browser does not pause it.`
+    : a.status === 'submitted' ? (a.exam_expired ? 'The two-hour exam window expired. Your saved answers are available for assessor review.' : 'Under assessor review. The report will appear here when scoring is complete.')
+    : 'Your assessment has been scored. Open the report for results and development guidance.';
+}
+function assessmentAction(a, large = false) {
+  const size = large ? ' lg' : '';
+  if (['assigned', 'in_progress'].includes(a.status)) {
+    return closedAccess(a)
+      ? `<button class="btn${size}" disabled>${a.access_state === 'cancelled' ? 'Booking cancelled' : a.access_state === 'unavailable' ? 'Contact administrator' : 'Not open yet'}</button>`
+      : `<a class="btn${size}" href="#/assessments/${a.id}/quiz">${a.status === 'in_progress' ? 'Continue secure exam' : 'Enter exam hall'} →</a>`;
+  }
+  if (a.status === 'submitted') return '<span class="chip">No action needed</span>';
+  if (['scored', 'validated'].includes(a.status)) return `<a class="btn${size}" href="#/assessments/${a.id}/report">View report card</a>`;
+  return '';
+}
+/** The assessment that needs the candidate most: an open exam, then a booked one, then a result. */
+function primaryAssessment(list) {
+  const rank = (a) => a.status === 'in_progress' && !closedAccess(a) ? 0
+    : a.status === 'assigned' && !closedAccess(a) ? 1
+    : a.access_state === 'upcoming' ? 2
+    : ['scored', 'validated'].includes(a.status) ? 3
+    : a.status === 'submitted' ? 4 : 5;
+  return [...list].sort((x, y) => rank(x) - rank(y))[0] || null;
+}
+
 /* ================================ Portal (My Journey) ================================ */
 export async function portalView(view, { refresh = false } = {}) {
   document.body.classList.remove('exam-lock');
@@ -25,6 +57,7 @@ export async function portalView(view, { refresh = false } = {}) {
   const upcoming = d.assessments.filter((a) => a.access_state === 'upcoming');
   const awaiting = d.assessments.filter((a) => a.status === 'submitted');
   const completed = d.assessments.filter((a) => ['scored', 'validated'].includes(a.status));
+  const primary = primaryAssessment(d.assessments);
   const nextMessage = active.length
     ? `${active.length} assessment${active.length === 1 ? '' : 's'} ready for you`
     : upcoming.length ? `${upcoming.length} assessment${upcoming.length === 1 ? '' : 's'} scheduled for you`
@@ -44,12 +77,27 @@ export async function portalView(view, { refresh = false } = {}) {
       <div class="overview-item"><span>Under review</span><b>${awaiting.length}</b></div>
       <div class="overview-item"><span>Reports ready</span><b>${completed.length}</b></div>
     </div>
+    ${primary ? `<section class="card next-step-card" aria-labelledby="next-step-title">
+      <div class="next-step-main">
+        <div class="eyebrow">${['assigned', 'in_progress'].includes(primary.status) && !closedAccess(primary) ? 'Your next step' : primary.access_state === 'upcoming' ? 'Coming up' : 'Latest assessment'}</div>
+        <h2 id="next-step-title">${esc(primary.role_name)}</h2>
+        <div class="next-step-facts">
+          ${assessmentStatusBadge(state.meta.assessmentStatuses, primary.status)}
+          ${primary.readiness_label ? readinessBadge(primary.readiness_key, primary.readiness_label) : ''}
+          <span>${primary.question_count} questions</span>
+          ${['assigned', 'in_progress'].includes(primary.status) ? '<span>Two-hour window</span>' : ''}
+          <span>Allocated ${esc(fmtDate(primary.created_at))}</span>
+        </div>
+        <p class="next-step-text">${esc(nextStepText(primary))}</p>
+      </div>
+      <div class="next-step-action">${assessmentAction(primary, true)}</div>
+    </section>` : ''}
     <div class="card journey-card">
-      <div class="panel-head"><div><h2>Pipeline</h2></div></div>
+      <div class="panel-head"><div><h2>Your progress</h2><p class="small muted">Where you are in the ECOD readiness journey.</p></div></div>
       ${pipelineStepper(stages, d.candidate.stage)}
     </div>
-    <div class="card assessment-list-card">
-      <div class="panel-head"><div><h2>Assessments</h2></div></div>
+    ${d.assessments.length > 1 || !d.assessments.length ? `<div class="card assessment-list-card">
+      <div class="panel-head"><div><h2>All assessments</h2></div></div>
       ${d.assessments.length ? d.assessments.map((a) => `
         <article class="q-card candidate-assessment-card">
           <div class="candidate-assessment-main">
@@ -58,24 +106,12 @@ export async function portalView(view, { refresh = false } = {}) {
               ${a.readiness_label ? readinessBadge(a.readiness_key, a.readiness_label) : ''}
               <span>${a.question_count} questions</span><span>Allocated ${esc(fmtDate(a.created_at))}</span>
             </div>
-            <p class="small candidate-next-step">${a.access_state === 'cancelled' ? 'This booking has been cancelled. Contact your administrator.'
-              : a.access_state === 'unavailable' ? 'The exam schedule is unavailable. Contact your administrator before entering.'
-              : a.access_state === 'upcoming' ? `Your exam opens ${esc(scheduledTime(a.scheduled_at))} and closes ${esc(scheduledTime(a.expires_at))}. It cannot be opened early.`
-                : a.status === 'assigned' ? (a.scheduled_at ? `Your booked window is open until ${esc(scheduledTime(a.expires_at))}. Joining late does not extend it.` : 'Review the exam rules and device checks before you begin.')
-              : a.status === 'in_progress' ? `Continue your saved exam. The two-hour window ends ${esc(fmtDateTime(a.expires_at))}; closing the browser does not pause it.`
-                : a.status === 'submitted' ? (a.exam_expired ? 'The two-hour exam window expired. Your saved answers are available for assessor review.' : 'Under assessor review. The report will appear here when scoring is complete.')
-                  : 'Your assessment has been scored. Open the report for results and development guidance.'}</p>
+            <p class="small candidate-next-step">${esc(nextStepText(a))}</p>
           </div>
-          <div class="candidate-assessment-action">
-            ${['assigned', 'in_progress'].includes(a.status) ? (['upcoming', 'cancelled', 'unavailable'].includes(a.access_state)
-              ? `<button class="btn" disabled>${a.access_state === 'cancelled' ? 'Booking cancelled' : a.access_state === 'unavailable' ? 'Contact administrator' : 'Not open yet'}</button>`
-              : `<a class="btn" href="#/assessments/${a.id}/quiz">${a.status === 'in_progress' ? 'Continue secure exam' : 'Enter exam hall'} →</a>`) : ''}
-            ${a.status === 'submitted' ? `<span class="chip">No action needed</span>` : ''}
-            ${['scored', 'validated'].includes(a.status) ? `<a class="btn" href="#/assessments/${a.id}/report">View report card</a>` : ''}
-          </div>
+          <div class="candidate-assessment-action">${assessmentAction(a)}</div>
         </article>`).join('')
       : emptyState('No assessments yet', 'Your administrator will allocate one when you are ready.')}
-    </div>
+    </div>` : ''}
     <div class="card journey-device-check">
       <div class="panel-head"><div><h2>Check your microphone</h2><p class="small muted">Test and listen to your microphone before entering the exam. This practice clip stays on your device and does not start an assessment.</p></div></div>
       <div class="row"><button class="btn secondary" data-mic-start>Test microphone</button><button class="btn secondary" data-mic-stop disabled>Stop recording</button></div>
@@ -105,7 +141,33 @@ function renderSubmitted(view, expired = false) {
   view.innerHTML = `<div class="card">${emptyState(expired ? 'Exam time limit reached' : 'Assessment submitted', expired ? 'The two-hour window has expired. You cannot continue this exam. Saved answers are preserved for assessor review; contact your administrator if you need a new attempt.' : 'An assessor is reviewing your answers. Your report card appears here once scoring is complete.', expired ? '⏱' : '✅')}<div class="row" style="justify-content:center"><a class="btn secondary" href="#/journey">Back to My Journey</a></div></div>`;
 }
 
-export async function quizView(view, { id }) {
+/**
+ * The exam is bound to one device at a time. Shown when this browser asks for
+ * an exam another signed-in browser holds, or when the exam was just moved
+ * away from this one. Moving it here is deliberate and recorded.
+ */
+function renderOtherDevice(view, id, { movedAway = false } = {}) {
+  document.body.classList.remove('exam-lock');
+  view.innerHTML = `<div class="exam-hall"><div class="exam-seal card exam-other-device">
+    <div class="eyebrow">One device at a time</div>
+    <h1>${movedAway ? 'Your exam moved to another device' : 'Your exam is open on another device'}</h1>
+    <p class="muted">${movedAway
+      ? 'This exam is now running in another browser or device signed in to your account. This window has stopped so the two cannot answer at the same time.'
+      : 'This exam is already running in another browser or device signed in to your account. You can continue there, or move it here.'}</p>
+    <p class="small muted">Moving the exam does not pause or reset the clock, and it is recorded in your exam's integrity log for the assessor.</p>
+    <div class="row" style="margin-top:18px">
+      <a class="btn secondary" href="#/journey">Back to My Journey</a>
+      <button class="btn" id="exam-takeover">Continue on this device</button>
+    </div>
+  </div></div>`;
+  view.querySelector('#exam-takeover').onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    try { await quizView(view, { id, takeover: true }); }
+    catch (err) { e.currentTarget.disabled = false; toast(err.message || 'Could not move the exam. Please try again.', 'error'); }
+  };
+}
+
+export async function quizView(view, { id, takeover = false }) {
   view.innerHTML = loading();
   const gateKey = `ecod.exam.ack.${id}`;
 
@@ -147,7 +209,13 @@ export async function quizView(view, { id }) {
   // question's clock — actually starts. It carries a deadline so a server that
   // never answers ends on the router's error page (with a retry) instead of a
   // "Loading workspace" spinner that never resolves.
-  const d = await api(`/candidate/assessments/${id}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+  let d;
+  try {
+    d = await api(`/candidate/assessments/${id}${takeover ? '?takeover=1' : ''}`, { timeoutMs: EXAM_REQUEST_TIMEOUT_MS });
+  } catch (err) {
+    if (err?.body?.code === 'EXAM_OTHER_DEVICE') { renderOtherDevice(view, id); return; }
+    throw err;
+  }
 
   if (d.assessment.status === 'submitted') { renderSubmitted(view, d.assessment.exam_expired); return; }
   if (['scored', 'validated'].includes(d.assessment.status)) { location.hash = `#/assessments/${id}/report`; return; }
@@ -169,9 +237,17 @@ function renderExamGate(view, d, onStart, entryError = null) {
   view.innerHTML = `
     <div class="exam-hall">
       <div class="exam-seal card">
+        <div class="eyebrow">Before you begin</div>
         <h1>Assessment rules</h1>
         ${entryError ? `<p class="form-err" role="alert">${esc(entryError.message || 'Could not enter the exam.')} Retry entry promptly; the exam clock may already be running.</p>` : ''}
         <p class="muted">You are about to start a timed, proctored-style assessment for <b>${esc(d.assessment.role?.name || 'this role')}</b>. ${total} question${total === 1 ? '' : 's'} will be presented one at a time. You cannot return to a question once it has passed.</p>
+        <div class="exam-facts" aria-label="Exam at a glance">
+          <div><b>${total}</b><span>Questions, one at a time</span></div>
+          <div><b>2 hours</b><span>Exam window, never paused</span></div>
+          <div><b>30 s</b><span>Per multiple-choice answer</span></div>
+          <div><b>30 + 60 s</b><span>Review, then speak open answers</span></div>
+        </div>
+        <h2 class="exam-rules-title">The rules</h2>
         <ul class="exam-rules">
           <li><b>One question at a time.</b> Navigation back is disabled. Leaving a question locks it.</li>
           <li><b>Two-hour exam window.</b> ${d.assessment.scheduled_at ? `Your booked window is ${esc(scheduledTime(d.assessment.scheduled_at))} to ${esc(scheduledTime(d.assessment.expires_at))}. Joining late does not extend the closing time.` : 'It starts when you enter the exam hall.'} It runs continuously, including when you close the browser or sign out. At expiry the exam closes and saved answers remain available for review.</li>
@@ -181,6 +257,7 @@ function renderExamGate(view, d, onStart, entryError = null) {
           <li><b>Integrity.</b> Copying the question is blocked. Switching tabs, pasting, or leaving fullscreen is logged.</li>
           <li><b>Time expiry</b> auto-submits the current item (blank if unanswered) and advances.</li>
         </ul>
+        <p class="exam-mic-tip small muted">Tip: test your microphone on My Journey first, and keep this tab in full screen until you submit.</p>
         <label class="check exam-ack"><input type="checkbox" id="exam-ack" ${entryError ? 'checked' : ''}/> <span>I understand these conditions and will complete the exam independently.</span></label>
         <div class="row" style="margin-top:18px">
           <button class="btn" id="exam-enter" ${entryError ? '' : 'disabled'}>${entryError ? 'Retry exam entry' : 'Enter exam hall →'}</button>
@@ -249,6 +326,28 @@ async function runExamSession(view, id, payload) {
   };
   const lastIntegrityAt = new Map();
 
+  // Another browser took this exam over: stop here (clock, recorder, guards)
+  // rather than letting every retry path keep knocking on a refused paper.
+  setExamOtherDeviceHandler(() => {
+    if (unmounted || finished) return;
+    teardown();
+    renderOtherDevice(view, id, { movedAway: true });
+  });
+  cleanup.push(() => setExamOtherDeviceHandler(null));
+
+  // A faint, repeating watermark naming the candidate. It does not stop a
+  // photo of the screen, but it identifies whose exam a leaked image came from
+  // and discourages taking one. Kept outside #view so repaints never drop it.
+  const watermark = document.createElement('div');
+  watermark.className = 'exam-watermark';
+  watermark.setAttribute('aria-hidden', 'true');
+  const stamp = [state.user?.name, state.user?.username, `ECOD ${id.slice(-6)}`, new Date().toLocaleDateString('en-IN')].filter(Boolean).join(' · ');
+  const xml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+  const tile = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="220"><text x="20" y="130" transform="rotate(-24 210 110)" font-family="sans-serif" font-size="15" fill="#808080">${xml(stamp)}</text></svg>`;
+  watermark.style.backgroundImage = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(tile)}")`;
+  document.body.appendChild(watermark);
+  cleanup.push(() => watermark.remove());
+
   const typeLabel = (t) => (state.meta.questionTypes.find((x) => x.key === t) || {}).label || t;
 
   const logIntegrity = (event, detail = '', { force = false, keepalive = false } = {}) => {
@@ -264,6 +363,7 @@ async function runExamSession(view, id, payload) {
           headers: {
             'content-type': 'application/json',
             authorization: `Bearer ${session.token || ''}`,
+            'x-ecod-device': deviceId(),
           },
           body: JSON.stringify(body),
           keepalive: true,
@@ -278,7 +378,9 @@ async function runExamSession(view, id, payload) {
   if (Number(d.exam?.index || 0) <= 0 && !sessionStorage.getItem(`ecod.exam.started.${id}`)) {
     sessionStorage.setItem(`ecod.exam.started.${id}`, '1');
     logIntegrity('exam_start', 'Candidate entered the secure exam', { force: true });
-  } else if (Number(d.exam?.index || 0) > 0) {
+  } else {
+    // Any return to a started exam, including a reload on question 1: the
+    // server closes the absence the leave opened on this event.
     const resumed = sessionStorage.getItem(`ecod.exam.left.${id}`) ? 'after leaving' : 'after refresh';
     sessionStorage.removeItem(`ecod.exam.left.${id}`);
     logIntegrity('exam_reopen', `Exam resumed ${resumed} at question ${d.exam.index + 1}`, { force: true });
@@ -367,7 +469,8 @@ async function runExamSession(view, id, payload) {
       logIntegrity('tab_switch', 'Browser tab switched / window hidden', { force: true });
       toast('Tab switch recorded. Stay in the exam window.', 'error', 2800);
     } else {
-      logIntegrity('tab_return', 'Browser tab / window became visible again');
+      // Never throttled: the server closes the absence it is timing on this event.
+      logIntegrity('tab_return', 'Browser tab / window became visible again', { force: true });
     }
   };
   const onBlur = () => {

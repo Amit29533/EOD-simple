@@ -5,6 +5,7 @@ import { candidateForAssessor } from '../projections.mjs';
 import { isManualQuestion, isAutoQuestion, isValidManualScore, autoScore } from '../../core/scoring.mjs';
 import { finalizeScoring, paperFacts, advanceStage } from '../assessment-service.mjs';
 import { sortedQuestions } from '../quiz-session.mjs';
+import { integrityRisk } from '../../core/integrity-risk.mjs';
 import { withLock } from '../mutex.mjs';
 import {
   getRetentionSettings, paperRetention, deleteAssessmentRecording, sweepInBackground,
@@ -105,6 +106,8 @@ export function assessorHandlers(route) {
       assessment: {
         id: a.id, status: a.status, submitted_at: a.submitted_at, scored_at: a.scored_at,
         exam_expired: Boolean(a.quiz_state?.exam_expired),
+        // A prompt for the assessor's judgement, never a score change.
+        integrity_risk: integrityRisk(a.quiz_state),
         overall_pct: a.overall_pct, readiness_key: a.readiness_key, readiness_label: a.readiness_label,
         role: a.snapshot_json.role,
       },

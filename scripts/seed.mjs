@@ -13,7 +13,12 @@
  *   node scripts/seed.mjs          # seed if empty; otherwise add newly published
  *                                  # tracks and sync newly published seed questions
  *   SEED_FRESH=1 node scripts/seed.mjs   # wipe JSON store and reseed
- *   STORAGE=airtable AIRTABLE_API_KEY=.. AIRTABLE_BASE_ID=.. node scripts/seed.mjs
+ *   STORAGE=airtable AIRTABLE_API_KEY=.. AIRTABLE_BASE_ID=.. SEED_ADMIN_PASSWORD=.. node scripts/seed.mjs
+ *
+ * Demo accounts (published passwords) and demo candidates are created only in
+ * the local JSON store or with SEED_DEMO=1. On any other backend an empty store
+ * gets the published tracks plus one administrator (SEED_ADMIN_PASSWORD, and
+ * optionally SEED_ADMIN_USERNAME / SEED_ADMIN_NAME / SEED_ADMIN_EMAIL).
  */
 import fs from 'node:fs';
 import { createStore } from '../src/storage/index.mjs';
@@ -21,7 +26,7 @@ import { hashPassword } from '../src/core/passwords.mjs';
 import { buildSnapshot, finalizeScoring, paperSummary } from '../src/api/assessment-service.mjs';
 import { installCatalogue, PUBLISHED_CATALOGUES } from '../src/api/catalogue-service.mjs';
 import { bulkInsert } from '../src/api/helpers.mjs';
-import { RSA_ROLE, DEMO_USERS, DEMO_CANDIDATES } from './seed-content.mjs';
+import { RSA_ROLE, DEMO_USERS, DEMO_CANDIDATES, seedPlan } from './seed-content.mjs';
 
 const env = process.env;
 
@@ -62,6 +67,17 @@ if (existingAdmin.length) {
   process.exit(0);
 }
 
+// Decided before the first write, so a refused production seed leaves the
+// store exactly as it found it.
+const plan = seedPlan({ kind: store.kind, env });
+if (plan.error) {
+  console.error(`[seed] ${plan.error}`);
+  process.exit(1);
+}
+if (plan.mode === 'demo' && store.kind !== 'json-file') {
+  console.warn(`[seed] SEED_DEMO=1: creating demo accounts with PUBLISHED passwords on the ${store.kind} backend. Use this only for a throwaway store.`);
+}
+
 // ---- role tracks -------------------------------------------------------
 // Every published catalogue (see src/api/catalogue-service.mjs) gets its
 // role, competencies, question bank and default framework — through the same
@@ -81,6 +97,21 @@ for (const catalogue of Object.values(PUBLISHED_CATALOGUES)) {
 const role = roleById[RSA_ROLE.key];
 const rsaCompIds = Object.fromEntries(
   (await store.list('competencies', { role_id: role.id })).map((c) => [c.key, c.id]));
+
+if (plan.mode === 'admin') {
+  const { admin } = plan;
+  const rec = await store.insert('users', {
+    username: admin.username, name: admin.name, email: admin.email, role: 'admin',
+    password_hash: hashPassword(admin.password), active: true,
+  });
+  await store.insert('audit_log', {
+    actor_id: rec.id, actor_name: admin.name, action: 'platform_seeded',
+    entity: 'users', entity_id: rec.id,
+    message: `ECOD seeded with ${Object.values(PUBLISHED_CATALOGUES).map((c) => c.role.name).join(', ')} and one administrator`,
+  });
+  console.log(`\n[seed] done. Sign in as "${admin.username}" with the password from SEED_ADMIN_PASSWORD. No demo accounts were created.`);
+  process.exit(0);
+}
 
 // ---- users -----------------------------------------------------------
 const userIds = {};

@@ -7,6 +7,7 @@ import zlib from 'node:zlib';
 import { createStore } from './src/storage/index.mjs';
 import { createApp } from './src/api/app.mjs';
 import { corsAllowOrigin, corsHeaders } from './src/api/cors.mjs';
+import { clientAddress, trustedProxiesFromEnv } from './src/api/client-address.mjs';
 import {
   createRateLimiter, limitsFromEnv, bearerOf, PRODUCTION_LIMITS, DEVELOPMENT_LIMITS,
 } from './src/api/rate-limit.mjs';
@@ -44,6 +45,8 @@ const PORT = Number(process.env.PORT || DEFAULT_PORT);
 const HOST = process.env.HOST || '0.0.0.0';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const IS_PROD = NODE_ENV === 'production';
+// Validated at startup like PORT: a typo here must not silently fall back.
+const TRUSTED_PROXIES = trustedProxiesFromEnv(process.env);
 
 // ---- env validation at startup ----
 function validateEnv() {
@@ -205,9 +208,11 @@ function send(req, res, status, body, extraHeaders = {}) {
 }
 
 function clientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) return String(forwarded).split(',')[0].trim();
-  return req.socket.remoteAddress || 'unknown';
+  return clientAddress({
+    forwardedFor: req.headers['x-forwarded-for'],
+    socketAddress: req.socket.remoteAddress,
+    trustedProxies: TRUSTED_PROXIES,
+  });
 }
 
 // Pre-resolve public files for faster checks? Keep simple but async.

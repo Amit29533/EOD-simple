@@ -8,6 +8,7 @@ import { bulkUpdate } from './helpers.mjs';
 import { withLock } from './mutex.mjs';
 import { hasStrictModuleAllocation } from '../core/module-allocation-policy.mjs';
 import { attachModuleBank, moduleSnapshot } from './module-assessment.mjs';
+import { shuffleOptions } from '../core/paper-order.mjs';
 
 /**
  * The lock both allocation paths take for one candidate and track: the manual
@@ -78,7 +79,14 @@ export async function buildSnapshot(store, roleId, { questionLimit = null } = {}
  * cached copy, so a 2000-row onboarding does not re-read the bank 2000 times.
  * Both paths freeze identical papers because they share this function.
  */
-export function snapshotFromBank(bank, questionLimit = null, { blueprint = null } = {}) {
+export function snapshotFromBank(bank, questionLimit = null, options = {}) {
+  const snap = freezePaper(bank, questionLimit, options);
+  // Each candidate's answer order is drawn once, here, and frozen with the
+  // paper; papers allocated before this keep the order they were frozen with.
+  return snap ? { ...snap, questions: shuffleOptions(snap.questions) } : snap;
+}
+
+function freezePaper(bank, questionLimit, { blueprint = null } = {}) {
   if (hasStrictModuleAllocation(bank.role)) return moduleSnapshot(bank, questionLimit);
   // The HTTP handler validates this input, but keep the service boundary safe
   // for other callers too. A direct snapshot build can never freeze more than

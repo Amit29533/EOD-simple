@@ -30,6 +30,71 @@ const EXAM_GRACE_MS = 5000;
 // (duplicate response rows, dropped integrity increments). See mutex.mjs.
 const locked = (fn) => async (ctx) => withLock(`assessment:${ctx.params.id}`, () => fn(ctx));
 
+/**
+ * One device at a time. An open exam is bound to the browser that opened it
+ * (`quiz_state.device`); a request from any other browser is refused
+ * with `EXAM_OTHER_DEVICE` until the candidate deliberately moves the exam
+ * (`?takeover=1` or `{ takeover: true }`), which rebinds it and records a
+ * `device_switch` integrity event. The old browser is then refused. A change of
+ * network address on the bound session is recorded as `ip_change`.
+ *
+ * Backward compatible: a paper opened before this rule has no binding and is
+ * bound to whichever session makes its next request — nobody mid-exam is locked
+ * out by a deploy. Runs under the assessment lock, before the route's own read,
+ * so the route always works from the row this check wrote.
+ */
+const OPEN_STATUSES = ['assigned', 'in_progress'];
+const otherDevice = () => ({
+  status: 409,
+  body: {
+    error: 'This exam is open on another device or browser. Continue there, or move the exam to this device.',
+    code: 'EXAM_OTHER_DEVICE',
+  },
+});
+async function bindExamDevice({ store, auth, params, query = {}, body = {}, ip = '', method = '', headers = {} }) {
+  const opening = method === 'GET';
+  // The browser, not the login: the exam app sends a random id it keeps in
+  // that browser (`x-ecod-device`), so signing out and back in on the same
+  // machine is not a "second device", while a second browser or computer is.
+  // A request without one (an older client, a script) is not bound or refused.
+  const raw = headers['x-ecod-device'];
+  const sessionId = typeof raw === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(raw) ? raw : '';
+  if (!sessionId) return null;
+  const a = await store.get('assessments', params.id);
+  if (!a || a.candidate_id !== auth.user.candidate_id || !OPEN_STATUSES.includes(a.status)) return null;
+  // A request the exam would refuse anyway (a booked window not open yet) must
+  // not leave a binding behind; the route reports the refusal itself.
+  try { await assertExamAccess(store, a); } catch { return null; }
+  // A paper nobody has opened is bound by the request that opens it (the GET),
+  // never by a stray draft or beacon sent before the exam hall.
+  if (a.status === 'assigned' && !opening) return null;
+  const takeover = query.takeover === '1' || body?.takeover === true;
+  const bound = a.quiz_state?.device;
+  if (bound?.session && bound.session !== sessionId && !takeover) return otherDevice();
+  const address = String(ip || '').slice(0, 64);
+  const sameSession = bound?.session === sessionId;
+  if (sameSession && (!address || !bound.ip || bound.ip === address)) return null;
+  await changeAssessment(store, a.id, (current) => {
+    if (!current || !OPEN_STATUSES.includes(current.status)) return undefined;
+    const state = current.quiz_state && typeof current.quiz_state === 'object' ? current.quiz_state : {};
+    const was = state.device;
+    if (was?.session === sessionId && (!address || was.ip === address)) return undefined;
+    const device = { session: sessionId, ip: address || was?.ip || '', bound_at: was?.session === sessionId ? was.bound_at : new Date().toISOString() };
+    let next = { ...state, device };
+    // Only a started exam has a trail to write to; binding at the opening
+    // request needs no event.
+    if (Number.isInteger(state.index) && was?.session) {
+      next = was.session !== sessionId
+        ? integrityPatch(next, 'device_switch', `Exam moved to another device or browser${address ? ` (${address})` : ''}`, { question_index: state.index })
+        : integrityPatch(next, 'ip_change', `Network address changed from ${was.ip || 'unknown'} to ${address}`, { question_index: state.index });
+    }
+    return { quiz_state: next };
+  });
+  return null;
+}
+/** `locked` plus the one-device rule, for every exam route that reads or writes the paper. */
+const examRoute = (fn) => locked(async (ctx) => (await bindExamDevice(ctx)) || fn(ctx));
+
 async function myCandidate(store, user) {
   return user.candidate_id ? store.get('candidates', user.candidate_id) : null;
 }
@@ -349,7 +414,7 @@ export function candidateHandlers(route) {
   // read-modify-write too (it starts the paper and seeds the quiz state), so
   // an unlocked GET racing a /next could persist a stale cursor over the
   // advance's write.
-  route('GET', '/candidate/assessments/:id', R, locked(async ({ store, auth, params }) => {
+  route('GET', '/candidate/assessments/:id', R, examRoute(async ({ store, auth, params }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     const snap = a.snapshot_json;
@@ -388,7 +453,7 @@ export function candidateHandlers(route) {
     return ok(examScreen(current, questions, quiz, responses));
   }));
 
-  route('PUT', '/candidate/assessments/:id/answers', R, locked(async ({ store, auth, params, body }) => {
+  route('PUT', '/candidate/assessments/:id/answers', R, examRoute(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
@@ -412,7 +477,9 @@ export function candidateHandlers(route) {
     // (Nothing is on screen before the exam hall has been opened — the GET
     // that seeds `quiz_state` — so until then there is no live question.)
     const quiz = ensureQuizState(a, questions);
-    const live = a.quiz_state ? questions[quiz.index] || null : null;
+    // A started exam has a cursor; a state holding only the device binding
+    // (written before the first question) does not open the hall.
+    const live = Number.isInteger(a.quiz_state?.index) ? questions[quiz.index] || null : null;
     const inTime = live ? remainingTimeMs(live, quiz, Date.now()) >= -EXAM_GRACE_MS : false;
     const accepted = [];
     const ignored = [];
@@ -470,7 +537,7 @@ export function candidateHandlers(route) {
     return ok({ ok: true, saved_at: new Date().toISOString(), accepted_question_ids: accepted, ignored_question_ids: ignored });
   }));
 
-  route('POST', '/candidate/assessments/:id/integrity', R, locked(async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/integrity', R, examRoute(async ({ store, auth, params, body }) => {
     // A beacon must name its event. `integrityPatch` ignores a nameless one, so
     // it never entered the exam trail and never counted toward the audit cap
     // below, yet each one still cost an assessment write and an
@@ -530,7 +597,7 @@ export function candidateHandlers(route) {
     return ok({ integrity: quiz.integrity, events: quiz.events });
   }));
 
-  route('POST', '/candidate/assessments/:id/phase', R, locked(async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/phase', R, examRoute(async ({ store, auth, params, body }) => {
     if (body?.phase !== 'answer') return bad('phase must be "answer".');
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
@@ -577,7 +644,7 @@ export function candidateHandlers(route) {
       screen: examScreen({ ...a, quiz_state: next }, questions, next, responses) });
   }));
 
-  route('POST', '/candidate/assessments/:id/next', R, locked(async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/next', R, examRoute(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (!['assigned', 'in_progress'].includes(a.status))
@@ -779,7 +846,7 @@ export function candidateHandlers(route) {
       ...(!moved.changed ? { duplicate: true } : {}), ...(screen ? { screen } : {}) });
   }));
 
-  route('POST', '/candidate/assessments/:id/submit', R, locked(async ({ store, auth, params, body }) => {
+  route('POST', '/candidate/assessments/:id/submit', R, examRoute(async ({ store, auth, params, body }) => {
     const a = await ownAssessment(store, auth.user, params.id);
     if (!a) return notFound('Assessment not found.');
     if (a.status === 'submitted') return conflict('This assessment has already been submitted.');

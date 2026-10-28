@@ -469,6 +469,29 @@ export const levelPips = (level, max = 5) =>
 export const progressBar = (pctVal, width = 90) =>
   `<div class="progress" style="width:${width}px"><span style="width:${Math.min(100, Math.max(0, pctVal))}%"></span></div>`;
 
+/* --------------------------- integrity risk (src/core/integrity-risk.mjs) --------------------------- */
+const RISK_TONE = { low: 'green', review: 'amber', high: 'red' };
+const fmtAway = (ms) => {
+  const s = Math.round((Number(ms) || 0) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ''}`;
+};
+/** "Integrity: Review" badge; empty for a sitting with no recorded risk data. */
+export function integrityRiskBadge(risk, { href = '' } = {}) {
+  if (!risk || !risk.level) return '';
+  const html = badge(`Integrity: ${risk.label || risk.level}`, RISK_TONE[risk.level] || 'grey');
+  return href ? `<a href="${esc(href)}" style="text-decoration:none" title="${esc((risk.reasons || []).join('; ') || 'No integrity concerns recorded')}">${html}</a>` : html;
+}
+/** The flag with its reasons and time away, for the integrity trail, report and assessor screens. */
+export function integrityRiskPanel(risk, { href = '' } = {}) {
+  if (!risk || !risk.level) return '';
+  const away = risk.away_ms ? `${fmtAway(risk.away_ms)} away from the exam${risk.away_count ? ` across ${risk.away_count} absence${risk.away_count === 1 ? '' : 's'}` : ''}${risk.longest_away_ms ? ` · longest ${fmtAway(risk.longest_away_ms)}` : ''}` : 'No time away from the exam recorded';
+  return `<div class="integrity-risk risk-${esc(risk.level)}" role="note">
+    <div class="integrity-risk-head">${integrityRiskBadge(risk)}<span class="small muted">${esc(away)}</span>${href ? `<a class="small" href="${esc(href)}">Integrity trail →</a>` : ''}</div>
+    ${risk.reasons?.length ? `<ul>${risk.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '<p class="small muted">No integrity concerns were recorded for this sitting.</p>'}
+    ${risk.level !== 'low' ? '<p class="small muted">A prompt for review, not a verdict: check the event history before drawing conclusions.</p>' : ''}
+  </div>`;
+}
+
 /**
  * Simple data table. cols: [{label, render(row), cls}]
  * `caption` gives screen-reader users context for the table; on narrow screens

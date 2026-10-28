@@ -5,6 +5,7 @@ import { logoSvg } from './logo.js';
 import { changePassword, authenticatorSettings } from './account-security.js';
 import { recoveryView } from './views/recovery.js';
 import { bookingsView, publicBookingView } from './views/bookings.js';
+import { trainingView } from './views/training.js';
 import { loginView } from './views/login.js';
 import * as admin from './views/admin.js';
 import * as assessor from './views/assessor.js';
@@ -18,6 +19,7 @@ const ROUTES = {
     ['#/dashboard', admin.dashboardView], ['#/candidates', admin.candidatesView],
     ['#/candidates/:id', admin.candidateDetailView], ['#/assessments', admin.assessmentsView],
     ['#/bookings', bookingsView],
+    ['#/training', trainingView],
     ['#/assessments/:id/report', admin.reportView], ['#/assessments/:id/integrity', admin.integrityView],
     ['#/roles', admin.rolesView],
     ['#/roles/:id', admin.roleDetailView],
@@ -73,11 +75,12 @@ const NAV_ICONS = {
   audit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h12v16H6zM9 8h6M9 12h6M9 16h4"></path></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M12 3.6v2.2M12 18.2v2.2M4.6 12h2.2M17.2 12h2.2M6.8 6.8l1.6 1.6M15.6 15.6l1.6 1.6M17.2 6.8l-1.6 1.6M8.4 15.6l-1.6 1.6"></path></svg>',
   workspace: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 17 5-5 3 3 7-8"></path><path d="M15 7h4v4"></path></svg>',
+  training: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5 12 5l9 4.5-9 4.5z"></path><path d="M7 11.6V16c1.4 1.4 3 2 5 2s3.6-.6 5-2v-4.4M21 9.5V15"></path></svg>',
   journey: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17c3-8 8-9 16-10"></path><path d="m16 5 4 2-3 3"></path><circle cx="5" cy="18" r="2"></circle></svg>',
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 11 8-7 8 7v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"></path><path d="M9 20v-6h6v6"></path></svg>',
 };
 const NAV = {
-  admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'], ['#/bookings', 'Test bookings'],
+  admin: [['#/dashboard', 'Dashboard'], ['#/candidates', 'Candidates'], ['#/assessments', 'Assessments'], ['#/bookings', 'Test bookings'], ['#/training', 'Training Dashboard'],
           ['#/roles', 'Roles & Frameworks'], ['#/modules', 'Question Bank'],
           ['#/users', 'Users & Access'], ['#/audit', 'Audit Log'], ['#/settings', 'Settings']],
   assessor: [['#/workspace', 'My Assessments']],
@@ -105,7 +108,7 @@ function renderShell() {
   // Group by destination rather than by index, so adding a nav item never
   // silently slides entries into the wrong section.
   const GROUPS = {
-    Workspace: ['#/dashboard', '#/candidates', '#/assessments', '#/bookings'],
+    Workspace: ['#/dashboard', '#/candidates', '#/assessments', '#/bookings', '#/training'],
     Configure: ['#/roles', '#/modules'],
     Governance: ['#/users', '#/audit', '#/settings'],
   };
@@ -115,9 +118,18 @@ function renderShell() {
         .filter(([, items]) => items.length)
     : [['Workspace', nav]];
   const pageLabel = (nav.find(([h]) => h === hash) || [])[1] || 'Anthroprime ECOD';
+  // A role with one destination (a candidate's journey) gets a slim top bar
+  // instead of a sidebar holding a single link; the empty sidebar collapses.
+  const singleNav = nav.length <= 1;
+  const brandLink = `<a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime ECOD home">
+        <span class="mark">${logoSvg({ className: 'mark-svg' })}</span>
+        <span><strong>Anthroprime</strong><small>ECOD · Capability OS</small></span>
+      </a>`;
 
   document.body.classList.add('app-body');
-  document.getElementById('sidebar').innerHTML = `
+  document.body.classList.toggle('single-nav', singleNav);
+  if (singleNav) document.getElementById('sidebar').innerHTML = '';
+  else document.getElementById('sidebar').innerHTML = `
     <div class="brand">
       <a class="logo" href="${DEFAULT_ROUTE[u.role] || '#/home'}" aria-label="Anthroprime ECOD home">
         <span class="mark">${logoSvg({ className: 'mark-svg' })}</span>
@@ -135,7 +147,7 @@ function renderShell() {
 
   document.getElementById('topbar').innerHTML = `
     <div class="topbar-left">
-      <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
+      ${singleNav ? `<div class="topbar-brand">${brandLink}</div>` : '<button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>'}
       <div class="topbar-context"><span class="muted small">Anthroprime ECOD</span><strong>${esc(pageLabel)}</strong></div>
     </div>
     <div class="topbar-right">
@@ -179,7 +191,7 @@ function renderShell() {
   };
 
   const toggle = document.getElementById('mobile-nav-toggle');
-  toggle.onclick = () => {
+  if (toggle) toggle.onclick = () => {
     const open = document.getElementById('sidebar').classList.toggle('open');
     document.getElementById('nav-scrim').classList.toggle('visible', open);
     toggle.setAttribute('aria-expanded', String(open));

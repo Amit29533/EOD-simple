@@ -52,6 +52,9 @@ export async function createApp(store) {
       const auth = await resolveAuth(headers);
       const result = await dispatch(routes, {
         store, method, path, query: scalarQuery(query), body: body || {}, auth,
+        // Read-only request headers (the exam's one-device rule reads the
+        // browser id, `x-ecod-device`). Authorization is resolved above.
+        headers,
         // The client address as the transport saw it (socket / platform
         // header); only the login throttle keys on it, and never trusts it
         // for anything but bucketing.

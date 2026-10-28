@@ -27,6 +27,31 @@
  * Fisher-Yates over a copy. Guards against an rng returning values outside
  * [0, 1) so a bad injection cannot produce an out-of-range index.
  */
+/**
+ * Option labels whose meaning depends on the options around them ("All of the
+ * above", "Both A and B", "Options 1 and 3"). A question carrying one keeps
+ * its authored order, because shuffling would make the label lie.
+ */
+const ORDER_DEPENDENT_OPTION = /\b(all|none|both|neither)\s+of\s+the\s+(above|below|options|answers)\b|\b(both|options?|choices?|answers?)\s+[A-H1-8]\s*(,\s*[A-H1-8]\s*)*(and|&|or)\s*[A-H1-8]\b|\b[A-H]\s+and\s+[A-H]\b/i;
+
+/**
+ * Per-candidate answer order. Run once, when a paper is frozen at allocation,
+ * so each sitting is stable across refreshes while "question 12 is B" no
+ * longer travels between candidates. Scoring is unaffected: answers and keys
+ * are option ids, never positions. Only choice questions with two or more
+ * options are touched, and never one the bank marks `randomizable: false` or
+ * whose labels refer to their own order. Rows are copied, not mutated.
+ */
+export function shuffleOptions(questions, rng = Math.random) {
+  return (questions || []).map((q) => {
+    const options = Array.isArray(q?.options) ? q.options : [];
+    const choice = q?.type === 'mcq_single' || q?.type === 'mcq_multi';
+    if (!choice || options.length < 2 || q.randomizable === false || q.options_shuffled) return q;
+    if (options.some((o) => ORDER_DEPENDENT_OPTION.test(String(o?.label ?? '')))) return q;
+    return { ...q, options: shuffle(options, rng), options_shuffled: true };
+  });
+}
+
 export function shuffle(items, rng = Math.random) {
   const out = [...items];
   for (let i = out.length - 1; i > 0; i -= 1) {

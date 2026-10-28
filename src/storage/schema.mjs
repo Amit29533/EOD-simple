@@ -47,6 +47,9 @@ export const TABLES = {
   // cleanup OFF must not be read as "use the default (on)".
   settings:     { json: [], flags: ['auto_delete_answer_sheets', 'auto_delete_recordings'] },
   audit_log:    { json: ['meta'], flags: [] },
+  // Failed sign-in counts shared by every server instance, one row per
+  // `username|address` and `username|*` key (src/api/handlers/auth.mjs).
+  login_throttle: { json: [], flags: [] },
 };
 
 /**

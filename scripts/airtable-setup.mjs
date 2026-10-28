@@ -95,6 +95,10 @@ export const SCHEMA = {
                          { name: 'auto_delete_answer_sheets', ...chk }, { name: 'auto_delete_recordings', ...chk }]),
   audit_log:    ['actor_id', 'actor_name', 'action', 'entity', 'entity_id', 'created_at'].map((f) => ({ name: f, ...txt }))
                 .concat([{ name: 'message', ...long }, { name: 'meta', ...long }]),
+  // Shared failed-login counts (src/api/handlers/auth.mjs). Optional: without
+  // this table sign-in falls back to per-instance counts and logs a warning.
+  login_throttle: ['username', 'key', 'started_at', 'reset_at', 'created_at', 'updated_at'].map((f) => ({ name: f, ...txt }))
+                .concat([{ name: 'count', ...num }]),
 };
 
 async function main() {
