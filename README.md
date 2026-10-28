@@ -33,7 +33,7 @@ New technologies, roles, competencies, questions, weights and scoring frameworks
 Use Node.js 24. Run `npm ci` to install the locked dependencies before testing or deployment.
 
 ```bash
-npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (JSON file store)
+npm run seed        # seeds or synchronizes all published tracks + demo users/candidates (local JSON store only; see "Deploy")
 npm start           # serves the app on http://localhost:3000
 npm test            # scoring engine, question apportionment, API/RBAC journey,
                     #           a route x role guard matrix read from the live router,
@@ -489,6 +489,13 @@ verification is additionally gated process-wide (two at a time, a line of 200, t
 `503` with `retry-after: 2`) so a sign-in flood cannot starve the static site or the exam. The
 Netlify transport relies on the platform's limits.
 
+The address those budgets and the login throttle use is the socket address. `X-Forwarded-For`
+is ignored by default because any caller can write it. Behind your own reverse proxies (nginx,
+a load balancer) set `TRUST_PROXY` to how many of them sit in front of the server (`1` for a
+single proxy): the server then takes the address the outermost trusted proxy recorded. Without
+it, every client behind a proxy shares the proxy's address and its budget. Netlify is
+unaffected; it supplies the client address in its own header.
+
 **Migrating later** (e.g. Postgres): write one more adapter exposing the same five methods,
 select it in `src/storage/index.mjs`. Handlers, scoring, RBAC and the SPA are untouched.
 The adapter contract is documented in `src/storage/schema.mjs`; `tests/airtable-adapter.test.mjs`
@@ -500,7 +507,8 @@ The adapter contract is documented in `src/storage/schema.mjs`; `tests/airtable-
    `data.records:write` (+ `schema.bases:write` for automatic setup).
 2. Provision tables: `AIRTABLE_API_KEY=… AIRTABLE_BASE_ID=… npm run airtable:setup`
    (without the schema scope it prints the exact table/field list to create manually).
-3. Seed: `STORAGE=airtable npm run seed`
+3. Seed: `STORAGE=airtable SEED_ADMIN_PASSWORD=… npm run seed` (an empty base gets the
+   published tracks and one administrator with that password; no demo accounts).
 4. Deploy/run with the three env vars set.
 
 Two Airtable behaviours the adapter absorbs, so the rest of the app never sees them:
@@ -579,7 +587,12 @@ This repo is a complete Netlify site (see `netlify.toml`; publish `public/`, fun
    exist — but it cannot add columns to tables created by an older version, so point it
    at a fresh base when upgrading).
 4. Deploy, then run the seed once (locally, pointing at the same backend):
-   `STORAGE=airtable … npm run seed` or via Netlify CLI.
+   `STORAGE=airtable … SEED_ADMIN_PASSWORD=… npm run seed` or via Netlify CLI. On any backend
+   other than the local JSON file, an empty store gets the published tracks and a single
+   administrator (`SEED_ADMIN_PASSWORD`, 12+ characters; optional `SEED_ADMIN_USERNAME`,
+   `SEED_ADMIN_NAME`, `SEED_ADMIN_EMAIL`). The demo accounts, whose passwords are published in
+   `scripts/seed-content.mjs`, are created there only with an explicit `SEED_DEMO=1`. A store
+   that already has an `admin` user is never given accounts; the seed only syncs its tracks.
 
 Verify before you ship: `npm test` (655 Node tests), then with a local server up
 (`npm run seed:fresh`, `node server.mjs`), `npm run test:smoke` and — after another
@@ -611,6 +624,17 @@ development) to show **Continue learning** on the candidate journey. It is optio
 leaving it unset preserves the current navigation. This supplies a navigation link
 and shared credentials, not an automatic cross-origin browser-session handoff.
 
+The same setting turns on the admin **Training** screen (`#/training`). From it an
+administrator grants or revokes learning-platform access by the candidate's ECOD email,
+assigns published courses, and follows each candidate's progress, module completion and
+first/best/latest knowledge-check scores. Courses, invitations and progress stay in the
+LMS; `src/api/handlers/training.mjs` forwards the administrator's own session to the LMS's
+`/api/integration/training` routes, which re-check it with ECOD before acting. The token
+travels in a header only, redirects are refused, candidates are refused before anything
+is forwarded, and an LMS outage shows an error on that screen without ending the ECOD
+session. No email is sent. Without `LMS_WEB_URL` the screen explains how to connect it.
+Grants, revocations and assignments are recorded in the ECOD audit log.
+
 ## Security notes
 
 - Passwords: **scrypt** salted hashes (Node crypto); constant-time verification.
@@ -626,6 +650,40 @@ and shared credentials, not an automatic cross-origin browser-session handoff.
 - No self-registration anywhere: **accounts are created by admins only**.
 - Before production: rotate seeded credentials, serve only via HTTPS (Netlify default),
   and treat `DATA_FILE`/Airtable PATs as secrets (Netlify env vars, never in Git).
+- Failed sign-ins are also counted in the `login_throttle` table so every server instance
+  enforces the same limits; without that table (an Airtable base set up before it existed,
+  until `npm run airtable:setup` adds it) the counts stay per instance. `X-Forwarded-For` is
+  only trusted behind `TRUST_PROXY` proxies (see above).
+
+## Exam integrity
+
+The exam is one question at a time with server-enforced timers, answer keys never reach the
+browser, and the browser reports tab switches, focus loss, leaving full screen, copy/paste and
+developer-tools attempts to the integrity trail. On top of that:
+
+- **Shuffled answers.** Each new paper freezes its own option order for choice questions, so
+  "question 12 is B" does not travel between candidates. Scoring uses option ids, so it is
+  unaffected. A question marked `randomizable: false`, or whose options refer to each other
+  ("All of the above", "Both A and B"), keeps its authored order. Papers allocated before this
+  keep the order they were frozen with.
+- **Time away.** Leaving the exam (tab hidden, page closed, exam left) and coming back are
+  timed on the server's clock, so the trail shows total and longest absence, not just a count.
+- **One device at a time.** An open exam is bound to the browser that opened it (a random
+  per-browser id the exam app keeps, so signing in again on the same machine is fine). Another
+  browser or device is refused with *"Your exam is open on another device"* and can move the
+  exam only by choosing **Continue on this device**, which stops the first browser and is
+  logged as a device switch. A change of network address mid-exam is logged too. Exams that were
+  already in progress bind on their next request, so a deploy locks nobody out.
+- **Watermark.** The exam screen carries a faint, repeating stamp with the candidate's name,
+  username, exam id and date, which identifies the source of a leaked photo or screenshot.
+- **Risk flag.** Every sitting gets *Low / Review / High* from its signals (repeated tab
+  switches, long or unfinished absences, second windows, device switches, developer tools,
+  paste attempts) with the reasons listed. It appears on the assessments list, the integrity
+  trail, the admin report and the assessor's scoring screen, never to the candidate. It is a
+  prompt for human review, not an automatic penalty (`src/core/integrity-risk.mjs`).
+
+A web page cannot see a second phone, another person or an assistant on another device; the
+recorded spoken answers and an assessor's review remain the main defence against those.
 
 ## Roadmap hooks (already designed-in)
 
@@ -642,6 +700,10 @@ public/            SPA (index.html, styles.css, js/, brand/ logo assets)
 src/core/          domain constants, passwords, pure scoring engine
 src/storage/       storage contract + json / airtable / netlify-blobs adapters
 src/api/           router, handlers, projections, assessment service
+src/api/handlers/  one module per audience; admin/ splits the admin API by area
+                   (people, tracks, question-bank, assessments, governance, …),
+                   training.mjs bridges to the learning platform
+public/js/views/   one module per screen; admin/ splits the admin screens by area
 netlify/functions/ serverless transport
 scripts/           seed (+ RSA seed content), airtable-setup
 tests/             scoring unit tests, API/RBAC journey tests, airtable-adapter contract test, smoke

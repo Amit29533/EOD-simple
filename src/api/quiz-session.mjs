@@ -106,6 +106,11 @@ export function ensureQuizState(a, questions) {
     return { ...healed, events: Array.isArray(existing.events) ? existing.events : [] };
   }
   return {
+    // The device binding and the time-away record can be written before the
+    // exam's first question exists (the device is bound on the opening
+    // request); a freshly created state keeps them.
+    ...(existing?.device ? { device: existing.device } : {}),
+    ...(existing?.away ? { away: existing.away } : {}),
     index: 0,
     question_started_at: new Date().toISOString(),
     phase: qs[0] && isOpenQuestion(qs[0]) ? 'review' : 'answer',
@@ -114,7 +119,7 @@ export function ensureQuizState(a, questions) {
       tab_switch: 0, tab_return: 0, window_blur: 0, browser_close: 0, exam_exit: 0,
       exam_reopen: 0, exam_start: 0, multi_window: 0, devtools_key: 0,
       devtools_resize: 0, copy_attempt: 0, cut_attempt: 0, paste_attempt: 0,
-      screenshot: 0, spoken_answer_missing: 0, time_expired: 0, other: 0,
+      screenshot: 0, spoken_answer_missing: 0, time_expired: 0, device_switch: 0, ip_change: 0, other: 0,
     },
     events: [],
   };
@@ -155,7 +160,40 @@ export const INTEGRITY_EVENT_KEYS = new Set([
   // registry, so every timeout was counted under `other` and the admin's
   // integrity screen had no way to show "timed out" as its own number.
   'time_expired',
+  // API-recorded by the one-device rule (handlers/candidate.mjs): the exam was
+  // taken over by another signed-in session, or the bound session's network
+  // address changed mid-exam.
+  'device_switch',
+  'ip_change',
 ]);
+
+/**
+ * Time away from the exam, measured on the server's clock so the browser cannot
+ * shorten it: leaving (tab hidden, page closed, exam left) opens an absence and
+ * coming back closes it. One absence never counts for more than the exam's two-
+ * hour window, and a second "leave" while already away does not restart it.
+ */
+const LEAVE_EVENTS = new Set(['tab_switch', 'browser_close', 'exam_exit']);
+// A takeover is a return too: the candidate is back at the exam, on another device.
+const RETURN_EVENTS = new Set(['tab_return', 'exam_reopen', 'device_switch']);
+const MAX_ABSENCE_MS = 2 * 60 * 60 * 1000;
+
+export function awayPatch(away, event, now = Date.now()) {
+  const current = {
+    total_ms: Math.max(0, Number(away?.total_ms) || 0),
+    longest_ms: Math.max(0, Number(away?.longest_ms) || 0),
+    count: Math.max(0, Number(away?.count) || 0),
+    since: typeof away?.since === 'string' && Number.isFinite(Date.parse(away.since)) ? away.since : null,
+  };
+  if (LEAVE_EVENTS.has(event) && !current.since) {
+    return { ...current, count: current.count + 1, since: new Date(now).toISOString() };
+  }
+  if (RETURN_EVENTS.has(event) && current.since) {
+    const ms = Math.min(MAX_ABSENCE_MS, Math.max(0, now - Date.parse(current.since)));
+    return { total_ms: current.total_ms + ms, longest_ms: Math.max(current.longest_ms, ms), count: current.count, since: null };
+  }
+  return null;
+}
 
 /**
  * How much of the raw event log is kept on the assessment record. Counters are
@@ -189,8 +227,10 @@ export function integrityPatch(state, event, detail = '', { question_index = nul
   };
   const events = [...(state.events || []), line];
   const dropped = (state.events_dropped || 0) + Math.max(0, events.length - MAX_INTEGRITY_EVENTS);
+  const away = awayPatch(state.away, safeEvent);
   return {
     ...state,
+    ...(away ? { away } : {}),
     integrity,
     events: events.slice(-MAX_INTEGRITY_EVENTS),
     events_dropped: dropped || undefined,

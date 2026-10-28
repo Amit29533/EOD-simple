@@ -26,7 +26,15 @@ import { newToken } from '../../core/ids.mjs';
  *    an address that has signed in to that account within TRUST_MS, so a
  *    user on their usual network cannot be locked out by strangers.
  *
- * Both maps are in-memory and per process (per warm instance on Netlify).
+ * The counts live in memory AND in the `login_throttle` table. Memory alone is
+ * per process, and a Netlify deploy runs many function instances, each with its
+ * own empty map, so an attacker spread across instances was barely slowed. The
+ * table makes the strikes shared; a check takes the higher of the two counts.
+ * The table is best effort: if it is unavailable (an Airtable base provisioned
+ * before it existed, a storage hiccup) sign-in carries on with the in-memory
+ * counts, because a throttle must never stop a correct password from working.
+ * The trusted-address waiver stays in memory: it only ever loosens the rule.
+ *
  * A transport that does not supply an address (in-process callers, tests)
  * shares the `unknown` address, which reduces to the old per-username rule.
  */
@@ -87,23 +95,85 @@ const bump = (key) => {
   else failures.set(key, { count: 1, resetAt: Date.now() + WINDOW_MS });
 };
 const isTrusted = (username, address) => (trusted.get(username)?.get(address) || 0) > Date.now();
-const throttled = (username, address) => {
-  const own = bucket(`${username}|${address}`);
-  if (own && own.count >= MAX_FAILURES) return true;
+
+// ---- shared strikes (the login_throttle table) ----
+const THROTTLE_TABLE = 'login_throttle';
+let sharedEnabled = true;   // off for the life of the process once the table proves missing
+let sharedWarned = false;
+let resetEpoch = 0;         // rows started before a test reset are ignored
+const iso = (ms) => new Date(ms).toISOString();
+const liveRow = (row, now = Date.now()) =>
+  Date.parse(row.reset_at) > now && (Date.parse(row.started_at) || 0) >= resetEpoch;
+function sharedFailed(err) {
+  // A table the backend does not have (Airtable 404/403 on the model, or an
+  // unknown-field 422) will not appear on its own: stop asking. Anything else
+  // is treated as transient and retried on the next attempt.
+  if (/NOT_FOUND|not found|UNKNOWN_FIELD|INVALID_PERMISSIONS_OR_MODEL/i.test(`${err?.code || ''} ${err?.message || ''}`)) sharedEnabled = false;
+  if (!sharedWarned) {
+    sharedWarned = true;
+    console.warn(`[auth] shared login throttle unavailable, using per-instance counts${sharedEnabled ? '' : ' (run `npm run airtable:setup` to add the login_throttle table)'}: ${err?.message || err}`);
+  }
+}
+async function sharedRows(store, username) {
+  if (!sharedEnabled) return [];
+  try {
+    return await store.list(THROTTLE_TABLE, { username });
+  } catch (err) {
+    sharedFailed(err);
+    return [];
+  }
+}
+async function persistFailure(store, username, address) {
+  if (!sharedEnabled) return;
+  try {
+    const now = Date.now();
+    const rows = await store.list(THROTTLE_TABLE, { username });
+    for (const key of [`${username}|${address}`, `${username}|*`]) {
+      const row = rows.find((r) => r.key === key);
+      if (row && liveRow(row, now)) await store.update(THROTTLE_TABLE, row.id, { count: (Number(row.count) || 0) + 1 });
+      else if (row) await store.update(THROTTLE_TABLE, row.id, { count: 1, started_at: iso(now), reset_at: iso(now + WINDOW_MS) });
+      else await store.insert(THROTTLE_TABLE, { username, key, count: 1, started_at: iso(now), reset_at: iso(now + WINDOW_MS) });
+    }
+    // Rows expire but are not deleted when they do; sweep now and then so the
+    // table stays the size of the current window.
+    if (Math.random() < 0.05) {
+      const expired = (await store.list(THROTTLE_TABLE)).filter((r) => !liveRow(r, now));
+      await Promise.all(expired.map((r) => store.remove(THROTTLE_TABLE, r.id).catch(() => {})));
+    }
+  } catch (err) {
+    sharedFailed(err);
+  }
+}
+async function forgetShared(store, username, address) {
+  if (!sharedEnabled) return;
+  try {
+    const own = (await store.list(THROTTLE_TABLE, { username })).find((r) => r.key === `${username}|${address}`);
+    if (own) await store.remove(THROTTLE_TABLE, own.id);
+  } catch (err) {
+    sharedFailed(err);
+  }
+}
+
+const throttled = async (store, username, address) => {
+  const ownKey = `${username}|${address}`, anyKey = `${username}|*`;
+  const rows = (await sharedRows(store, username)).filter((r) => liveRow(r));
+  const count = (key) => Math.max(bucket(key)?.count || 0, Number(rows.find((r) => r.key === key)?.count) || 0);
+  if (count(ownKey) >= MAX_FAILURES) return true;
   if (isTrusted(username, address)) return false;
-  const any = bucket(`${username}|*`);
-  return Boolean(any && any.count >= MAX_FAILURES_ANY_ADDRESS);
+  return count(anyKey) >= MAX_FAILURES_ANY_ADDRESS;
 };
-const recordFailure = (username, address) => {
+const recordFailure = async (store, username, address) => {
   bump(`${username}|${address}`);
   bump(`${username}|*`);
+  await persistFailure(store, username, address);
 };
-const recordSuccess = (username, address) => {
+const recordSuccess = async (store, username, address) => {
   // Only this address's own strikes are forgiven: a legitimate sign-in must
   // not reset the count an attacker is accumulating from elsewhere.
   failures.delete(`${username}|${address}`);
   if (!trusted.has(username)) trusted.set(username, new Map());
   trusted.get(username).set(address, Date.now() + TRUST_MS);
+  await forgetShared(store, username, address);
 };
 
 // Periodic cleanup of expired entries to prevent unbounded growth
@@ -118,10 +188,17 @@ setInterval(() => {
   }
 }, 60_000).unref?.();
 
-/** Exposed for tests only: forget every strike and every trusted address. */
-export function resetLoginThrottle() {
+/**
+ * Exposed for tests only: forget every strike and every trusted address.
+ * `keepShared` clears only this process's memory, which is what a fresh
+ * serverless instance looks like; by default stored strikes are ignored too.
+ */
+export function resetLoginThrottle({ keepShared = false } = {}) {
   failures.clear();
   trusted.clear();
+  sharedEnabled = true;
+  sharedWarned = false;
+  if (!keepShared) resetEpoch = Date.now();
 }
 
 export function authHandlers(route) {
@@ -132,7 +209,7 @@ export function authHandlers(route) {
       return bad('Username or email must be text, up to 200 characters.');
     const username = body.username.trim().toLowerCase();
     const address = typeof ip === 'string' && ip.trim() ? ip.trim() : 'unknown';
-    if (throttled(username, address)) return tooMany('Too many failed attempts. Please wait a few minutes and try again.');
+    if (await throttled(store, username, address)) return tooMany('Too many failed attempts. Please wait a few minutes and try again.');
 
     const users = await store.list('users', { username });
     let user = users[0];
@@ -154,7 +231,7 @@ export function authHandlers(route) {
       throw err;
     }
     if (!eligible || !okPass) {
-      recordFailure(username, address);
+      await recordFailure(store, username, address);
       return unauthorized('Invalid username or password.');
     }
     // Purging an account shares this lock: a verification begun before deletion
@@ -165,10 +242,10 @@ export function authHandlers(route) {
       return unauthorized('Invalid username or password.');
     user = fresh;
     if (!await consumeMfa(store, user, body.otp)) {
-      recordFailure(username, address);
+      await recordFailure(store, username, address);
       return unauthorized('Authenticator code or backup code is required and must be valid.');
     }
-    recordSuccess(username, address);
+    await recordSuccess(store, username, address);
 
     // Session hygiene is scoped to THIS user, never a full-table scan on the
     // login hot path: drop expired sessions and cap concurrent ones (oldest

@@ -2041,3 +2041,107 @@ input[type="search"]::-webkit-search-cancel-button:hover {
 .booking-public input:focus { border-color:var(--brand); }
 .booking-public select { width:100%; min-height:42px; }
 .booking-public .form-err { color:var(--red); margin:12px 0; }
+
+/* ---------- Training (learning platform bridge) ---------- */
+.training-filters { display:grid; grid-template-columns:minmax(200px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr); gap:12px; margin:4px 0 16px; }
+.training-filters .f { margin:0; }
+.training-filters input, .training-filters select { width:100%; min-height:42px; }
+.training-course { display:grid; gap:6px; padding:6px 0; }
+.training-course + .training-course { border-top:1px solid var(--line-soft); }
+.training-course > span { font-weight:600; color:var(--ink); }
+.training-course-meta { display:flex; align-items:center; flex-wrap:wrap; gap:8px 10px; }
+td.actions { width:1%; white-space:nowrap; }
+.row-actions { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+.row-actions .btn { justify-content:center; }
+.training-detail + .training-detail { margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
+.training-detail h3 { margin:0 0 4px; }
+.training-modules { display:grid; gap:8px; margin:14px 0 18px; }
+.training-modules > div { display:grid; grid-template-columns:minmax(0, 1fr) auto auto; align-items:center; gap:12px; font-size:14px; }
+.training-offline { max-width:720px; }
+.training-offline h2 { margin-top:0; }
+@media (max-width: 760px) {
+  /* Heading buttons wrap at their natural width instead of being squeezed into one row. */
+  .page-heading .heading-actions .btn { flex:1 1 auto; justify-content:center; }
+  /* Two stat tiles per row on phones rather than a long single column. */
+  .grid.cols-4.metric-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .training-filters { grid-template-columns:1fr; }
+  td.actions { white-space:normal; }
+  .row-actions { flex-direction:row; flex-wrap:wrap; }
+  .training-modules > div { grid-template-columns:1fr auto; }
+  .training-modules > div > .progress { grid-column:1 / -1; width:100% !important; }
+}
+
+/* ---------- Candidate experience ---------- */
+/* One destination (a candidate's journey): no sidebar, the brand moves into the top bar. */
+body.single-nav #topbar { padding-left:clamp(16px, 3vw, 42px); padding-right:clamp(16px, 3vw, 42px); }
+body.single-nav .main-col { width:100%; }
+body.single-nav .view { max-width:1180px; margin-left:auto; margin-right:auto; width:100%; }
+.topbar-brand .logo { display:flex; align-items:center; gap:10px; color:var(--ink); text-decoration:none; }
+.topbar-brand .mark { display:grid; place-items:center; width:36px; height:36px; border-radius:9px; background:var(--brand-deep, #213066); color:#fff; }
+.topbar-brand .mark-svg { width:24px; height:24px; }
+.topbar-brand strong { display:block; font-family:var(--display); font-size:19px; font-weight:500; line-height:1; letter-spacing:-.02em; }
+.topbar-brand small { display:block; margin-top:3px; font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); }
+body.single-nav .topbar-left { gap:22px; }
+body.single-nav .topbar-context { padding-left:22px; border-left:1px solid var(--line); }
+@media (max-width: 760px) {
+  body.single-nav .topbar-context { display:none; }
+}
+
+/* My Journey: the one thing to do next, first. */
+.next-step-card { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:24px; align-items:center; padding:clamp(22px, 3vw, 32px); margin-bottom:16px; border-color:var(--brand-line); background:linear-gradient(135deg, var(--brand-wash), var(--surface) 70%); }
+.next-step-card .eyebrow { color:var(--gold); }
+.next-step-card h2 { margin:6px 0 10px; font-family:var(--display); font-size:clamp(26px, 2.6vw, 34px); font-weight:500; letter-spacing:-.025em; }
+.next-step-facts { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; color:var(--ink-2); font-size:13px; }
+.next-step-facts > span:not(.badge)::before { content:"·"; margin-right:14px; color:var(--line-strong); }
+.next-step-facts > .badge + span::before, .next-step-facts > span:first-child::before { content:none; margin:0; }
+.next-step-text { margin:14px 0 0; max-width:70ch; color:var(--ink-2); line-height:1.6; }
+.next-step-action { display:flex; justify-content:flex-end; }
+.btn.lg { min-height:48px; padding:12px 24px; font-size:15px; }
+@media (max-width: 760px) {
+  .next-step-card { grid-template-columns:1fr; }
+  .next-step-action { justify-content:stretch; }
+  .next-step-action .btn { width:100%; justify-content:center; }
+}
+
+/* Rules gate: the essentials at a glance, then the detail. */
+.exam-seal { max-width:900px; margin:0 auto; }
+.exam-facts { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; margin:20px 0 22px; }
+.exam-facts > div { display:grid; gap:4px; padding:14px 16px; border:1px solid var(--line); border-radius:var(--radius); background:var(--brand-wash); }
+.exam-facts b { font-family:var(--display); font-size:24px; font-weight:500; color:var(--ink); line-height:1.1; }
+.exam-facts span { font-size:12.5px; color:var(--ink-2); line-height:1.4; }
+.exam-rules-title { margin:6px 0 4px; font-size:15px; }
+.exam-seal .exam-rules { list-style:none; padding:0; font-size:14px; }
+.exam-seal .exam-rules li { position:relative; padding:10px 0 10px 28px; margin:0; border-bottom:1px solid var(--line-soft); }
+.exam-seal .exam-rules li:last-child { border-bottom:0; }
+.exam-seal .exam-rules li::before { content:""; position:absolute; left:4px; top:17px; width:8px; height:8px; border-radius:50%; background:var(--gold); }
+.exam-mic-tip { margin:14px 0 4px; }
+.exam-ack { margin-top:10px; padding:14px 16px; border:1px solid var(--brand-line); border-radius:var(--radius); background:var(--brand-wash); font-weight:600; }
+@media (max-width: 760px) {
+  .exam-facts { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+}
+
+/* Exam hall: larger, lettered answer targets (styling only; the markup is unchanged). */
+.exam-body { counter-reset: exam-option; }
+.exam-body .opt { counter-increment: exam-option; align-items:center; gap:14px; padding:14px 16px; margin-bottom:10px; border-width:1.5px; font-size:15px; line-height:1.5; }
+.exam-body .opt::before { content: counter(exam-option, upper-alpha); flex-shrink:0; display:grid; place-items:center; width:30px; height:30px; border-radius:50%; border:1.5px solid var(--line-strong); color:var(--ink-3); font-size:12px; font-weight:700; order:-1; }
+.exam-body .opt input { position:absolute; opacity:0; pointer-events:none; }
+.exam-body .opt:focus-within { outline:3px solid var(--brand); outline-offset:2px; }
+.exam-body .opt.selected::before { background:var(--brand); border-color:var(--brand); color:#fff; }
+.exam-body .opt:hover { transform:none; }
+.exam-body .opt { position:relative; }
+/* Multi-select answers get square markers, like checkboxes. */
+.exam-body .opt:has(input[type="checkbox"])::before { border-radius:7px; }
+
+/* ---------- Integrity: risk flag, other-device screen, exam watermark ---------- */
+.integrity-risk { margin-top:16px; padding:14px 16px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); }
+.integrity-risk.risk-review { border-color:#e2c48d; background:var(--amber-bg, #fbf3e4); }
+.integrity-risk.risk-high { border-color:#e4aaa2; background:var(--red-bg, #fbecea); }
+.integrity-risk-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+.integrity-risk-head a { margin-left:auto; }
+.integrity-risk ul { margin:10px 0 4px; padding-left:20px; font-size:13.5px; line-height:1.6; color:var(--ink-2); }
+.integrity-risk p { margin:8px 0 0; }
+.assessor-integrity { display:flex; align-items:center; gap:8px; margin-top:6px; }
+.exam-other-device { max-width:640px; }
+.exam-watermark { position:fixed; inset:0; z-index:40; pointer-events:none; opacity:.07; background-repeat:repeat; background-size:420px 220px; }
+:root[data-theme="dark"] .exam-watermark { opacity:.09; }
+@media print { .exam-watermark { opacity:.2; } }

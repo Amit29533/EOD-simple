@@ -92,6 +92,38 @@ test('a transport that supplies no address falls back to the per-username rule',
   assert.equal(elsewhere.status, 200);
 });
 
+test('strikes are shared through the store, so a fresh instance still enforces them', async () => {
+  await strike('admin', '10.0.0.5', 8);
+  // A different serverless instance: same store, empty in-memory counts.
+  resetLoginThrottle({ keepShared: true });
+  const blocked = await login('admin', 'correct-horse-9', '10.0.0.5');
+  assert.equal(blocked.status, 429, 'the per-address lock survives a cold instance');
+  for (let i = 0; i < 32; i += 1) await login('admin', 'wrong-password-x', `198.51.100.${100 + (i % 4)}`);
+  resetLoginThrottle({ keepShared: true });
+  const stranger = await login('admin', 'correct-horse-9', '192.0.2.250');
+  assert.equal(stranger.status, 429, 'the account-wide ceiling survives a cold instance');
+});
+
+test('a store without the throttle table never blocks a correct sign-in', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecod-throttle-missing-'));
+  const inner = createJsonStore(path.join(tmp, 'db.json'));
+  const missing = (t) => { if (t === 'login_throttle') throw Object.assign(new Error('Airtable 404 TABLE_NOT_FOUND'), { code: 'NOT_FOUND' }); };
+  const store = {
+    ...inner,
+    list: async (t, ...rest) => { missing(t); return inner.list(t, ...rest); },
+    insert: async (t, ...rest) => { missing(t); return inner.insert(t, ...rest); },
+    update: async (t, ...rest) => { missing(t); return inner.update(t, ...rest); },
+  };
+  const isolated = await createApp(store);
+  await inner.insert('users', { username: 'owner', name: 'Owner', role: 'admin', email: 'o@example.com', password_hash: hashPassword('owner-pass-99'), active: true });
+  const call = (password) => isolated({ method: 'POST', path: '/auth/login', body: { username: 'owner', password }, headers: {}, ip: '203.0.113.50' });
+  assert.equal((await call('nope-nope-nope')).status, 401);
+  const ok = await call('owner-pass-99');
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  for (let i = 0; i < 8; i += 1) await call('nope-nope-nope');
+  assert.equal((await call('owner-pass-99')).status, 429, 'the in-memory throttle still applies');
+});
+
 test('the Netlify wrapper hands the platform client address to the throttle', async () => {
   const { clientIp } = await import('../netlify/functions/api.mjs');
   assert.equal(clientIp({ headers: { 'x-nf-client-connection-ip': '203.0.113.9', 'x-forwarded-for': '10.0.0.1, 203.0.113.9' } }), '203.0.113.9');

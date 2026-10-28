@@ -9,6 +9,14 @@ export const session = {
 
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
 
+/**
+ * The exam is bound to one device (EXAM_OTHER_DEVICE, handlers/candidate.mjs).
+ * The running exam session registers a handler so a refused request swaps the
+ * hall for the "open on another device" screen instead of a retry loop.
+ */
+let onExamOtherDevice = null;
+export function setExamOtherDeviceHandler(fn) { onExamOtherDevice = fn; }
+
 export class ApiError extends Error {
   constructor(message, status, body) { super(message); this.status = status; this.body = body; }
 }
@@ -25,8 +33,26 @@ function timeoutError(ms) {
   return new ApiError(`The server did not respond within ${Math.round(ms / 1000)}s.`, 0, null);
 }
 
+/**
+ * A random id for this browser, kept across sign-ins. The exam is bound to it
+ * (one device at a time, handlers/candidate.mjs), so signing in again on the
+ * same machine is not mistaken for a second device.
+ */
+export function deviceId() {
+  try {
+    let id = localStorage.getItem('ecod.device');
+    if (!id || !/^[A-Za-z0-9-]{8,64}$/.test(id)) {
+      id = (crypto.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
+      localStorage.setItem('ecod.device', id);
+    }
+    return id;
+  } catch { return ''; }
+}
+
 export async function api(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
   const headers = { 'content-type': 'application/json' };
+  const device = deviceId();
+  if (device) headers['x-ecod-device'] = device;
   const requestToken = session.token;
   if (requestToken) headers.authorization = `Bearer ${requestToken}`;
   const controller = timeoutMs > 0 && typeof AbortController === 'function' ? new AbortController() : null;
@@ -64,6 +90,7 @@ export async function api(path, { method = 'GET', body, timeoutMs = 20000 } = {}
       session.token = null;
       onUnauthorized();
     }
+    if (res.status === 409 && data?.code === 'EXAM_OTHER_DEVICE' && onExamOtherDevice) onExamOtherDevice(data);
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data);
   }
   return data;

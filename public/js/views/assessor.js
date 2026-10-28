@@ -3,7 +3,7 @@ import { scoreSaveQueue } from '../score-save-queue.js';
 import { state, VIEW_UNMOUNT_EVENT } from '../app.js';
 import {
   esc, fmtDateTime, fmtDate, loading, emptyState, toast, attempt, confirmModal,
-  assessmentStatusBadge, readinessBadge, badge,
+  assessmentStatusBadge, readinessBadge, badge, integrityRiskBadge,
 } from '../ui.js';
 import { renderReport } from './report.js';
 import { recordingPlaybackSource } from '../recording-playback.js';
@@ -138,7 +138,7 @@ function renderAnswerSheet(view, d, { id, readonly }) {
 
   view.innerHTML = `
     <div class="score-topbar card">
-      <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">${readonly ? 'Answer sheet · report finalized' : 'Scoring review'}</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}${readonly && d.assessment.scored_at ? ` · finalized ${esc(fmtDate(d.assessment.scored_at))}` : ''}</span></div></div>
+      <div class="score-identity"><a href="#/workspace" class="back-link">← Workspace</a><span class="score-separator"></span><div><div class="section-kicker">${readonly ? 'Answer sheet · report finalized' : 'Scoring review'}</div><h2>${esc(d.candidate?.name || '')}</h2><span class="muted small">${esc(d.assessment.role?.name || '')} · submitted ${esc(fmtDate(d.assessment.submitted_at))}${readonly && d.assessment.scored_at ? ` · finalized ${esc(fmtDate(d.assessment.scored_at))}` : ''}</span>${d.assessment.integrity_risk && d.assessment.integrity_risk.level !== 'low' ? `<div class="assessor-integrity" title="${esc((d.assessment.integrity_risk.reasons || []).join('; '))}">${integrityRiskBadge(d.assessment.integrity_risk)} <span class="small muted">${esc((d.assessment.integrity_risk.reasons || []).slice(0, 2).join(' · '))}</span></div>` : ''}</div></div>
       <div class="row score-actions"><span class="badge grey" id="score-progress"></span>${readonly
         ? `<a class="btn secondary" href="#/assessments/${esc(id)}">View report card <span aria-hidden="true">→</span></a>`
         : '<span id="score-save-status" class="small muted" role="status" aria-live="polite">All changes saved</span><button class="btn secondary sm" id="retry-scores" hidden>Retry saving</button><button class="btn" id="finalize-btn">Finalize report <span aria-hidden="true">→</span></button>'}</div>
